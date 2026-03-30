@@ -212,6 +212,9 @@ Remove support in **all** maintained repos so the protocol has a **single** bran
 
 | Item | Status |
 |------|--------|
+| GitLab CI **`package:linode-tgz`** + tests/smoke | **Done** (`.gitlab-ci.yml`) |
+| **`POST /api/git/ensure-bare/:repo`** + normative **`git://`** sync docs | **Done** |
+| **`scripts/relay-linode-redeploy-seed.sh`** + checklist in **`DEPLOY_LINODE.md`** | **Done** |
 | Caddy/nginx + multi-Next + relay split | Planned |
 | **`npm run build`** only (+ `npm ci`/`npm install`) | Planned |
 | Singleton CICD queue (script or Rust binary) | Planned |
