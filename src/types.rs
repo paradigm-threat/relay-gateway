@@ -27,6 +27,8 @@ pub struct AppState {
     pub authorized_repos: Option<Arc<crate::authorized_repos::AuthorizedReposFile>>,
     /// Written by relay-install.sh (`state/features.json`); exposed in /api/config.
     pub features_manifest: Option<Arc<serde_json::Value>>,
+    /// When true, `POST /api/git/ensure-bare/:repo` may create `RELAY_REPO_PATH/<repo>.git` so anonymous `git push` over git:// succeeds.
+    pub git_ensure_bare_enabled: bool,
 }
 
 #[derive(Deserialize, Debug)]

@@ -1,0 +1,53 @@
+# Docker Compose for Relay Server Deployment on Rackspace Spot VM
+#
+# Usage:
+# 1. Install Docker: curl -fsSL https://get.docker.com | sh
+# 2. Set environment variables in .env
+# 3. run: docker compose up -d
+
+services:
+  relay-server:
+    image: ghcr.io/clevertree/relay-server:latest
+    container_name: relay-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "9418:9418" # Git protocol
+    environment:
+      - RUST_LOG=info
+      - RELAY_HTTP_PORT=8080
+      - RELAY_GIT_PORT=9418
+      - RELAY_GIT_ENSURE_BARE_ENABLED=${RELAY_GIT_ENSURE_BARE_ENABLED:-1}
+      - RELAY_MASTER_PEER_LIST=${RELAY_MASTER_PEER_LIST:-}
+      - DEFAULT_REPOS=${DEFAULT_REPOS:-https://github.com/clevertree/relay-template}
+    volumes:
+      - ./data:/srv/relay/data
+      - ./logs:/srv/relay/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/config"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Reverse proxy for SSL
+  # caddy:
+  #   image: caddy:latest
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile
+  #     - caddy_data:/data
+  #     - caddy_config:/config
+  #   depends_on:
+  #     - relay-server
+
+volumes:
+  caddy_data:
+  caddy_config:

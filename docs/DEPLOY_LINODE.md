@@ -1,5 +1,7 @@
 # Deploy relay-server to Linode (bare metal — no Docker)
 
+**Repo replication (normative):** Content pushed **into** relay’s bare repos MUST use the **git protocol** — **`git://HOST:9418/{repo}.git`** (or **`RELAY_GIT_PORT`**). Do **not** use **`git@host:…`** SSH remotes for relay sync; SSH is for **VM admin** only. Optional rules live in per-repo **`.relay.yaml`** / hooks.
+
 **See also:** **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)** (build tarball, optional vendored binaries, no cloud CI), **[`DEPLOY_WEB_AND_CI.md`](./DEPLOY_WEB_AND_CI.md)** — Next.js, reverse proxy, self-hosted CI, multi-site on one VM.
 
 **DNS / IPs:** For the current phase, **public IPs can be set manually**; automated DNS (Vercel API or other) remains optional via **`RELAY_SKIP_VERCEL_DNS=1`** or the existing Vercel flow below.
@@ -168,15 +170,25 @@ curl -fsSL "https://gitlab.com/clevertree/relay-server/-/raw/main/scripts/relay-
 
 ## Seed repos (push from laptop; no third-party forge required on server)
 
+Relay’s git daemon uses the **`git://`** protocol: there is **no transport-level authentication**. Policy (signed commits, custom hooks, etc.) is optional and comes from each repo’s **`.relay.yaml`** and **`relay-hook-handler`**, not from the server requiring SSH keys or HTTP basic auth.
+
+**New bare repo (default):** create the slot over HTTP (no SSH needed), then push. **`RELAY_GIT_ENSURE_BARE_ENABLED`** defaults to **`1`** on install; set **`RELAY_GIT_ENSURE_BARE_ENABLED=0`** in **`relay.env`** to disable and use manual init only.
+
 ```bash
-# On server
-sudo -u relay git init --bare /opt/relay/data/snesology-presets.git
+# Laptop (replace IP and repo name)
+curl -fsS -X POST "http://IP:8080/api/git/ensure-bare/snesology-presets"
 ```
 
 ```bash
 # Laptop
 git remote add relay git://IP:9418/snesology-presets.git
 git push -u relay main
+```
+
+**Alternative (SSH on server):** create the bare repo by hand if you disabled ensure-bare:
+
+```bash
+sudo -u relay git init --bare /opt/relay/data/snesology-presets.git
 ```
 
 Record **`git rev-parse main`** → put that SHA as **`anchor_commit`** for that repo in **`authorized-repos.yaml`**, then **`systemctl restart relay-server`**.

@@ -82,7 +82,7 @@ done
 
 # Start git daemon
 log "Starting git daemon on port ${RELAY_GIT_PORT:-9418}"
-git daemon --reuseaddr --base-path="$DATA_ROOT" --export-all --enable=receive-pack --port="${RELAY_GIT_PORT:-9418}" "$DATA_ROOT" &
+git daemon --reuseaddr --base-path="$DATA_ROOT" --export-all --informative-errors --enable=receive-pack --port="${RELAY_GIT_PORT:-9418}" "$DATA_ROOT" &
 
 # Exec the server (inherits RELAY_* env)
 # Start the relay server in background if we're doing DNS/SSL logic

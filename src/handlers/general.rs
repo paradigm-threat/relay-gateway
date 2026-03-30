@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use axum::{
-    extract::{Query, State},
+    extract::{Path as AxPath, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
@@ -75,6 +75,8 @@ pub async fn get_api_config(State(state): State<AppState>) -> impl IntoResponse 
         /// Install-time feature manifest (Piper, npm extensions, ports). See relay-install.sh.
         #[serde(skip_serializing_if = "Option::is_none")]
         installed_features: Option<serde_json::Value>,
+        /// When true, `POST /api/git/ensure-bare/:repo` is allowed (no HTTP auth; protect at firewall if needed).
+        git_ensure_bare_enabled: bool,
     }
 
     let peer_list = std::env::var("RELAY_MASTER_PEER_LIST")
@@ -109,6 +111,7 @@ pub async fn get_api_config(State(state): State<AppState>) -> impl IntoResponse 
         relay_server_id: state.relay_server_id.clone(),
         authorized_repos,
         installed_features,
+        git_ensure_bare_enabled: state.git_ensure_bare_enabled,
     };
     (StatusCode::OK, Json(config))
 }
@@ -494,4 +497,139 @@ pub async fn post_github_hook(
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Remote 'origin' not found: {}", e)).into_response(),
     };
     res
+}
+
+fn validate_git_repo_slug(raw: &str) -> Result<String, &'static str> {
+    let trimmed = raw.trim();
+    let base = trimmed.strip_suffix(".git").unwrap_or(trimmed);
+    if base.is_empty() || base.len() > 200 {
+        return Err("invalid repo name length");
+    }
+    if base.starts_with('.') {
+        return Err("repo name may not start with '.'");
+    }
+    if !base
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err("repo name must be ASCII letters, digits, '-', '_', or '.'");
+    }
+    if base.contains("..") {
+        return Err("repo name may not contain '..'");
+    }
+    Ok(base.to_string())
+}
+
+/// Create `RELAY_REPO_PATH/<repo>.git` when missing so `git push git://host:9418/<repo>.git` is accepted.
+/// Relay does **not** implement git-protocol authentication; optional policy lives in per-repo `.relay.yaml` / hooks.
+pub async fn post_ensure_bare(
+    State(state): State<AppState>,
+    AxPath(repo): AxPath<String>,
+) -> impl IntoResponse {
+    #[derive(Serialize)]
+    struct EnsureBareResponse {
+        ok: bool,
+        created: bool,
+        repo: String,
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    }
+
+    if !state.git_ensure_bare_enabled {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(EnsureBareResponse {
+                ok: false,
+                created: false,
+                repo: repo.clone(),
+                path: String::new(),
+                error: Some(
+                    "RELAY_GIT_ENSURE_BARE_ENABLED is disabled for this node".to_string(),
+                ),
+            }),
+        )
+            .into_response();
+    }
+
+    let slug = match validate_git_repo_slug(&repo) {
+        Ok(s) => s,
+        Err(msg) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(EnsureBareResponse {
+                    ok: false,
+                    created: false,
+                    repo,
+                    path: String::new(),
+                    error: Some(msg.to_string()),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let root = state.repo_path.clone();
+    let slug_for_task = slug.clone();
+    let join = tokio::task::spawn_blocking(move || -> Result<(bool, PathBuf), String> {
+        let dest = root.join(format!("{}.git", slug_for_task));
+        std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+        if dest.exists() {
+            let r = Repository::open(&dest).map_err(|e| e.to_string())?;
+            if !r.is_bare() {
+                return Err("path exists but is not a bare git repository".to_string());
+            }
+            return Ok((false, dest));
+        }
+        Repository::init_bare(&dest).map_err(|e| e.to_string())?;
+        Ok((true, dest))
+    })
+    .await;
+
+    let Ok(task_result) = join else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(EnsureBareResponse {
+                ok: false,
+                created: false,
+                repo: slug,
+                path: String::new(),
+                error: Some("internal task failed".to_string()),
+            }),
+        )
+            .into_response();
+    };
+
+    match task_result {
+        Ok((created, dest)) => {
+            let path_str = dest.display().to_string();
+            let status = if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            };
+            (
+                status,
+                Json(EnsureBareResponse {
+                    ok: true,
+                    created,
+                    repo: slug,
+                    path: path_str,
+                    error: None,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::CONFLICT,
+            Json(EnsureBareResponse {
+                ok: false,
+                created: false,
+                repo: slug,
+                path: String::new(),
+                error: Some(e),
+            }),
+        )
+            .into_response(),
+    }
 }

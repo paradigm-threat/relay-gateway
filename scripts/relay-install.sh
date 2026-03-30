@@ -383,6 +383,9 @@ install_binaries() {
 write_gitconfig_hooks() {
   git config --file /etc/gitconfig core.hooksPath "$INSTALL/hooks" 2>/dev/null || \
     printf '[core]\n\thooksPath = %s\n' "$INSTALL/hooks" >>/etc/gitconfig
+  # Belt-and-suspenders: anonymous receive-pack matches --enable=receive-pack on git daemon.
+  git config --file /etc/gitconfig daemon.receivepack true 2>/dev/null || \
+    printf '\n[daemon]\n\treceivepack = true\n' >>/etc/gitconfig
 }
 
 write_systemd_core() {
@@ -420,7 +423,7 @@ After=network.target
 Type=simple
 User=relay
 Group=relay
-ExecStart=/usr/bin/git daemon --reuseaddr --base-path=$INSTALL/data --export-all --enable=receive-pack --port=$GIT_PORT $INSTALL/data
+ExecStart=/usr/bin/git daemon --reuseaddr --base-path=$INSTALL/data --export-all --informative-errors --enable=receive-pack --port=$GIT_PORT $INSTALL/data
 Restart=always
 RestartSec=3
 
@@ -764,6 +767,13 @@ append_relay_env_peer_list() {
   echo "RELAY_MASTER_PEER_LIST=$peers" >>"$f"
 }
 
+# Default on: lets operators run POST /api/git/ensure-bare/:name then git push git://… without SSH.
+append_relay_env_git_ensure_bare_default() {
+  local f="$INSTALL/relay.env"
+  grep -q '^RELAY_GIT_ENSURE_BARE_ENABLED=' "$f" 2>/dev/null && return 0
+  echo "RELAY_GIT_ENSURE_BARE_ENABLED=1" >>"$f"
+}
+
 do_install() {
   need_root
   if [[ -f "$FEATURES_JSON" ]] && [[ "${RELAY_INSTALL_FRESH:-}" != "1" ]]; then
@@ -797,6 +807,7 @@ do_install() {
   append_relay_env_public_host
   append_relay_env_server_id
   append_relay_env_peer_list
+  append_relay_env_git_ensure_bare_default
   systemctl enable relay-server relay-git-daemon
   systemctl restart relay-git-daemon relay-server
   [[ "$piper_en" == "1" ]] && systemctl restart relay-tts-piper 2>/dev/null || true

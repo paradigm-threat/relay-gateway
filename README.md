@@ -44,6 +44,12 @@ Endpoints
 
 Relay repositories use a unified configuration file `.relay.yaml` at the root to control security and automation.
 
+### Git daemon (`git://`, default port **9418**)
+
+The bundled **`git daemon`** enables **`receive-pack`**: there is **no git transport authentication** (no SSH keys / HTTP basic auth on that path). Optional enforcement (signed commits, custom **`pre-receive`**, etc.) is per repository via **`.relay.yaml`** and **`relay-hook-handler`**.
+
+`git daemon` only serves **existing** bare repos under **`RELAY_REPO_PATH`**. To add a name without SSH, call **`POST /api/git/ensure-bare/{repo}`** (returns **201** when created). This is **on by default**; set **`RELAY_GIT_ENSURE_BARE_ENABLED=0`** to disable and create **`*.git`** directories only manually. **`GET /api/config`** includes **`git_ensure_bare_enabled`**.
+
 ### Git Hooks (`relay-hook-handler`)
 The server includes a native `relay-hook-handler` binary that should be symlinked to `hooks/pre-receive` and `hooks/post-receive` in your bare repositories.
 - **Branch Protection**: Enforces GPG/SSH signature requirements natively in Rust.
@@ -66,6 +72,7 @@ The server includes a native `relay-hook-handler` binary that should be symlinke
 ### Repository Management
 - `RELAY_MASTER_REPO_LIST`: Semicolon-separated list of repos to clone on startup (e.g., `https://github.com/clevertree/relay-template`)
 - `DEFAULT_REPOS`: Alternative to RELAY_MASTER_REPO_LIST for Docker entrypoint
+- **`RELAY_GIT_ENSURE_BARE_ENABLED`**: When enabled (default: **on** if unset), **`POST /api/git/ensure-bare/:repo`** may create **`RELAY_REPO_PATH/<repo>.git`**. Set to **`0`** / **`false`** / **`no`** to turn off.
 
 ### TLS/HTTPS Configuration
 - `RELAY_TLS_CERT`: Path to TLS certificate file

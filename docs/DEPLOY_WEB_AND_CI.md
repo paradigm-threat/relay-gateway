@@ -6,6 +6,10 @@ Normative **product / ops** notes for serving **relay-server**, **multiple Next.
 
 **Related:** **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (VM install), **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** (anchors, authorized repos), **[`LAUNCH_AND_TEST_PLAN.md`](./LAUNCH_AND_TEST_PLAN.md)** (default repo resolution, `RELAY_DEFAULT_REPO`), **[`SERVER_HOOKS.md`](./SERVER_HOOKS.md)** (per-repo `.relay.yaml`, hooks).
 
+### Git sync to relay nodes (normative)
+
+Pushes that **land in relay’s bare repos** MUST use the **git daemon URL** — **`git://{node}:{port}/{repo}.git`** (default port **9418**). Do not use **SSH (`git@…`)** for that path; SSH is for **server administration**, not relay’s published git service. See **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (seed repos, **`POST /api/git/ensure-bare/:repo`**).
+
 ---
 
 ## 1. Addressing and DNS (current decision)

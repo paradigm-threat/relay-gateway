@@ -113,6 +113,11 @@ impl Config {
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .map(Arc::new);
 
+        let git_ensure_bare_enabled = env_truthy_or_default(
+            "RELAY_GIT_ENSURE_BARE_ENABLED",
+            true,
+        );
+
         Ok(Config {
             state: AppState {
                 repo_path,
@@ -121,6 +126,7 @@ impl Config {
                 relay_server_id,
                 authorized_repos,
                 features_manifest,
+                git_ensure_bare_enabled,
             },
             http_addr,
             https_port,
@@ -135,6 +141,21 @@ impl Config {
         let _ = std::fs::create_dir_all(repo_path);
         // Repo cloning and updates are handled by the docker-entrypoint.sh
         // or external processes to keep the server lightweight.
+    }
+}
+
+/// Env unset/empty → `default`. `0`, `false`, `no` (case-insensitive) → false; otherwise true.
+fn env_truthy_or_default(var: &str, default: bool) -> bool {
+    match std::env::var(var) {
+        Ok(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                return default;
+            }
+            let low = t.to_ascii_lowercase();
+            !matches!(low.as_str(), "0" | "false" | "no" | "off")
+        }
+        Err(_) => default,
     }
 }
 

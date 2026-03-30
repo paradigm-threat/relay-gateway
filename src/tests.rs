@@ -22,6 +22,7 @@ mod tests {
             relay_server_id: None,
             authorized_repos: None,
             features_manifest: None,
+            git_ensure_bare_enabled: true,
         }
     }
 
@@ -485,5 +486,50 @@ process.exit(0);
         let results = json["results"].as_array().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["title"], "Test Item");
+    }
+
+    #[tokio::test]
+    async fn test_post_ensure_bare_creates_repo() {
+        let repo_dir = tempdir().unwrap();
+        std::fs::create_dir_all(repo_dir.path()).unwrap();
+        let state = test_state(repo_dir.path().to_path_buf());
+        let r1 = handlers::post_ensure_bare(
+            State(state.clone()),
+            AxPath("new-repo".to_string()),
+        )
+        .await;
+        let (parts, body) = r1.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["created"], true);
+        assert!(repo_dir.path().join("new-repo.git").exists());
+
+        let r2 = handlers::post_ensure_bare(State(state), AxPath("new-repo".to_string())).await;
+        let (parts2, body2) = r2.into_response().into_parts();
+        assert_eq!(parts2.status, StatusCode::OK);
+        let bytes2 = axum::body::to_bytes(body2, usize::MAX).await.unwrap();
+        let v2: serde_json::Value = serde_json::from_slice(&bytes2).unwrap();
+        assert_eq!(v2["created"], false);
+    }
+
+    #[tokio::test]
+    async fn test_post_ensure_bare_rejects_bad_slug() {
+        let repo_dir = tempdir().unwrap();
+        let state = test_state(repo_dir.path().to_path_buf());
+        let r = handlers::post_ensure_bare(State(state), AxPath("../evil".to_string())).await;
+        let (parts, _) = r.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_post_ensure_bare_disabled() {
+        let repo_dir = tempdir().unwrap();
+        let mut state = test_state(repo_dir.path().to_path_buf());
+        state.git_ensure_bare_enabled = false;
+        let r = handlers::post_ensure_bare(State(state), AxPath("x".to_string())).await;
+        let (parts, _) = r.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::FORBIDDEN);
     }
 }
