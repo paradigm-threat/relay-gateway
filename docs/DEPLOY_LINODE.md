@@ -222,6 +222,29 @@ Manifest **`relay_server_id`** must match. Copy **`authorized-repos.yaml`** to t
 
 ---
 
+## Operator checklist: redeploy binary + seed a repo (git://)
+
+Use this after **root SSH key auth** works (see Lish steps if `PasswordAuthentication` is off). Pushes use **`git://` only**, not **`git@…`**.
+
+| Step | Action |
+|------|--------|
+| 1 | Build tarball: **`./scripts/pack-linode-deploy.sh`** (or GitLab **`package:linode-tgz`** artifact). |
+| 2 | **Automated:** **`./scripts/relay-linode-redeploy-seed.sh IP`** — uploads tgz, runs **`install.sh update`**, **`POST /api/git/ensure-bare/…`**, optional push if **`RELAY_LOCAL_REPO`** is set. Override key with **`RELAY_SSH_IDENTITY`**. |
+| 3 | **Manual** (same as script): `scp target/relay-linode-deploy.tgz root@IP:/root/` → SSH → `tar xzf … && RELAY_BIN_SOURCE=/root RELAY_INSTALL_NONINTERACTIVE=1 ./install.sh update` |
+| 4 | **`curl -fsS -X POST "http://IP:8080/api/git/ensure-bare/your-repo"`** (skip if script ran). |
+| 5 | **`git push -u git://IP:9418/your-repo.git your-branch`** |
+| 6 | Confirm: **`curl -s http://IP:8080/api/config \| jq .git_ensure_bare_enabled,.repos`** |
+
+Example push **paradigm-threat-files** from a laptop (default branch **`master`**):
+
+```bash
+RELAY_LOCAL_REPO="$HOME/dev/old/paradigm-threat-files" \
+RELAY_SEED_BRANCH=master \
+  ./scripts/relay-linode-redeploy-seed.sh 192.155.92.23
+```
+
+---
+
 ## Verify
 
 ```bash
