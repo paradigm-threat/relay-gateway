@@ -35,6 +35,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Optional prebuilt binaries (see dist/README.md, docs/DEPLOY_SELF_HOSTED.md)
+dist/linux-amd64/
+dist/linux-arm64/
+
 # Misc caches
 **/.cache/
 .parcel-cache/

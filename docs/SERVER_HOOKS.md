@@ -11,6 +11,7 @@ Relay repositories are governed by a unified configuration file `.relay.yaml` lo
 | Concern | Mechanism |
 |---------|-----------|
 | **Pull validation** | Only repos listed in **`authorized-repos.yaml`**; after fetch, **`anchor_commit`** must be ancestor of branch tip. |
+| **Push / anti-squat (whitelisted names)** | **`anchor_commit`** must be recorded in YAML **before** the bare repo exists; **`pre-receive`** should reject pushes whose branch tips do not contain that anchor (same ancestry rule as pull) — **planned**; see **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**. |
 | **Branch names vs host slugs** | Planned: **`pre-receive`** rejects **`refs/heads/*`** updates that violate **[`DEPLOY_WEB_AND_CI.md`](./DEPLOY_WEB_AND_CI.md)** §9 (non-empty canonical slug; **unique** slug across branches) so **`Host`**-based branch selection cannot collide. |
 | Who may push **content** | Signed commits + **`allowedKeys`** / **`allowedKeyFingerprints`**; server hooks validate every change. |
 | Which **Relay nodes** may participate | **`git.relayTrust.authorizedServerIds`**; **`autoPush.originList`** aligned with that list. |

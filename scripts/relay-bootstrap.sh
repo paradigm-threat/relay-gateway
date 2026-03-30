@@ -2,7 +2,7 @@
 # Provision bare repos + optional npm extensions from:
 #   - RELAY_BOOTSTRAP_MANIFEST_URL (JSON manifest), or
 #   - RELAY_SEED_REPOS (name=url;name=url), or
-#   - Interactive catalog (GitHub URLs below) — all checked by default.
+#   - Interactive catalog (clone URLs below) — all checked by default.
 #
 # Add repos: extend BOOTSTRAP_CATALOG_NAMES and BOOTSTRAP_CATALOG_URLS in parallel.
 set -euo pipefail
@@ -20,9 +20,9 @@ BOOTSTRAP_CATALOG_NAMES=(
   songwalker-library
 )
 BOOTSTRAP_CATALOG_URLS=(
-  "https://github.com/clevertree/relay-template.git"
-  "https://github.com/clevertree/relay-server.git"
-  "https://github.com/clevertree/songwalker-library.git"
+  "https://gitlab.com/clevertree/relay-template.git"
+  "https://gitlab.com/clevertree/relay-server.git"
+  "https://gitlab.com/clevertree/songwalker-library.git"
 )
 
 mkdir -p "$DATA_ROOT" "$EXT_DIR"

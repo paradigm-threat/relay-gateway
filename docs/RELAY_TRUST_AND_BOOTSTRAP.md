@@ -17,6 +17,20 @@ Without (1)+(2), **`relay-server` will refuse to start** if **`RELAY_AUTHORIZED_
 - After any **pull**, the server checks: `anchor_commit` **is an ancestor** of `refs/heads/<branch>`. If someone points `origin` at a fork or rewrote history without your anchor, the pull **fails** and **`refs/heads/main`** is rolled back (HTTP **403**).
 - When you **advance** the trusted line, update **`anchor_commit`** in the YAML (signed ops process) to a new commit that is a **descendant** of the old anchor.
 
+### Whitelist slots: store the hash **before** the bare repo exists (anti-squat)
+
+For every **whitelisted** repo name, **`authorized-repos.yaml` MUST list `anchor_commit` + `branch` even when** `RELAY_REPO_PATH/<name>.git` **does not exist yet**.
+
+**Why:** Without a pre-declared anchor, an attacker could **`git push`** to `git://node:9418/<whitelisted-name>.git` first and publish **unrelated** history under **your** official name. After that, your real mirror is no longer uniquely tied to the name. The stored hash defines **which Git history** is allowed to occupy that slot: the configured branch tip must **contain `anchor_commit` in its ancestry** (same rule as pull validation).
+
+**Operations:**
+
+1. Choose a trusted tip on the real repo (e.g. `main`): `git rev-parse refs/heads/main`.
+2. Put that full 40-character id in **`anchor_commit`** for that repo name **on every node** before or as soon as the name is exposed (DNS / routing).
+3. **First push** or **pull** that creates or updates that bare repo must satisfy the anchor check.
+
+**Implementation note:** **`relay-server` enforces the anchor today on `POST /git-pull`** after fetch. **Git daemon `receive-pack`** pushes should be guarded the same way in **`relay-hook-handler` / `pre-receive`** (planned) so squatting cannot succeed via push before your clone exists. Until that ships, restrict **9418** at the firewall to trusted peers if whitelisted names are public.
+
 ### Example file
 
 See **[`examples/authorized-repos.yaml`](./examples/authorized-repos.yaml)**.
@@ -88,4 +102,5 @@ Preset libraries are **canonical on Relay**. Seed with **`git push git://…:941
 | **Pull allowlist + anchor validation** | **Enforced** on **`POST /git-pull`** |
 | **Bootstrap anchor check** | **Enforced** in **`relay-bootstrap.sh`** (manifest) |
 | **`allowedKeys` fingerprint match on push** | Planned (hook handler) |
+| **Anchor enforcement on `git push` (whitelisted names; anti-squat)** | Planned — **`pre-receive`** using same ancestry rule as pull; see **Whitelist slots** above |
 | **50 MB default-branch working-tree cap (non-authorized only)** | Planned — see **[`DEPLOY_WEB_AND_CI.md`](./DEPLOY_WEB_AND_CI.md)** |

@@ -1,4 +1,8 @@
-//! Authorized repo list + anchor commit validation for pull operations.
+//! Authorized repo list + anchor commit validation (pull today; push/planned).
+//!
+//! Whitelisted repo names in YAML must include [`RepoAnchor::anchor_commit`] **before** the bare
+//! repo exists, so unrelated history cannot occupy that name first (see `RELAY_TRUST_AND_BOOTSTRAP.md`).
+//! Pull path validates after fetch; git-daemon pushes should get the same check in `pre-receive` (planned).
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;

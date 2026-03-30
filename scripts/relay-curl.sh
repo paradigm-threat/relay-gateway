@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # Run from any Linux host (as root or pipe through sudo):
-#   curl -fsSL "https://raw.githubusercontent.com/clevertree/relay-server/main/scripts/relay-curl.sh" | sudo bash -s -- repair
+#   curl -fsSL "https://gitlab.com/clevertree/relay-server/-/raw/main/scripts/relay-curl.sh" | sudo bash -s -- repair
 #
 # Env:
-#   RELAY_REPO=clevertree/relay-server   RELAY_REF=main
+#   RELAY_RAW_BASE=https://gitlab.com/clevertree/relay-server/-/raw/main   base URL for raw scripts (no trailing slash required)
 #   RELAY_DEPLOY_TGZ_URL=…             full deploy .tgz for install / update (update: prefer sudo env URL when piping:
 #                                      curl … | sudo env RELAY_DEPLOY_TGZ_URL=https://…/relay-linode-deploy.tgz bash -s -- update)
 #   RELAY_BIN_SOURCE=/path             dir containing relay-server + relay-hook-handler (overrides tarball)
 set -euo pipefail
 
-RELAY_REPO="${RELAY_REPO:-clevertree/relay-server}"
-RELAY_REF="${RELAY_REF:-main}"
-BASE_RAW="https://raw.githubusercontent.com/${RELAY_REPO}/${RELAY_REF}"
+RELAY_RAW_BASE="${RELAY_RAW_BASE:-https://gitlab.com/clevertree/relay-server/-/raw/main}"
+BASE_RAW="${RELAY_RAW_BASE%/}"
 
 log() { echo "[relay-curl] $*" >&2; }
 die() { echo "[relay-curl] ERROR: $*" >&2; exit 1; }

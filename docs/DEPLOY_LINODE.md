@@ -1,6 +1,6 @@
 # Deploy relay-server to Linode (bare metal — no Docker)
 
-**See also:** **[`DEPLOY_WEB_AND_CI.md`](./DEPLOY_WEB_AND_CI.md)** — Next.js, reverse proxy, self-hosted CI, multi-site on one VM, and planned trust/size policy (documentation only until implemented).
+**See also:** **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)** (build tarball, optional vendored binaries, no cloud CI), **[`DEPLOY_WEB_AND_CI.md`](./DEPLOY_WEB_AND_CI.md)** — Next.js, reverse proxy, self-hosted CI, multi-site on one VM.
 
 **DNS / IPs:** For the current phase, **public IPs can be set manually**; automated DNS (Vercel API or other) remains optional via **`RELAY_SKIP_VERCEL_DNS=1`** or the existing Vercel flow below.
 
@@ -9,25 +9,15 @@
 | Step | What |
 |------|------|
 | **1. VM** | Linode **Ubuntu 22.04/24.04 LTS**, open **22, 8080, 9418** (and **5590** if Piper). |
-| **2. Binaries** | CI **[`publish-linode-tarball`](../.github/workflows/publish-linode-tarball.yml)**: every **`main`** push uploads an artifact **`relay-linode-deploy-<sha>.tgz`** (Actions → workflow run → Artifacts). **Tag** `v1.2.3` → same workflow attaches **`relay-linode-deploy.tgz`** to the **Release** (stable URL for **`RELAY_DEPLOY_TGZ_URL`**). Or **`./scripts/pack-linode-deploy.sh`** locally. |
+| **2. Binaries** | On a trusted machine: **`./scripts/pack-linode-deploy.sh`** → **`target/relay-linode-deploy.tgz`**. Host the tarball on **any** HTTPS you control (GitLab generic package, internal nginx, USB copy + `file:` path not supported by curl — use **`scp`** or **`RELAY_BIN_SOURCE`**). See **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)**. |
 | **3. Install** | **`relay-curl.sh`** one-liner with **`RELAY_DEPLOY_TGZ_URL`**, **or** `scp` the tgz and **`sudo ./install.sh install`**. The installer’s **first step** is **Vercel DNS** (unless skipped): detect public IPv4, upsert **A** record for your **FQDN**, wait until DNS resolves, then install packages and binaries. Uses **`VERCEL_API_TOKEN`** (optional **`VERCEL_TEAM_ID`**) like Docker/K8s. See **[Vercel DNS (first step of `install`)](#vercel-dns-first-step-of-install)**. |
 | **4. Trust** | **`authorized-repos.yaml`** + **`relay.env`** (`RELAY_SERVER_ID`, `RELAY_AUTHORIZED_REPOS_PATH`). |
 | **5. Data** | **`relay-bootstrap.sh`** (catalog or manifest) **or** bare init + **`git push`** from laptop. |
-| **6. Updates** | **Binary upgrade:** new tgz → **`install.sh update`** or **`relay-curl.sh`** with new **`RELAY_DEPLOY_TGZ_URL`**. **Script/hardening only:** **`relay-curl.sh … repair`** (pulls **`relay-install.sh`** from GitHub). |
+| **6. Updates** | **Binary upgrade:** new tgz → **`install.sh update`** or **`relay-curl.sh`** with new **`RELAY_DEPLOY_TGZ_URL`**. **Script/hardening only:** **`relay-curl.sh … repair`** (pulls **`relay-install.sh`** from **`RELAY_RAW_BASE`** / GitLab raw by default). |
 
-**Release tarball URL shape (after you push tag `v0.3.2`):**
+**Example hosted tarball URL** (you choose the host):
 
-`https://github.com/clevertree/relay-server/releases/download/v0.3.2/relay-linode-deploy.tgz`
-
-**Latest `main` tarball:** open the latest successful **publish-linode-tarball** run on **`main`** → **Artifacts** → download **`relay-linode-deploy-<sha>.tgz`**. Or **Run workflow** manually.
-
-**CLI download** ([GitHub CLI](https://cli.github.com/): `gh auth login`):
-
-```bash
-RUN=$(gh run list -R clevertree/relay-server -w publish-linode-tarball -b main -L 1 --json databaseId -q '.[0].databaseId')
-gh run download -R clevertree/relay-server "$RUN"
-# Artifact folder is named relay-linode-deploy-<sha>/relay-linode-deploy.tgz
-```
+`https://git.example.com/api/v4/projects/…/packages/generic/relay-server/v0.3.2/relay-linode-deploy.tgz`
 
 ---
 
@@ -137,46 +127,46 @@ sudo RELAY_INSTALL_NONINTERACTIVE=1 RELAY_SKIP_VERCEL_DNS=1 \
 
 ---
 
-## One-liner from GitHub (any Linux)
+## One-liner from GitLab raw (any Linux)
 
-**[`scripts/relay-curl.sh`](../scripts/relay-curl.sh)** installs `curl`, `tar`, `bash`, etc. if missing, pulls **`relay-install.sh`** + **`piper-tts-http.py`** from **`main`** (override with **`RELAY_REF`** only by editing the URL path), then runs the subcommand.
+**[`scripts/relay-curl.sh`](../scripts/relay-curl.sh)** installs `curl`, `tar`, `bash`, etc. if missing, pulls **`relay-install.sh`** + helpers from **`RELAY_RAW_BASE`** (default: GitLab **`main`**), then runs the subcommand.
 
-**Repair or update** (server already has `/opt/relay/bin/relay-server`; pulls latest **`relay-install.sh`** from GitHub, reapplies systemd/hooks; binaries stay in place unless you set **`RELAY_DEPLOY_TGZ_URL`** / **`RELAY_BIN_SOURCE`** for **update**):
+**Repair or update** (server already has `/opt/relay/bin/relay-server`; pulls latest **`relay-install.sh`** from **`RELAY_RAW_BASE`**, reapplies systemd/hooks; binaries stay in place unless you set **`RELAY_DEPLOY_TGZ_URL`** / **`RELAY_BIN_SOURCE`** for **update**):
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/clevertree/relay-server/main/scripts/relay-curl.sh" | sudo bash -s -- repair
+curl -fsSL "https://gitlab.com/clevertree/relay-server/-/raw/main/scripts/relay-curl.sh" | sudo bash -s -- repair
 ```
 
-Swap **`repair`** for **`update`** after you’ve published new binaries (see below).
+Swap **`repair`** for **`update`** after you’ve published new binaries (see **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)**).
 
-**First install** (needs a hosted **`relay-linode-deploy.tgz`** — release asset, Actions artifact on HTTPS, S3, etc.):
+**First install** (needs **`relay-linode-deploy.tgz`** on **your** HTTPS, or **`RELAY_BIN_SOURCE`** on disk):
 
 ```bash
 export RELAY_DEPLOY_TGZ_URL="https://YOUR_HOST/relay-linode-deploy.tgz"
-curl -fsSL "https://raw.githubusercontent.com/clevertree/relay-server/main/scripts/relay-curl.sh" | sudo -E bash -s -- install
+curl -fsSL "https://gitlab.com/clevertree/relay-server/-/raw/main/scripts/relay-curl.sh" | sudo -E bash -s -- install
 ```
 
-**Update from a new tarball** (ensures the URL reaches the script when piping):
+**Update from a new tarball:**
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/clevertree/relay-server/main/scripts/relay-curl.sh" | \
+curl -fsSL "https://gitlab.com/clevertree/relay-server/-/raw/main/scripts/relay-curl.sh" | \
   sudo env RELAY_DEPLOY_TGZ_URL="https://YOUR_HOST/relay-linode-deploy.tgz" bash -s -- update
 ```
 
 Non-interactive: `export RELAY_INSTALL_NONINTERACTIVE=1` before the same **`curl | sudo -E bash`** line. For **`install`**, also set **`RELAY_PUBLIC_FQDN`** + **`VERCEL_API_TOKEN`**, or **`RELAY_SKIP_VERCEL_DNS=1`**, plus any Piper/npm vars (see **[Vercel DNS (first step of `install`)](#vercel-dns-first-step-of-install)**).
 
-**Another branch** — change **`main`** in the URL to your branch name.
+**Self-hosted raw mirror:** `export RELAY_RAW_BASE="https://git.example.com/org/relay-server/-/raw/main"` before **`curl`**.
 
 **Binaries on disk instead of URL:**
 
 ```bash
 export RELAY_BIN_SOURCE=/root/deploy   # relay-server + relay-hook-handler here
-curl -fsSL "https://raw.githubusercontent.com/clevertree/relay-server/main/scripts/relay-curl.sh" | sudo -E bash -s -- install
+curl -fsSL "https://gitlab.com/clevertree/relay-server/-/raw/main/scripts/relay-curl.sh" | sudo -E bash -s -- install
 ```
 
 ---
 
-## Seed repos (push from laptop; no GitHub on server)
+## Seed repos (push from laptop; no third-party forge required on server)
 
 ```bash
 # On server
@@ -195,7 +185,7 @@ Record **`git rev-parse main`** → put that SHA as **`anchor_commit`** for that
 
 ## Extra nodes (`RELAY_SERVER_ID` + repos)
 
-**Interactive (TTY):** run **`relay-bootstrap.sh`** with no manifest — you get a checkbox-style list (**`[x]`** = clone). Defaults: **relay-template**, **relay-server**, **songwalker-library** (GitHub `clevertree/*`). Toggle with **`1` `2` `3`**, **`a`** = all, **`n`** = none, **Enter** = proceed.
+**Interactive (TTY):** run **`relay-bootstrap.sh`** with no manifest — you get a checkbox-style list (**`[x]`** = clone). Defaults: **relay-template**, **relay-server**, **songwalker-library** (GitLab `clevertree/*` URLs in **`relay-bootstrap.sh`**). Toggle with **`1` `2` `3`**, **`a`** = all, **`n`** = none, **Enter** = proceed.
 
 ```bash
 export RELAY_SERVER_ID=relay-dallas1

@@ -221,7 +221,7 @@ handles:
 3. **DNS Registration**: Registers with Vercel DNS when `VERCEL_API_TOKEN` is provided
 4. **Nginx Proxy Configuration**: Automatically configures nginx to proxy HTTPS to the relay-server
 
-**Bare metal (Linode tarball):** **`install.sh`** runs the same Vercel DNS flow **first** (FQDN + token, or skip with **`RELAY_SKIP_VERCEL_DNS=1`**). See **[`docs/DEPLOY_LINODE.md`](docs/DEPLOY_LINODE.md)**. Planned **Next.js + CI + multi-site** layout: **[`docs/DEPLOY_WEB_AND_CI.md`](docs/DEPLOY_WEB_AND_CI.md)**.
+**Bare metal (Linode tarball):** **`install.sh`** runs the same Vercel DNS flow **first** (FQDN + token, or skip with **`RELAY_SKIP_VERCEL_DNS=1`**). See **[`docs/DEPLOY_LINODE.md`](docs/DEPLOY_LINODE.md)** and **[`docs/DEPLOY_SELF_HOSTED.md`](docs/DEPLOY_SELF_HOSTED.md)** (build/publish tarball without cloud CI). Planned **Next.js + CI + multi-site** layout: **[`docs/DEPLOY_WEB_AND_CI.md`](docs/DEPLOY_WEB_AND_CI.md)**.
 
 Example container run with SSL:
 

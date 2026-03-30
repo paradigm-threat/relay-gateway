@@ -1,0 +1,15 @@
+# Minimum launch config (copy to path in RELAY_AUTHORIZED_REPOS_PATH).
+# 1) relay_server_id — unique name; must equal RELAY_SERVER_ID env.
+# 2) repos — each whitelisted bare repo name MUST have anchor_commit + branch even if data/<name>.git
+#    does not exist yet (prevents unrelated history from squatting the name via first push).
+#    Use: git rev-parse refs/heads/<branch> on the trusted remote for the real repo.
+
+relay_server_id: relay-atlanta1
+
+repos:
+  snesology-presets:
+    anchor_commit: "0000000000000000000000000000000000000000" # replace with real 40-char commit from trusted repo
+    branch: main
+  paradigm-threat-presets:
+    anchor_commit: "0000000000000000000000000000000000000000"
+    branch: main

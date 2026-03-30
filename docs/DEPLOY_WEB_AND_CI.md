@@ -91,7 +91,7 @@ Multiple repos may request a rebuild close together; **only one build should run
 
 Aligned with **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** and **[`SERVER_HOOKS.md`](./SERVER_HOOKS.md)**:
 
-- **Anchor checks** remain **standard for all relay nodes** for repos in **`authorized-repos.yaml`** (`POST /git-pull`, bootstrap, etc.).
+- **Anchor checks** remain **standard for all relay nodes** for repos in **`authorized-repos.yaml`** (`POST /git-pull`, bootstrap, etc.). Each whitelisted name must list **`anchor_commit` (and branch) before `data/<name>.git` exists** so unrelated history cannot squat the reserved name; see **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** (*Whitelist slots*). **`git push`** over the daemon should enforce the same rule in **`pre-receive`** (planned).
 - **Per-repo policy** continues to come from **`.relay.yaml`** (and hooks) **in the repository**, except for **machine-local or installer-written** snippets under paths owned by **`install.sh`** / **`update`** (document those paths when implemented so operators know what is not from Git).
 
 ### Working-tree size cap for non-authorized repos (planned)
