@@ -1,5 +1,9 @@
 # Deploy relay-server to Linode (bare metal — no Docker)
 
+**See also:** **[`DEPLOY_WEB_AND_CI.md`](./DEPLOY_WEB_AND_CI.md)** — Next.js, reverse proxy, self-hosted CI, multi-site on one VM, and planned trust/size policy (documentation only until implemented).
+
+**DNS / IPs:** For the current phase, **public IPs can be set manually**; automated DNS (Vercel API or other) remains optional via **`RELAY_SKIP_VERCEL_DNS=1`** or the existing Vercel flow below.
+
 ## Recommended plan
 
 | Step | What |

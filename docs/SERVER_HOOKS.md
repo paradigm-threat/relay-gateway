@@ -6,9 +6,12 @@ Relay repositories are governed by a unified configuration file `.relay.yaml` lo
 
 **Minimum server launch:** **`RELAY_SERVER_ID`** + **`RELAY_AUTHORIZED_REPOS_PATH`** (repo list + **`anchor_commit`** per repo). See **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**.
 
+**Planned ops overlap:** Installer-managed site deploy config (Caddy/Next) and a **50 MB default-branch working-tree cap** for **non-authorized** repos are described in **[`DEPLOY_WEB_AND_CI.md`](./DEPLOY_WEB_AND_CI.md)**; per-repo **`.relay.yaml`** remains the source of truth for hook/trust behavior **except** paths/files owned solely by **`install.sh` / `update`** (to be listed when implemented).
+
 | Concern | Mechanism |
 |---------|-----------|
 | **Pull validation** | Only repos listed in **`authorized-repos.yaml`**; after fetch, **`anchor_commit`** must be ancestor of branch tip. |
+| **Branch names vs host slugs** | Planned: **`pre-receive`** rejects **`refs/heads/*`** updates that violate **[`DEPLOY_WEB_AND_CI.md`](./DEPLOY_WEB_AND_CI.md)** §9 (non-empty canonical slug; **unique** slug across branches) so **`Host`**-based branch selection cannot collide. |
 | Who may push **content** | Signed commits + **`allowedKeys`** / **`allowedKeyFingerprints`**; server hooks validate every change. |
 | Which **Relay nodes** may participate | **`git.relayTrust.authorizedServerIds`**; **`autoPush.originList`** aligned with that list. |
 | New nodes | **`RELAY_SERVER_ID`** + **`relay-bootstrap.sh`** + same **authorized-repos** policy. |

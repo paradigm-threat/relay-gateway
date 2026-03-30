@@ -10,7 +10,7 @@ Implements the Relay API over bare Git repositories with static directory servin
 - Detailed 404 error messages showing searched paths, repos, and branches
 - JSX/TSX transpilation via hook-transpiler WASM
 - Optional HTTPS support with automatic certificate loading
-- CORS-enabled; responses may include informational `X-Relay-Repo` / `X-Relay-Branch` (not used for routing)
+- CORS-enabled; responses may include informational headers (e.g. echo of resolved repo/branch — **not** input channels). **`X-Relay-Branch` is deprecated**; branch selection is **Host-only** — see **[`docs/DEPLOY_WEB_AND_CI.md`](docs/DEPLOY_WEB_AND_CI.md)** §8–§11.
 
 Install-time **optional capabilities** (Piper TTS, offline Argos translation, npm hook packages) are recorded in **`state/features.json`** and advertised in **`GET /api/config` → `installed_features`** so peers know what each node offers. See **[docs/INSTALL_FEATURES.md](docs/INSTALL_FEATURES.md)**.
 
@@ -23,9 +23,9 @@ Endpoints
 
 - OPTIONS / and OPTIONS /* — discovery endpoint returning capabilities, branches, repos, current selections, and branch
   HEAD commits (branchHeads). The **current repo** is derived from the HTTP **`Host`** header (see below).
-- GET /{path} — read file from the bare repo named by **`Host`**: `{repo}.{RELAY_PUBLIC_HOSTNAME}` (e.g.
-  `snesology-library.atlanta1.example.net`). Branch: optional **`X-Relay-Branch`** (default **`main`**). There is **no**
-  `X-Relay-Repo`, **`?repo=`**, or **`?branch=`** routing.
+- GET /{path} — read file from the bare repo and branch implied by **`Host`**: `{repo}.{RELAY_PUBLIC_HOSTNAME}` or
+  `{repo}{DELIM}{branch-slug}.{RELAY_PUBLIC_HOSTNAME}` (see **[`docs/DEPLOY_WEB_AND_CI.md`](docs/DEPLOY_WEB_AND_CI.md)** §8).
+  Default branch when the host label has **no** delimiter. There is **no** **`X-Relay-Branch`**, **`X-Relay-Repo`**, **`?repo=`**, or **`?branch=`** routing (planned: **`X-Relay-Branch`** removed from implementation).
     - If the path resolves to a directory, returns a markdown listing with breadcrumbs and links.
     - If the file/dir is missing, returns 404 with `text/html` body. If `/site/404.md` exists on that branch, it is
       rendered; otherwise a default page plus a parent directory listing is returned. Global and per-directory CSS are
@@ -36,8 +36,8 @@ Endpoints
 - DELETE /{path} — delete file and commit; same **`Host`** / branch rules as GET.
 - QUERY * — Custom method for YAML-driven query using the local PoloDB index built by hooks (no POST alias).
     - Pagination defaults: pageSize=25, page=0; can override via request body
-    - Header X-Relay-Branch may be a branch name or `all` to query across branches
-    - Request body (generic): `{ filter?: object, page?: number, pageSize?: number, sort?: [{ field, dir }] }`
+    - **Branch / `all`:** moving to **request body** (no **`X-Relay-Branch`**); see **[`docs/DEPLOY_WEB_AND_CI.md`](docs/DEPLOY_WEB_AND_CI.md)** §9.
+    - Request body (generic): `{ filter?: object, page?: number, pageSize?: number, sort?: [{ field, dir }], branch?: string }` (exact schema TBD)
     - Response: `{ total, page, pageSize, items }`
 
 ## Repository Infrastructure
@@ -76,8 +76,8 @@ The server includes a native `relay-hook-handler` binary that should be symlinke
 
 ## Headers
 
-- **`Host`**: Selects the bare repo: `{repo-name}.{RELAY_PUBLIC_HOSTNAME}` (repo name without `.git`; must match a directory `{repo}.git` under `RELAY_REPO_PATH`).
-- `X-Relay-Branch`: Optional branch (default: `main`). **`X-Relay-Repo` is not supported** for routing.
+- **`Host`**: Selects bare repo and optional branch via **one** DNS label before **`{RELAY_PUBLIC_HOSTNAME}`** — see **[`docs/DEPLOY_WEB_AND_CI.md`](docs/DEPLOY_WEB_AND_CI.md)** §8. Repo name without `.git`; must match `{repo}.git` under `RELAY_REPO_PATH`.
+- **`X-Relay-Branch`:** **not supported** (deprecated; removal planned — §11 in same doc). Use **Host** label form only.
 
 ## Env
 
@@ -171,9 +171,9 @@ The entrypoint script will:
       [Ctrl+D]
     - Fetch it:
       curl -i "http://localhost:8080/README.md?branch=main"
-    - Query (QUERY method):
-      curl -i -X QUERY "http://localhost:8080" -H "X-Relay-Branch: main" -H "Content-Type: application/json"
-      --data '{"filter":{"title":"Inception"}}'
+    - Query (QUERY method; use **Host** `repo.localhost` and body for branch — **`X-Relay-Branch` deprecated**):
+      curl -i -X QUERY "http://localhost:8080" -H "Host: relay-template.localhost" -H "Content-Type: application/json"
+      --data '{"branch":"main","filter":{"title":"Inception"}}'
 
 Serving order (GET requests)
 
@@ -221,7 +221,7 @@ handles:
 3. **DNS Registration**: Registers with Vercel DNS when `VERCEL_API_TOKEN` is provided
 4. **Nginx Proxy Configuration**: Automatically configures nginx to proxy HTTPS to the relay-server
 
-**Bare metal (Linode tarball):** **`install.sh`** runs the same Vercel DNS flow **first** (FQDN + token, or skip with **`RELAY_SKIP_VERCEL_DNS=1`**). See **[`docs/DEPLOY_LINODE.md`](docs/DEPLOY_LINODE.md)**.
+**Bare metal (Linode tarball):** **`install.sh`** runs the same Vercel DNS flow **first** (FQDN + token, or skip with **`RELAY_SKIP_VERCEL_DNS=1`**). See **[`docs/DEPLOY_LINODE.md`](docs/DEPLOY_LINODE.md)**. Planned **Next.js + CI + multi-site** layout: **[`docs/DEPLOY_WEB_AND_CI.md`](docs/DEPLOY_WEB_AND_CI.md)**.
 
 Example container run with SSL:
 
