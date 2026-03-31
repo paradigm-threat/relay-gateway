@@ -95,6 +95,8 @@ ssh root@IP 'cd /root && tar xzf relay-linode-deploy.tgz && sudo ./install.sh in
 
 **Ports:** HTTP **8080**, git daemon **9418**, Piper HTTP **5590** (if enabled). Data **`/opt/relay/data`**.
 
+**Port 80 (optional):** **`relay-server` binds :8080** by default. URLs like **`http://repo.node.example/index.json`** (no port) hit **:80** and will **time out** unless something listens there. A lightweight fix is **UFW + iptables REDIRECT** so **:80 → :8080** on the same host: add **`80/tcp`** to **`ufw allow`**, then in **`/etc/ufw/before.rules`** and **`/etc/ufw/before6.rules`** (before the **`*filter`** block) a **`*nat`** table with **`PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 8080`**, then **`ufw reload`**. Alternatively use **Caddy/nginx** on **:80** reverse-proxying to **127.0.0.1:8080** (better if you add TLS on **:443** later).
+
 **State:** **`/opt/relay/state/features.json`** records enabled features, ports, and **inventories** (Piper voices, Argos language pairs, npm package list). **`relay-server`** reads it (`RELAY_FEATURES_STATE_PATH` in the unit file) and exposes it under **`GET /api/config`** → **`installed_features`** (`manifest` + `summary`). Peers and clients use that to see what each node offers.
 
 **Feature catalog (Piper TTS, offline translation, npm extensions, subfeatures):** **[INSTALL_FEATURES.md](./INSTALL_FEATURES.md)**.
