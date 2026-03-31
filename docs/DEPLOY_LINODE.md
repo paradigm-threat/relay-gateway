@@ -95,7 +95,17 @@ ssh root@IP 'cd /root && tar xzf relay-linode-deploy.tgz && sudo ./install.sh in
 
 **Ports:** HTTP **8080**, git daemon **9418**, Piper HTTP **5590** (if enabled). Data **`/opt/relay/data`**.
 
-**Port 80 (optional):** **`relay-server` binds :8080** by default. URLs like **`http://repo.node.example/index.json`** (no port) hit **:80** and will **time out** unless something listens there. A lightweight fix is **UFW + iptables REDIRECT** so **:80 → :8080** on the same host: add **`80/tcp`** to **`ufw allow`**, then in **`/etc/ufw/before.rules`** and **`/etc/ufw/before6.rules`** (before the **`*filter`** block) a **`*nat`** table with **`PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 8080`**, then **`ufw reload`**. Alternatively use **Caddy/nginx** on **:80** reverse-proxying to **127.0.0.1:8080** (better if you add TLS on **:443** later).
+**Port 80 / 443 (recommended):** **`relay-server` listens on :8080**. For **`http://` and `https://` without a port** and for **Let’s Encrypt**, use **Caddy** in front:
+
+1. From the deploy tarball (or repo **`scripts/`**): **`sudo -E bash install-caddy-tls.sh`** with **`RELAY_PUBLIC_HOSTNAME`** (same as **`relay.env`**) and **`CADDY_EMAIL`** (Let’s Encrypt account).
+2. **On-demand TLS:** the first **`https://{repo}.{node}/…`** request obtains a certificate for that hostname (HTTP-01). A small local service (**`relay-caddy-ask`**) only approves names matching **`{node}`** or **`*.{node}`** (one repo label), same rule as relay **`Host`** routing.
+3. **UFW:** the script allows **80** and **443** (before starting Caddy, so ports open even if the first config fails); **8080** can stay allowed for debugging or be restricted later.
+
+4. **IPv6:** if **`https://…`** hangs from some networks but **`curl -4 https://…`** works, the host’s **AAAA** path may be broken (Linode routing/firewall or no listener on v6). Fix server IPv6 or temporarily drop **AAAA** for that name in DNS.
+
+If you previously used the **iptables :80 → :8080** redirect, **`install-caddy-tls.sh`** removes that block so **Caddy** can bind **:80**.
+
+**Legacy one-liner (no TLS):** UFW **`*nat` `REDIRECT`** **:80 → :8080** is documented in git history only; prefer Caddy for production.
 
 **State:** **`/opt/relay/state/features.json`** records enabled features, ports, and **inventories** (Piper voices, Argos language pairs, npm package list). **`relay-server`** reads it (`RELAY_FEATURES_STATE_PATH` in the unit file) and exposes it under **`GET /api/config`** → **`installed_features`** (`manifest` + `summary`). Peers and clients use that to see what each node offers.
 

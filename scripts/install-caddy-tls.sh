@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# Install Caddy on :80 and :443 → relay-server on 127.0.0.1:8080 with Let's Encrypt (on-demand TLS).
+# Removes the legacy UFW PREROUTING :80→:8080 redirect block (relay NAT hack) if present.
+#
+# Required env:
+#   RELAY_PUBLIC_HOSTNAME — node FQDN, e.g. atlanta3.relaygateway.net
+#   CADDY_EMAIL          — email for Let's Encrypt (e.g. ops@example.com)
+#
+# Optional:
+#   RELAY_HTTP_PORT      — upstream port (default 8080)
+#   RELAY_INSTALL_ROOT   — copy caddy-ask.py from here if set (default: directory of this script)
+#
+# Run: sudo -E bash scripts/install-caddy-tls.sh
+set -euo pipefail
+
+need_root() {
+  [[ "$(id -u)" == "0" ]] || { echo "run as root" >&2; exit 1; }
+}
+
+NODE_FQDN="${RELAY_PUBLIC_HOSTNAME:?set RELAY_PUBLIC_HOSTNAME}"
+EMAIL="${CADDY_EMAIL:?set CADDY_EMAIL (ACME registration email)}"
+UPSTREAM="${RELAY_HTTP_PORT:-8080}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+remove_ufw_nat_redirect_80() {
+  command -v python3 >/dev/null || return 0
+  for f in /etc/ufw/before.rules /etc/ufw/before6.rules; do
+    [[ -f "$f" ]] || continue
+    python3 - "$f" <<'PY' || true
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+t = p.read_text()
+old = """# Redirect HTTP :80 -> relay-server :8080 (URLs without :8080)
+*nat
+:PREROUTING ACCEPT [0:0]
+-A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 8080
+COMMIT
+
+"""
+if old in t:
+    p.write_text(t.replace(old, "", 1))
+    print("removed NAT redirect from", p)
+PY
+  done
+}
+
+install_caddy_repo() {
+  apt-get update -qq
+  apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
+  if [[ ! -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg ]]; then
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  fi
+  if [[ ! -f /etc/apt/sources.list.d/caddy-stable.list ]]; then
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
+  fi
+  apt-get update -qq
+  apt-get install -y caddy
+}
+
+install_ask_service() {
+  install -d -m 755 /usr/local/lib/relay
+  install -m 755 "$SCRIPT_DIR/caddy-ask.py" /usr/local/lib/relay/caddy-ask.py
+
+  cat >/etc/systemd/system/relay-caddy-ask.service <<EOF
+[Unit]
+Description=Allowlist for Caddy on-demand TLS (relay)
+After=network.target
+
+[Service]
+Type=simple
+Environment=RELAY_NODE_FQDN=${NODE_FQDN}
+ExecStart=/usr/bin/python3 /usr/local/lib/relay/caddy-ask.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+write_caddyfile() {
+  cat >/etc/caddy/Caddyfile <<EOF
+{
+	email ${EMAIL}
+	on_demand_tls {
+		ask http://127.0.0.1:3999/allow
+	}
+}
+
+:80 {
+	reverse_proxy 127.0.0.1:${UPSTREAM}
+}
+
+https:// {
+	tls {
+		on_demand
+	}
+	reverse_proxy 127.0.0.1:${UPSTREAM}
+}
+EOF
+}
+
+ufw_allow_web() {
+  command -v ufw >/dev/null || return 0
+  ufw allow 80/tcp comment 'Caddy HTTP' 2>/dev/null || true
+  ufw allow 443/tcp comment 'Caddy HTTPS' 2>/dev/null || true
+  ufw reload
+}
+
+need_root
+remove_ufw_nat_redirect_80
+install_caddy_repo
+install_ask_service
+write_caddyfile
+
+# Open 80/443 before starting Caddy so a failed first start still leaves firewall ready.
+ufw_allow_web
+
+install -d -m 755 /etc/systemd/system/caddy.service.d
+cat >/etc/systemd/system/caddy.service.d/relay-ask.conf <<'EOF'
+[Unit]
+After=relay-caddy-ask.service
+Requires=relay-caddy-ask.service
+EOF
+
+systemctl daemon-reload
+systemctl enable relay-caddy-ask
+systemctl restart relay-caddy-ask
+systemctl enable caddy
+systemctl restart caddy
+
+echo "Caddy + Lets Encrypt (on-demand TLS) installed."
+echo "Test HTTP:  curl -sI http://paradigm-threat-files.${NODE_FQDN}/index.json | head -3"
+echo "Test HTTPS: curl -sI https://paradigm-threat-files.${NODE_FQDN}/index.json | head -5"
