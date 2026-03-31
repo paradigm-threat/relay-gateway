@@ -27,6 +27,18 @@ pub fn open_repo(root: &PathBuf, name: &str) -> Option<Repository> {
     Repository::open_bare(p).ok()
 }
 
+/// Default branch name from the bare repo's symbolic `HEAD` (e.g. `refs/heads/master` → `master`).
+/// Used when the client sends no branch header. Returns `None` if `HEAD` is missing or not symbolic.
+pub fn default_branch_from_bare_head(root: &PathBuf, name: &str) -> Option<String> {
+    let repo = open_repo(root, name)?;
+    let head = repo.find_reference("HEAD").ok()?;
+    let target = head.symbolic_target()?;
+    target
+        .strip_prefix("refs/heads/")
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /// Read .relay.yaml configuration from git tree for the given revision (branch name or commit hash)
 pub fn read_relay_config(repo: &Repository, rev: &str) -> Option<crate::types::RelayConfig> {
     let obj = repo.revparse_single(rev).ok()?;

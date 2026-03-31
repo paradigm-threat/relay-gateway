@@ -375,9 +375,9 @@ pub async fn options_capabilities(
     headers: HeaderMap,
     _query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
-    let branch = helpers::branch_from(&headers);
     let repo_name =
         helpers::repo_from_host(&state.repo_path, state.node_fqdn.as_deref(), &headers);
+    let branch = helpers::branch_for_request(&headers, &state.repo_path, repo_name.as_deref());
 
     let repo_names = git::bare_repo_names(&state.repo_path);
     let mut repos_json: Vec<serde_json::Value> = Vec::new();

@@ -15,14 +15,13 @@ pub async fn handle_query(
     _query: Option<Query<HashMap<String, String>>>,
     body: Option<Json<serde_json::Value>>,
 ) -> impl IntoResponse {
-    let branch = helpers::branch_from(&headers);
     let repo_name_opt =
         helpers::repo_from_host(&state.repo_path, state.node_fqdn.as_deref(), &headers);
-    
     let repo_name = match repo_name_opt {
         Some(name) => name,
         None => return (StatusCode::BAD_REQUEST, "Host must be {repo}.{RELAY_PUBLIC_HOSTNAME}").into_response(),
     };
+    let branch = helpers::branch_for_request(&headers, &state.repo_path, Some(repo_name.as_str()));
 
     // Use path as query if it's not "query" (legacy) and not empty
     let mut query_val = if !path.is_empty() && path != "query" {

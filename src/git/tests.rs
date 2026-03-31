@@ -72,4 +72,25 @@ git:
         let config = read_relay_config(&repo, "main");
         assert!(config.is_none());
     }
+
+    #[test]
+    fn test_default_branch_from_bare_head_master() {
+        use crate::git::repo::default_branch_from_bare_head;
+        use std::path::PathBuf;
+        let td = tempdir().unwrap();
+        let root: PathBuf = td.path().to_path_buf();
+        let repo_path = root.join("r.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+        let tb = repo.treebuilder(None).unwrap();
+        let tid = tb.write().unwrap();
+        let tree = repo.find_tree(tid).unwrap();
+        repo.commit(Some("refs/heads/master"), &sig, &sig, "x", &tree, &[])
+            .unwrap();
+        repo.set_head("refs/heads/master").unwrap();
+        assert_eq!(
+            default_branch_from_bare_head(&root, "r").as_deref(),
+            Some("master")
+        );
+    }
 }

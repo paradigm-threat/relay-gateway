@@ -77,9 +77,9 @@ pub async fn head_file(
 ) -> impl IntoResponse {
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
 
-    let branch = helpers::branch_from(&headers);
     let repo_name_opt =
         helpers::repo_from_host(&state.repo_path, state.node_fqdn.as_deref(), &headers);
+    let branch = helpers::branch_for_request(&headers, &state.repo_path, repo_name_opt.as_deref());
     let repo_name: String;
     if repo_name_opt.is_none() {
         // No repo selected: treat as Git 404 and check static for existence

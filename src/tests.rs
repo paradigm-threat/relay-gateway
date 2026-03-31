@@ -109,6 +109,34 @@ mod tests {
         assert_eq!(body_bytes, file_content);
     }
 
+    /// GET without X-Relay-Branch uses bare repo HEAD (e.g. master-only repos).
+    #[tokio::test]
+    async fn test_get_file_uses_bare_head_default_branch() {
+        let repo_dir = tempdir().unwrap();
+        let repo_path = repo_dir.path().join("repo.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("relay", "relay@local").unwrap();
+        let file_content = b"from-master";
+        let blob_oid = repo.blob(file_content).unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert("index.json", blob_oid, 0o100644).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/master"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        repo.set_head("refs/heads/master").unwrap();
+
+        let state = test_state(repo_dir.path().to_path_buf());
+        let headers = host_header("repo");
+        let response =
+            handlers::handle_get_file(State(state), headers, AxPath("index.json".to_string()), None)
+                .await;
+        let (parts, body) = response.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        assert_eq!(body_bytes.to_vec(), file_content);
+    }
+
     /// Test GET returns 404 when file doesn't exist
     #[tokio::test]
     async fn test_get_file_not_found() {

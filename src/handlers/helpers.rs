@@ -52,11 +52,28 @@ pub fn repo_from_host(
     repo_slug_from_host(h, node, &names)
 }
 
-/// Resolve the branch name from `X-Relay-Branch` header, defaults to **main**.
+/// Resolve the branch name from `X-Relay-Branch` header only, defaults to **main**.
+/// For HTTP handlers that know the repo, prefer [`branch_for_request`] so the bare repo's `HEAD` is used.
 pub fn branch_from(headers: &HeaderMap) -> String {
     if let Some(h) = headers.get(crate::types::HEADER_BRANCH).and_then(|v| v.to_str().ok()) {
         if !h.is_empty() {
             return h.to_string();
+        }
+    }
+    crate::types::DEFAULT_BRANCH.to_string()
+}
+
+/// Branch for a request: optional `X-Relay-Branch`, else bare repo `HEAD` target, else **`main`**.
+/// Lets `GET http://repo.node/file` work when the default branch is **`master`** (no extra headers).
+pub fn branch_for_request(headers: &HeaderMap, repo_root: &PathBuf, repo_name: Option<&str>) -> String {
+    if let Some(h) = headers.get(crate::types::HEADER_BRANCH).and_then(|v| v.to_str().ok()) {
+        if !h.is_empty() {
+            return h.to_string();
+        }
+    }
+    if let Some(name) = repo_name {
+        if let Some(b) = crate::git::default_branch_from_bare_head(repo_root, name) {
+            return b;
         }
     }
     crate::types::DEFAULT_BRANCH.to_string()

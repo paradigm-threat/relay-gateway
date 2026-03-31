@@ -24,7 +24,6 @@ pub async fn put_file(
     body: Bytes,
 ) -> impl IntoResponse {
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
-    let branch = helpers::branch_from(&headers);
     let repo_name = match helpers::repo_from_host(&state.repo_path, state.node_fqdn.as_deref(), &headers) {
         Some(r) => r,
         None => {
@@ -35,6 +34,7 @@ pub async fn put_file(
                 .into_response();
         }
     };
+    let branch = helpers::branch_for_request(&headers, &state.repo_path, Some(repo_name.as_str()));
     match write_file_to_repo(&state.repo_path, &repo_name, &branch, &decoded, &body) {
         Ok((commit, branch)) => {
             Json(serde_json::json!({"commit": commit, "branch": branch, "path": decoded}))
@@ -60,11 +60,11 @@ pub async fn delete_file(
     _query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
-    let branch = helpers::branch_from(&headers);
     let repo_name = match helpers::repo_from_host(&state.repo_path, state.node_fqdn.as_deref(), &headers) {
         Some(r) => r,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
+    let branch = helpers::branch_for_request(&headers, &state.repo_path, Some(repo_name.as_str()));
     match delete_file_in_repo(&state.repo_path, &repo_name, &branch, &decoded) {
         Ok((commit, branch)) => {
             Json(serde_json::json!({"commit": commit, "branch": branch, "path": decoded}))

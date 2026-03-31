@@ -25,7 +25,7 @@ Endpoints
   HEAD commits (branchHeads). The **current repo** is derived from the HTTP **`Host`** header (see below).
 - GET /{path} — read file from the bare repo and branch implied by **`Host`**: `{repo}.{RELAY_PUBLIC_HOSTNAME}` or
   `{repo}{DELIM}{branch-slug}.{RELAY_PUBLIC_HOSTNAME}` (see **[`docs/DEPLOY_WEB_AND_CI.md`](docs/DEPLOY_WEB_AND_CI.md)** §8).
-  Default branch when the host label has **no** delimiter. There is **no** **`X-Relay-Branch`**, **`X-Relay-Repo`**, **`?repo=`**, or **`?branch=`** routing (planned: **`X-Relay-Branch`** removed from implementation).
+  **Default branch** when the host label has **no** delimiter: the bare repo’s symbolic **`HEAD`** (e.g. **`master`** after `git push` if that is the default), else **`main`**. Optional override: **`X-Relay-Branch`** (deprecated; prefer Host branch slug when §8 delimiter is in use). Browsers send **`Host`** automatically for `http://repo.node/...` **if DNS** resolves **`repo.node`** (often a wildcard **`*.your-node-fqdn`** → server IP).
     - If the path resolves to a directory, returns a markdown listing with breadcrumbs and links.
     - If the file/dir is missing, returns 404 with `text/html` body. If `/site/404.md` exists on that branch, it is
       rendered; otherwise a default page plus a parent directory listing is returned. Global and per-directory CSS are
