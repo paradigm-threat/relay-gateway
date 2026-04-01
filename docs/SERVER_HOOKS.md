@@ -4,18 +4,18 @@ Relay repositories are governed by a unified configuration file `.relay.yaml` lo
 
 ## Trust, authorized servers, and bootstrap (normative)
 
-**Minimum server launch:** **`RELAY_SERVER_ID`** + **`RELAY_AUTHORIZED_REPOS_PATH`** (repo list + **`anchor_commit`** per repo). See **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**.
+**Minimum server launch:** **`RELAY_SERVER_ID`** + allowlist via **`RELAY_MASTER_CATALOG_PATH`** ( **`relay-master` worktree** ) or **`RELAY_AUTHORIZED_REPOS_PATH`** (YAML). Optional **`RELAY_MASTER_TRUST_ROOT`** pins the catalog checkout. See **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**.
 
 **Planned ops overlap:** Installer-managed site deploy config (Caddy/Next) and a **50 MB default-branch working-tree cap** for **non-authorized** repos are described in **[`DEPLOY_WEB_AND_CI.md`](./DEPLOY_WEB_AND_CI.md)**; per-repo **`.relay.yaml`** remains the source of truth for hook/trust behavior **except** paths/files owned solely by **`install.sh` / `update`** (to be listed when implemented).
 
 | Concern | Mechanism |
 |---------|-----------|
-| **Pull validation** | Only repos listed in **`authorized-repos.yaml`**; after fetch, **`anchor_commit`** must be ancestor of branch tip. |
-| **Push / anti-squat (whitelisted names)** | **`anchor_commit`** must be recorded in YAML **before** the bare repo exists; **`pre-receive`** should reject pushes whose branch tips do not contain that anchor (same ancestry rule as pull) — **planned**; see **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**. |
+| **Pull validation** | Only repos listed in **`authorized-repos.yaml`**; after fetch, **`anchor_commit`** must be ancestor of branch tip. Rows are normally emitted from **`relay-master`** (**`relayRootCommit`**). |
+| **Push / anti-squat (whitelisted names)** | **`anchor_commit`** / **`relayRootCommit`** must be recorded **before** the bare repo exists; **`pre-receive`** should reject pushes whose branch tips do not contain that anchor (same ancestry rule as pull) — **planned**; see **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**. |
 | **Branch names vs host slugs** | Planned: **`pre-receive`** rejects **`refs/heads/*`** updates that violate **[`DEPLOY_WEB_AND_CI.md`](./DEPLOY_WEB_AND_CI.md)** §9 (non-empty canonical slug; **unique** slug across branches) so **`Host`**-based branch selection cannot collide. |
 | Who may push **content** | Signed commits + **`allowedKeys`** / **`allowedKeyFingerprints`**; server hooks validate every change. |
 | Which **Relay nodes** may participate | **`git.relayTrust.authorizedServerIds`**; **`autoPush.originList`** aligned with that list. |
-| New nodes | **`RELAY_SERVER_ID`** + **`relay-bootstrap.sh`** + same **authorized-repos** policy. |
+| New nodes | **`RELAY_SERVER_ID`** + same **`relay-master`** revision → **`sync-relay-catalog.sh --write-authorized-repos`**. **`relay-bootstrap.sh`** is optional for extra dev clones, not the catalog allowlist. |
 
 Until **`allowedKeys` / fingerprint matching** is fully enforced in Rust, combine **`requireSigned: true`** with strict firewall rules on **9418**.
 

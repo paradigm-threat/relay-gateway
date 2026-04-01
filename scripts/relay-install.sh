@@ -8,6 +8,9 @@
 # Vercel DNS (first step of install unless skipped):
 #   RELAY_PUBLIC_FQDN=atlanta1.relaygateway.net VERCEL_API_TOKEN=... sudo -E ./install.sh install
 #   Optional: VERCEL_TEAM_ID, RELAY_VERCEL_DOMAIN (zone), RELAY_SKIP_VERCEL_DNS=1
+#
+# Master mesh peers: RELAY_MASTER_PEER_LIST defaults to DEFAULT_RELAY_MASTER_PEER_LIST (override per node).
+# See docs/RELAY_MESH_NETWORKING_PLAN.md — this list is the bootstrap set of mesh / “master” relay FQDNs.
 set -euo pipefail
 
 INSTALL="${RELAY_INSTALL_ROOT:-/opt/relay}"
@@ -21,6 +24,9 @@ STATE_DIR="$INSTALL/state"
 FEATURES_JSON="$STATE_DIR/features.json"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION_MARKER="2"
+
+# Semicolon-separated FQDNs; used when RELAY_MASTER_PEER_LIST is unset (non-interactive) or when the operator accepts the interactive default (Enter).
+DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-atlanta3.relaygateway.net;jp-osa.relaygateway.net}"
 
 log() { echo "[relay-install] $*" >&2; }
 die() { echo "[relay-install] ERROR: $*" >&2; exit 1; }
@@ -363,7 +369,7 @@ install_binaries() {
   [[ -f "$src/relay-server" ]] || src="."
   [[ -f "$src/relay-server" ]] || die "relay-server binary not found (place in $SCRIPT_DIR or cwd)"
   [[ -f "$src/relay-hook-handler" ]] || die "relay-hook-handler binary not found beside relay-server in $src"
-  mkdir -p "$INSTALL/bin" "$INSTALL/hooks" "$INSTALL/data" "$INSTALL/logs" "$INSTALL/www"
+  mkdir -p "$INSTALL/bin" "$INSTALL/hooks" "$INSTALL/data" "$INSTALL/logs" "$INSTALL/www" "$INSTALL/src"
   _copy_bin_if_needed() {
     local s="$1" d="$2"
     if [[ -f "$d" ]] && [[ "$(stat -c '%d:%i' "$s")" == "$(stat -c '%d:%i' "$d")" ]]; then
@@ -373,7 +379,13 @@ install_binaries() {
   }
   _copy_bin_if_needed "$src/relay-server" "$INSTALL/bin/relay-server"
   _copy_bin_if_needed "$src/relay-hook-handler" "$INSTALL/bin/relay-hook-handler"
+  if [[ -f "$src/relay-startup-catalog-sync.sh" ]]; then
+    _copy_bin_if_needed "$src/relay-startup-catalog-sync.sh" "$INSTALL/bin/relay-startup-catalog-sync.sh"
+  elif [[ -f "$SCRIPT_DIR/relay-startup-catalog-sync.sh" ]]; then
+    cp -f "$SCRIPT_DIR/relay-startup-catalog-sync.sh" "$INSTALL/bin/relay-startup-catalog-sync.sh"
+  fi
   chmod +x "$INSTALL/bin/relay-server" "$INSTALL/bin/relay-hook-handler"
+  [[ -f "$INSTALL/bin/relay-startup-catalog-sync.sh" ]] && chmod +x "$INSTALL/bin/relay-startup-catalog-sync.sh"
   chown -R relay:relay "$INSTALL"
   for h in pre-receive post-receive post-update; do
     ln -sf "$INSTALL/bin/relay-hook-handler" "$INSTALL/hooks/$h"
@@ -392,7 +404,8 @@ write_systemd_core() {
   cat >/etc/systemd/system/relay-server.service <<EOF
 [Unit]
 Description=Relay HTTP server
-After=network.target
+After=network.target relay-git-daemon.service
+Wants=relay-git-daemon.service
 
 [Service]
 Type=simple
@@ -400,12 +413,14 @@ User=relay
 Group=relay
 WorkingDirectory=$INSTALL
 Environment=RELAY_REPO_PATH=$INSTALL/data
+Environment=RELAY_INSTALL_ROOT=$INSTALL
 Environment=RELAY_STATIC_DIR=$INSTALL/www
 Environment=RELAY_HTTP_PORT=$HTTP_PORT
 Environment=RELAY_BIND=0.0.0.0:$HTTP_PORT
 Environment=RELAY_FEATURES_STATE_PATH=$FEATURES_JSON
 Environment=RUST_LOG=info
 EnvironmentFile=-$INSTALL/relay.env
+ExecStartPre=$INSTALL/bin/relay-startup-catalog-sync.sh
 ExecStart=$INSTALL/bin/relay-server serve
 Restart=always
 RestartSec=3
@@ -752,14 +767,19 @@ append_relay_env_server_id() {
   echo "RELAY_SERVER_ID=$id" >>"$f"
 }
 
-# Semicolon-separated peer hostnames for /api/config and future sync (RELAY_MASTER_PEER_LIST).
+# Semicolon-separated peer hostnames for /api/config and mesh sync (RELAY_MASTER_PEER_LIST).
+# This is also the bootstrap list of designated “master” / mesh anchor relays unless overridden.
 append_relay_env_peer_list() {
   local f="$INSTALL/relay.env"
   local peers=""
   if [[ "${RELAY_INSTALL_NONINTERACTIVE:-}" == "1" ]]; then
-    peers="${RELAY_MASTER_PEER_LIST:-}"
+    peers="${RELAY_MASTER_PEER_LIST:-$DEFAULT_RELAY_MASTER_PEER_LIST}"
   elif [[ -t 0 ]]; then
-    read -r -p "Other relay nodes already running (semicolon-separated FQDNs for sync/discovery; empty if none) [e.g. atlanta1.relaygateway.net]: " peers
+    read -r -p "Master mesh relay peers — semicolon-separated FQDNs [${DEFAULT_RELAY_MASTER_PEER_LIST}]: " peers
+    peers="${peers// /}"
+    [[ -z "$peers" ]] && peers="$DEFAULT_RELAY_MASTER_PEER_LIST"
+  else
+    peers="${RELAY_MASTER_PEER_LIST:-$DEFAULT_RELAY_MASTER_PEER_LIST}"
   fi
   peers="${peers// /}"
   [[ -z "$peers" ]] && return 0
@@ -813,6 +833,7 @@ do_install() {
   [[ "$piper_en" == "1" ]] && systemctl restart relay-tts-piper 2>/dev/null || true
   [[ "$lt_en" == "1" ]] && systemctl restart libretranslate 2>/dev/null || true
 
+  maybe_validate_deploy_ssh_key
   maybe_ufw
   log "Install complete. HTTP :$HTTP_PORT  git :$GIT_PORT  LibreTranslate :$LIBRETRANSLATE_PORT (if enabled)  config: GET /api/config"
 }
@@ -875,6 +896,7 @@ do_repair() {
   fi
   refresh_features_inventory
   systemctl restart relay-git-daemon relay-server
+  maybe_validate_deploy_ssh_key
   maybe_ufw
   log "Repair complete"
 }
@@ -928,6 +950,26 @@ do_reconfigure_features() {
   log "Features reconfigured"
 }
 
+# Optional: enforce that RELAY_DEPLOY_SSH_USER's authorized_keys includes the deploy key (see docs/SECRETS_POLICY.md).
+maybe_validate_deploy_ssh_key() {
+  case "${RELAY_VALIDATE_DEPLOY_SSH_KEY:-}" in
+    1|yes|true|TRUE|Yes|YES) ;;
+    *) return 0 ;;
+  esac
+  local user="${RELAY_DEPLOY_SSH_USER:-ari}"
+  local want="${RELAY_DEPLOY_SSH_KEY_FINGERPRINT:-}"
+  [[ -n "$want" ]] || die "RELAY_VALIDATE_DEPLOY_SSH_KEY is set but RELAY_DEPLOY_SSH_KEY_FINGERPRINT is empty (see docs/SECRETS_POLICY.md)"
+  local home
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  [[ -n "$home" ]] || die "RELAY_DEPLOY_SSH_USER not found: $user"
+  local ak="$home/.ssh/authorized_keys"
+  [[ -f "$ak" ]] || die "missing $ak — cannot validate deploy SSH key for $user"
+  if ! ssh-keygen -lf "$ak" 2>/dev/null | grep -qF "$want"; then
+    die "authorized_keys for $user has no key matching RELAY_DEPLOY_SSH_KEY_FINGERPRINT (run: ssh-keygen -lf -E sha256 $ak)"
+  fi
+  log "Deploy SSH key policy OK ($user: fingerprint present)"
+}
+
 maybe_ufw() {
   command -v ufw >/dev/null || return 0
   ufw allow 22/tcp 2>/dev/null || true
@@ -962,7 +1004,9 @@ case "${1:-install}" in
     echo "  install   — Vercel DNS first (unless skipped), then base deps; Piper + npm + translation prompts (or RELAY_INSTALL_NONINTERACTIVE=1)"
     echo "  DNS env: RELAY_PUBLIC_FQDN, VERCEL_API_TOKEN, optional VERCEL_TEAM_ID, RELAY_VERCEL_DOMAIN, RELAY_SKIP_VERCEL_DNS=1"
     echo "  Features env: RELAY_FEAT_PIPER, RELAY_FEAT_NPM_PKGS, RELAY_FEAT_TRANSLATION, RELAY_FEAT_TRANSLATION_PKGS, RELAY_FEAT_LIBRETRANSLATE, RELAY_LIBRETRANSLATE_LOAD_ONLY (see docs/INSTALL_FEATURES.md)"
-    echo "  Node env: RELAY_SERVER_ID, RELAY_PUBLIC_HOSTNAME (if RELAY_SKIP_VERCEL_DNS=1), RELAY_MASTER_PEER_LIST (semicolon-separated peer FQDNs)"
+    echo "  Node env: RELAY_SERVER_ID, RELAY_PUBLIC_HOSTNAME (if RELAY_SKIP_VERCEL_DNS=1), RELAY_MASTER_PEER_LIST (override; default mesh masters: $DEFAULT_RELAY_MASTER_PEER_LIST)"
+    echo "  Deploy SSH policy (optional): RELAY_VALIDATE_DEPLOY_SSH_KEY=1, RELAY_DEPLOY_SSH_USER (default ari), RELAY_DEPLOY_SSH_KEY_FINGERPRINT (substring from ssh-keygen -lf -E sha256) — docs/SECRETS_POLICY.md"
+    echo "  Startup catalog sync (optional): RELAY_STARTUP_CATALOG_SYNC=0 to skip ExecStartPre (default 1 when RELAY_MASTER_CATALOG_PATH has .gitmodules + scripts/sync-relay-catalog.sh); Slack: RELAY_NOTIFY_SLACK_WEBHOOK_URL"
     echo "  update    — refresh relay-server binaries from this directory; rescan feature inventory"
     echo "  repair    — fix perms, reinstall features from state/features.json (bootstraps minimal state if missing)"
     echo "  reconfigure-features — change Piper/npm/translation (only supported way to add/remove optional features)"

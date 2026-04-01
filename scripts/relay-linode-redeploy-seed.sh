@@ -2,14 +2,14 @@
 # Redeploy relay-server from a local Linode tarball over SSH, then create a bare repo slot
 # (POST /api/git/ensure-bare) and optionally git push from a local clone (git:// only).
 #
-# Prerequisites: SSH key auth (root or sudo user — see RELAY_SSH_USER); local tarball.
+# Prerequisites: SSH key auth (default user **ari** with sudo; override RELAY_SSH_USER); local tarball.
 #
 # Usage:
 #   ./scripts/relay-linode-redeploy-seed.sh 192.0.2.1
 #   ./scripts/relay-linode-redeploy-seed.sh 192.0.2.1 /path/to/relay-linode-deploy.tgz
 #
 # Optional env:
-#   RELAY_SSH_USER     SSH login (default: root). Use ari (or any sudo user) when PermitRootLogin no.
+#   RELAY_SSH_USER     SSH login (default: **ari**). Use **root** only on images that allow root SSH.
 #   RELAY_SSH_IDENTITY SSH private key (default: ~/.ssh/id_ed25519_relay_gateway)
 #   RELAY_SEED_REPO    bare name without .git (default: paradigm-threat-files)
 #   RELAY_LOCAL_REPO   if set, cd here and git push to git://NODE:9418/$RELAY_SEED_REPO.git
@@ -19,7 +19,7 @@ set -euo pipefail
 NODE="${1:?Usage: $0 <node-ip-or-hostname> [relay-linode-deploy.tgz]}"
 TGZ="${2:-$(cd "$(dirname "$0")/.." && pwd)/target/relay-linode-deploy.tgz}"
 KEY="${RELAY_SSH_IDENTITY:-$HOME/.ssh/id_ed25519_relay_gateway}"
-SSH_USER="${RELAY_SSH_USER:-root}"
+SSH_USER="${RELAY_SSH_USER:-ari}"
 REPO="${RELAY_SEED_REPO:-paradigm-threat-files}"
 BRANCH="${RELAY_SEED_BRANCH:-master}"
 SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new)
@@ -41,10 +41,15 @@ if [[ "$SSH_USER" == "root" ]]; then
   "${SSH[@]}" "$TARGET" bash -s <<'REMOTE'
 set -euo pipefail
 cd /root
-tar xzf relay-linode-deploy.tgz
-export RELAY_BIN_SOURCE=/root
+rm -rf .relay-deploy-staging
+mkdir .relay-deploy-staging
+cd .relay-deploy-staging
+tar xzf ../relay-linode-deploy.tgz
+export RELAY_BIN_SOURCE=/root/.relay-deploy-staging
 export RELAY_INSTALL_NONINTERACTIVE=1
 ./install.sh update
+cd /root
+rm -rf .relay-deploy-staging
 REMOTE
 else
   "${SSH[@]}" "$TARGET" sudo bash -s <<'REMOTE'
@@ -52,10 +57,15 @@ set -euo pipefail
 install -d -m 700 /root
 cp -f /tmp/relay-linode-deploy.tgz /root/relay-linode-deploy.tgz
 cd /root
-tar xzf relay-linode-deploy.tgz
-export RELAY_BIN_SOURCE=/root
+rm -rf .relay-deploy-staging
+mkdir .relay-deploy-staging
+cd .relay-deploy-staging
+tar xzf ../relay-linode-deploy.tgz
+export RELAY_BIN_SOURCE=/root/.relay-deploy-staging
 export RELAY_INSTALL_NONINTERACTIVE=1
 ./install.sh update
+cd /root
+rm -rf .relay-deploy-staging
 rm -f /tmp/relay-linode-deploy.tgz
 REMOTE
 fi

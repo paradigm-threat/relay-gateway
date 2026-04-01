@@ -70,27 +70,54 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        let authorized_repos = std::env::var("RELAY_AUTHORIZED_REPOS_PATH")
+        let catalog_path = std::env::var("RELAY_MASTER_CATALOG_PATH")
             .ok()
             .filter(|s| !s.trim().is_empty())
-            .map(|p| PathBuf::from(p.trim()))
-            .map(|p| authorized_repos::load_from_path(Path::new(&p)))
-            .transpose()?;
+            .map(|s| PathBuf::from(s.trim()));
+
+        let yaml_path = std::env::var("RELAY_AUTHORIZED_REPOS_PATH")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| PathBuf::from(s.trim()));
+
+        let authorized_repos: Option<authorized_repos::AuthorizedReposFile> = match (&catalog_path, &yaml_path) {
+            (Some(_), Some(_)) => {
+                anyhow::bail!(
+                    "set only one of RELAY_MASTER_CATALOG_PATH or RELAY_AUTHORIZED_REPOS_PATH, not both"
+                );
+            }
+            (Some(c), None) => {
+                let id = relay_server_id.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "RELAY_SERVER_ID is required when RELAY_MASTER_CATALOG_PATH is set"
+                    )
+                })?;
+                if let Ok(t) = std::env::var("RELAY_MASTER_TRUST_ROOT") {
+                    let t = t.trim();
+                    if !t.is_empty() {
+                        authorized_repos::verify_master_catalog_trust_root(c.as_path(), t)?;
+                    }
+                }
+                Some(authorized_repos::load_from_master_catalog(c.as_path(), id)?)
+            }
+            (None, Some(p)) => Some(authorized_repos::load_from_path(p.as_path())?),
+            (None, None) => None,
+        };
 
         if authorized_repos.is_some() && relay_server_id.is_none() {
             anyhow::bail!(
-                "RELAY_SERVER_ID is required when RELAY_AUTHORIZED_REPOS_PATH is set (unique server name)"
+                "RELAY_SERVER_ID is required when an authorized repo allowlist is configured (YAML or catalog)"
             );
         }
         if let Some(ref ar) = authorized_repos {
             let fid = ar.relay_server_id.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "authorized-repos file must set relay_server_id (must match RELAY_SERVER_ID)"
+                    "authorized-repos: relay_server_id missing (YAML file or internal catalog load)"
                 )
             })?;
             if relay_server_id.as_deref() != Some(fid) {
                 anyhow::bail!(
-                    "RELAY_SERVER_ID '{}' must match relay_server_id in authorized-repos file ('{}')",
+                    "RELAY_SERVER_ID '{}' must match relay_server_id in policy ('{}')",
                     relay_server_id.as_deref().unwrap_or(""),
                     fid
                 );

@@ -1,9 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
     use git2::{Repository, Signature};
     use std::collections::HashMap;
-    use std::path::Path as FsPath;
     use tempfile::tempdir;
     use axum::{
         extract::{Path as AxPath, State},
@@ -11,8 +9,9 @@ mod tests {
         response::IntoResponse,
         Json,
     };
-    use crate::{handlers, git, helpers, types::*};
+    use crate::{handlers, git, helpers, peer_hook, types::*};
     use axum::http::header::HOST;
+    use serial_test::serial;
 
     fn test_state(repo_path: std::path::PathBuf) -> AppState {
         AppState {
@@ -559,5 +558,88 @@ process.exit(0);
         let r = handlers::post_ensure_bare(State(state), AxPath("x".to_string())).await;
         let (parts, _) = r.into_response().into_parts();
         assert_eq!(parts.status, StatusCode::FORBIDDEN);
+    }
+
+    /// `RELAY_PEER_SECRET` unset → peer hook returns **503** (disabled).
+    #[tokio::test]
+    #[serial(peer_hook_env)]
+    async fn test_post_peer_hook_disabled_without_secret() {
+        let prev_peer = std::env::var("RELAY_PEER_SECRET").ok();
+        let prev_master_mesh = std::env::var("RELAY_MASTER_MESH_SECRET").ok();
+        let prev_role = std::env::var("RELAY_NODE_ROLE").ok();
+        unsafe {
+            std::env::set_var("RELAY_NODE_ROLE", "edge");
+            std::env::remove_var("RELAY_PEER_SECRET");
+            std::env::remove_var("RELAY_MASTER_MESH_SECRET");
+        }
+        let repo_dir = tempdir().unwrap();
+        let state = test_state(repo_dir.path().to_path_buf());
+        let body = peer_hook::PeerHookBody {
+            repo: "x".into(),
+            peer: "peer.example".into(),
+            branch: "main".into(),
+            new_sha: None,
+        };
+        let r = handlers::post_peer_hook(State(state), HeaderMap::new(), Json(body)).await;
+        let (parts, _) = r.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::SERVICE_UNAVAILABLE);
+        unsafe {
+            match prev_peer {
+                Some(v) => std::env::set_var("RELAY_PEER_SECRET", v),
+                None => std::env::remove_var("RELAY_PEER_SECRET"),
+            }
+            match prev_master_mesh {
+                Some(v) => std::env::set_var("RELAY_MASTER_MESH_SECRET", v),
+                None => std::env::remove_var("RELAY_MASTER_MESH_SECRET"),
+            }
+            match prev_role {
+                Some(v) => std::env::set_var("RELAY_NODE_ROLE", v),
+                None => std::env::remove_var("RELAY_NODE_ROLE"),
+            }
+        }
+    }
+
+    /// Wrong `X-Relay-Peer-Secret` → **401**.
+    #[tokio::test]
+    #[serial(peer_hook_env)]
+    async fn test_post_peer_hook_rejects_bad_secret() {
+        let prev_peer = std::env::var("RELAY_PEER_SECRET").ok();
+        let prev_master_mesh = std::env::var("RELAY_MASTER_MESH_SECRET").ok();
+        let prev_role = std::env::var("RELAY_NODE_ROLE").ok();
+        unsafe {
+            std::env::set_var("RELAY_NODE_ROLE", "edge");
+            std::env::remove_var("RELAY_MASTER_MESH_SECRET");
+            std::env::set_var("RELAY_PEER_SECRET", "correct-secret");
+        }
+        let repo_dir = tempdir().unwrap();
+        let state = test_state(repo_dir.path().to_path_buf());
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-relay-peer-secret",
+            "wrong".parse().expect("header value"),
+        );
+        let body = peer_hook::PeerHookBody {
+            repo: "x".into(),
+            peer: "peer.example".into(),
+            branch: "main".into(),
+            new_sha: None,
+        };
+        let r = handlers::post_peer_hook(State(state), headers, Json(body)).await;
+        let (parts, _) = r.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::UNAUTHORIZED);
+        unsafe {
+            match prev_peer {
+                Some(v) => std::env::set_var("RELAY_PEER_SECRET", v),
+                None => std::env::remove_var("RELAY_PEER_SECRET"),
+            }
+            match prev_master_mesh {
+                Some(v) => std::env::set_var("RELAY_MASTER_MESH_SECRET", v),
+                None => std::env::remove_var("RELAY_MASTER_MESH_SECRET"),
+            }
+            match prev_role {
+                Some(v) => std::env::set_var("RELAY_NODE_ROLE", v),
+                None => std::env::remove_var("RELAY_NODE_ROLE"),
+            }
+        }
     }
 }

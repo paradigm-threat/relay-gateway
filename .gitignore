@@ -18,6 +18,8 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+# Local copy: cp relay.env.example relay.env (or docs/examples/relay.env). relay.env.example is tracked.
+relay.env
 
 # Logs and coverage
 *.log

@@ -12,6 +12,7 @@ fn main() -> anyhow::Result<()> {
         .with_max_level(Level::INFO)
         .finish();
     tracing::subscriber::set_global_default(subscriber).ok();
+    relay_server::notify::install_panic_hook();
 
     let args: Vec<String> = std::env::args().collect();
     let hook_path = args.get(0).map(PathBuf::from).unwrap_or_default();
@@ -70,6 +71,10 @@ fn main() -> anyhow::Result<()> {
                 Err(e) => {
                     error!("Branch rule violation: {}", e);
                     eprintln!("[relay-hook-handler] Branch rule violation: {}", e);
+                    relay_server::notify::notify_hook_error(
+                        "pre-receive branch rules",
+                        &e.to_string(),
+                    );
                     std::process::exit(1);
                 }
             }
@@ -77,13 +82,36 @@ fn main() -> anyhow::Result<()> {
 
         if !execute_repo_hook(&ctx, hook_name)? {
             error!("Hook {} failed for {}", hook_name, ctx.refname);
+            relay_server::notify::notify_hook_error(
+                hook_name,
+                &format!("configured hook failed for {}", ctx.refname),
+            );
             std::process::exit(1);
         }
 
         // Special handling for post-receive (Auto-Push)
         if hook_name == "post-receive" {
+            let repo_slug = relay_server::notify::normalize_repo_slug(
+                ctx.repo_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown.git"),
+            );
+            let sid = std::env::var("RELAY_SERVER_ID").ok();
+            let node = std::env::var("RELAY_PUBLIC_HOSTNAME")
+                .or_else(|_| std::env::var("RELAY_NODE_FQDN"))
+                .ok();
+            relay_server::notify::commit_update_notify_blocking(
+                "git_push",
+                &repo_slug,
+                &ctx.branch,
+                &ctx.new_commit,
+                sid.as_deref(),
+                node.as_deref(),
+            );
             if let Err(e) = handle_auto_push(&ctx) {
                 error!("Auto-push failed: {}", e);
+                relay_server::notify::notify_hook_error("post-receive auto_push", &e.to_string());
             }
         }
     }
@@ -191,7 +219,9 @@ fn handle_auto_push(ctx: &HookContext) -> anyhow::Result<()> {
         match cmd.output() {
             Ok(output) => {
                 if !output.status.success() {
-                    error!("Failed to push to {}: {}", origin, String::from_utf8_lossy(&output.stderr));
+                    let detail = String::from_utf8_lossy(&output.stderr).to_string();
+                    error!("Failed to push to {}: {}", origin, detail);
+                    relay_server::notify::notify_auto_push_error(&origin, &detail);
                 } else {
                     info!("Successfully pushed to {}", origin);
                 }

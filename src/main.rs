@@ -74,6 +74,8 @@ async fn main() -> Result<()> {
         .with(file_layer)
         .init();
 
+    relay_server::notify::install_panic_hook();
+
     let config = Config::from_cli(&cli)?;
     config.initialize_repos();
 
@@ -98,6 +100,12 @@ async fn main() -> Result<()> {
     }
 
     info!(repo_path = %config.state.repo_path.display(), "Repository path resolved");
+    let mesh_role = relay_server::mesh_role::relay_node_role();
+    info!(
+        ?mesh_role,
+        mesh_http_publish = relay_server::mesh_role::should_publish_mesh_http_events(),
+        "relay mesh node role"
+    );
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -114,6 +122,8 @@ async fn main() -> Result<()> {
             post(handlers::post_ensure_bare),
         )
         .route("/git-pull", post(handlers::post_git_pull))
+        .route("/hooks/peer", post(handlers::post_peer_hook))
+        .route("/hooks/mesh-event", post(handlers::post_mesh_event))
         .route("/hooks/github/:repo", post(handlers::post_github_hook))
         .route("/transpile", post(transpiler::post_transpile))
         .route(
@@ -146,9 +156,15 @@ async fn main() -> Result<()> {
 
     let http_addr = config.http_addr;
     let app_http = app.clone();
+    let started_node = config.state.node_fqdn.clone();
+    let started_sid = config.state.relay_server_id.clone();
     let http_task = tokio::spawn(async move {
         info!(%http_addr, "HTTP listening");
         let listener = TcpListener::bind(&http_addr).await.expect("bind http");
+        relay_server::notify::notify_server_started(
+            started_node.as_deref(),
+            started_sid.as_deref(),
+        );
         if let Err(e) = axum::serve(listener, app_http.into_make_service()).await {
             error!(?e, "HTTP server error");
         }

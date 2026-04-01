@@ -127,7 +127,7 @@ If Argos is enabled but the probe fails (venv missing, import error), **`probe_e
 
 ## Federating capability metadata
 
-There is no background mesh sync yet: each peer should call **`GET /api/config`** on the node (with the correct per-repo **`Host`** header if you also need repo context) and merge **`installed_features.summary`** (or the full manifest) into its own client or routing layer.
+There is no background mesh sync yet: each peer should call **`GET /api/config`** on the node (with the correct per-repo **`Host`** header if you also need repo context) and merge **`installed_features.summary`** (or the full manifest) into its own client or routing layer. The roadmap for **event streams, subscriptions, pull-based propagation**, and **internal** mesh anti–over-ping (**SHA-first**; optional **`via` / hops**; independent of Slack) is **[`RELAY_MESH_NETWORKING_PLAN.md`](./RELAY_MESH_NETWORKING_PLAN.md)**.
 
 Recommended client behaviour:
 

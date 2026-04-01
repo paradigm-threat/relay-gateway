@@ -44,11 +44,17 @@ Endpoints
 
 Relay repositories use a unified configuration file `.relay.yaml` at the root to control security and automation.
 
+### Catalog repo (`relay-master`)
+
+**[`relay-master`](../relay-master)** is the **allowlist** for which Git repositories a node may mirror: each **submodule** supplies **`url`** (clone source) and **`relayRootCommit`** (trusted root; **`scripts/sync-relay-catalog.sh`** verifies it is an ancestor of the branch tip). **`relay-server`** loads policy from **`RELAY_MASTER_CATALOG_PATH`** (path to a **`relay-master` checkout** with **`.gitmodules`**) or, alternatively, from **`RELAY_AUTHORIZED_REPOS_PATH`** (YAML, e.g. emitted by **`sync-relay-catalog.sh`**—never set both). Use **`RELAY_MASTER_TRUST_ROOT`** (40 hex) so startup fails if the checkout is the wrong Git history. See **[`docs/RELAY_TRUST_AND_BOOTSTRAP.md`](./docs/RELAY_TRUST_AND_BOOTSTRAP.md)**. Set **`RELAY_DEFAULT_REPO=relay-master`** for the catalog apex. **User-facing clone URLs** like **`git://relaygateway.net/<repo>.git`** are documented there (routing/DNS, not HTTP redirects).
+
 ### Git daemon (`git://`, default port **9418**)
 
 The bundled **`git daemon`** enables **`receive-pack`**: there is **no git transport authentication** (no SSH keys / HTTP basic auth on that path). Optional enforcement (signed commits, custom **`pre-receive`**, etc.) is per repository via **`.relay.yaml`** and **`relay-hook-handler`**.
 
-`git daemon` only serves **existing** bare repos under **`RELAY_REPO_PATH`**. To add a name without SSH, call **`POST /api/git/ensure-bare/{repo}`** (returns **201** when created). This is **on by default**; set **`RELAY_GIT_ENSURE_BARE_ENABLED=0`** to disable and create **`*.git`** directories only manually. **`GET /api/config`** includes **`git_ensure_bare_enabled`**.
+**Today:** `git daemon` only serves **existing** bare repos under **`RELAY_REPO_PATH`**. It validates the path **before** running **`--access-hook`**, so a hook cannot create a missing bare repo on first connect. Operators must create the directory first—typically **`POST /api/git/ensure-bare/{repo}`** (returns **201** when created)—then **`git push git://…/{repo}.git`**. This is **on by default**; set **`RELAY_GIT_ENSURE_BARE_ENABLED=0`** to disable and create **`*.git`** directories only manually. **`GET /api/config`** includes **`git_ensure_bare_enabled`**.
+
+**Planned:** First **`git push`** should be able to **create** the bare repo when policy allows, without a separate HTTP step. That requires relay code (or another front) to run **before** stock `git receive-pack`—for example a small **`git://` gateway** that parses the requested repo, calls the same provisioning logic as **`ensure-bare`**, then hands off to Git, or a **smart HTTP** git endpoint that can provision and delegate. See **[`docs/RELAY_TRUST_AND_BOOTSTRAP.md`](./docs/RELAY_TRUST_AND_BOOTSTRAP.md)** for how **repository identity** (root commit) should gate creation and updates.
 
 ### Git Hooks (`relay-hook-handler`)
 The server includes a native `relay-hook-handler` binary that should be symlinked to `hooks/pre-receive` and `hooks/post-receive` in your bare repositories.
@@ -56,8 +62,15 @@ The server includes a native `relay-hook-handler` binary that should be symlinke
 - **Custom Validation**: Dispatches to Node.js scripts (`pre-receive`) with full commit context.
 - **Auto-Push**: Synchronizes successful pushes to a list of peer servers automatically.
 
+**Mesh (shipped pieces):** **`RELAY_MASTER_PEER_LIST`** (semicolon-separated FQDNs) is exposed in **`GET /api/config` → `peers`**. **`RELAY_NODE_ROLE`** (`master` \| `edge`) or inference from **`RELAY_PUBLIC_HOSTNAME`** in that list selects behavior: **only masters** fan out **`POST /hooks/mesh-event`** HTTP to peers (**edges** still get Slack if configured). **`RELAY_MASTER_MESH_SECRET`** (masters only): inter-master **`x-relay-mesh-secret`** / **`X-Relay-Peer-Secret`** when set; **`POST /hooks/peer`** on a master with this set accepts **only** that secret (not **`RELAY_PEER_SECRET`**). **`POST /hooks/peer`** on **edges** uses **`RELAY_PEER_SECRET`** (masters poke edges with the same value). See **[`docs/RELAY_MESH_NETWORKING_PLAN.md`](docs/RELAY_MESH_NETWORKING_PLAN.md)**. **mTLS** between masters is a **reverse-proxy** concern, not yet in-process. **Internal** anti–over-ping remains **Slack-independent**; optional Slack: **[`docs/SLACK_MESH_NOTIFY.md`](docs/SLACK_MESH_NOTIFY.md)**.
+
 ### Webhooks
 - **GitHub**: `POST /hooks/github/{repo}` (repo name without `.git`) — see `.relay.yaml` `server.git.github` for enable/path metadata.
+- **Peer notify → pull**: `POST /hooks/peer` with header **`X-Relay-Peer-Secret`** (see mesh section above) and JSON **`{ "repo", "peer", "branch"?, "new_sha"? }`**. If **`RELAY_MASTER_PEER_LIST`** is non-empty, **`peer`** must match one of those hostnames (case-insensitive).
+
+## Configuration and secrets
+
+**`relay.env`** on the server (typically **`/opt/relay/relay.env`**, **`EnvironmentFile`** for systemd) holds trust, mesh, and optional webhook values. **Sanitized template:** **[`relay.env.example`](relay.env.example)**. **Ops policy** (manual install per node, full master peer list, coordinated rotation including webhooks, shared deploy SSH key + optional install check): **[`docs/SECRETS_POLICY.md`](docs/SECRETS_POLICY.md)**. **Longer annotated reference:** **[`docs/examples/relay.env`](docs/examples/relay.env)**. **New node with catalog URL:** fill **`relay.env`** per **[`docs/DEPLOY_LINODE.md`](docs/DEPLOY_LINODE.md)** § “Greenfield checklist” so first boot clones the catalog, syncs submodules, and peer-fetches without extra SSH steps.
 
 ## Environment Variables
 
@@ -68,11 +81,22 @@ The server includes a native `relay-hook-handler` binary that should be symlinke
 - `RELAY_HTTP_PORT`: HTTP port (default: 80)
 - `RELAY_HTTPS_PORT`: HTTPS port (default: 443)
 - `RELAY_BIND`: Override bind address (format: `host:port`)
+- **`RELAY_MASTER_PEER_LIST`**: Semicolon-separated peer FQDNs for **`/api/config`**, mesh bootstrap, and **`POST /hooks/peer`** allowlisting. **`install.sh`** defaults this to **`atlanta3.relaygateway.net;jp-osa.relaygateway.net`** (designated **master** mesh nodes) unless you set **`RELAY_MASTER_PEER_LIST`** or **`DEFAULT_RELAY_MASTER_PEER_LIST`**. If empty after install, **`POST /hooks/peer`** allows any **`peer`** hostname once the shared secret matches.
+- **`RELAY_NODE_ROLE`**: Optional **`master`** or **`edge`**. If unset, **master** when **`RELAY_MASTER_PEER_LIST`** is empty (dev), else **master** when **`RELAY_PUBLIC_HOSTNAME`** is listed, otherwise **edge**.
+- **`RELAY_MASTER_MESH_SECRET`**: Same value on all **masters**; omit on **edges**. When set on a master, that node accepts **only** this secret for **`POST /hooks/mesh-event`** ingest and for **`POST /hooks/peer`** (inter-master inject). Outbound mesh POSTs to hosts in **`RELAY_MASTER_PEER_LIST`** use this header when set.
+- **`RELAY_PEER_SECRET`**: **Edge** **`POST /hooks/peer`**; also fallback mesh-event secret when **`RELAY_MESH_EVENT_SECRET`** unset. On **masters** without **`RELAY_MASTER_MESH_SECRET`**, peer hook still uses this (legacy).
+- **`RELAY_GIT_PORT`**: Git daemon port for building **`git://`** fetch URLs in the peer hook (default **9418**).
 
 ### Repository Management
+- **`RELAY_DEFAULT_REPO`**: Bare repo name (no `.git`) served at the **node apex** when **`Host`** is the node FQDN only — use **`relay-master`** when following the catalog model (**[`docs/RELAY_TRUST_AND_BOOTSTRAP.md`](./docs/RELAY_TRUST_AND_BOOTSTRAP.md)**).
+- **`RELAY_MASTER_CATALOG_PATH`**: Filesystem path to a **`relay-master` worktree** (contains **`.gitmodules`**). Builds the same allowlist **`relay-server`** would read from YAML. **Mutually exclusive** with **`RELAY_AUTHORIZED_REPOS_PATH`**.
+- **`RELAY_MASTER_TRUST_ROOT`**: Optional but **recommended in production**: 40-character commit id—the **initial (root) commit** of your canonical **`relay-master`** (`git rev-list --max-parents=0 main`). Startup verifies it is an **ancestor** of the checkout **`HEAD`** so a mistaken clone path cannot point at an unrelated repo.
+- **`RELAY_MASTER_BRANCH`**: If the catalog checkout is in **detached HEAD**, set this branch name for the synthetic **`relay-master`** policy row (default **`main`**).
+- **`RELAY_AUTHORIZED_REPOS_PATH`**: YAML allowlist (legacy / CI); do not set together with **`RELAY_MASTER_CATALOG_PATH`**.
 - `RELAY_MASTER_REPO_LIST`: Semicolon-separated list of repos to clone on startup (e.g., `https://github.com/clevertree/relay-template`)
 - `DEFAULT_REPOS`: Alternative to RELAY_MASTER_REPO_LIST for Docker entrypoint
 - **`RELAY_GIT_ENSURE_BARE_ENABLED`**: When enabled (default: **on** if unset), **`POST /api/git/ensure-bare/:repo`** may create **`RELAY_REPO_PATH/<repo>.git`**. Set to **`0`** / **`false`** / **`no`** to turn off.
+- **`GET /api/config` → `startup_catalog_sync`**: JSON from **`state/startup_catalog_sync.json`** (last **`relay-startup-catalog-sync.sh`** run: forge sync ok, optional error tail, peer fetch counts). Omitted if the file is missing. Forge sync failure does **not** block **`relay-server`**; HTTP serves whatever bare repos exist.
 
 ### TLS/HTTPS Configuration
 - `RELAY_TLS_CERT`: Path to TLS certificate file

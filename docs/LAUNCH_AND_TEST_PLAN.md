@@ -3,7 +3,9 @@
 **Target window:** March 18–31, 2025 (Linode $100 credit expires end of month)  
 **Scope:** relay-server, SNESology + paradigm-threat preset staging, multi-repo rendering, dynamic runtime libraries (songwalker, Piper TTS), multi-node staging, stress tests, auth & repo rules
 
-**Trust & provisioning:** **Min launch:** **`RELAY_SERVER_ID`** + **`RELAY_AUTHORIZED_REPOS_PATH`** (per-repo **`anchor_commit`**). See **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**, **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)**, **[`examples/authorized-repos.yaml`](./examples/authorized-repos.yaml)**. Omit **`RELAY_AUTHORIZED_REPOS_PATH`** only for local dev.
+**Trust & provisioning:** **Min launch:** **`RELAY_SERVER_ID`** + **`RELAY_MASTER_CATALOG_PATH`** (recommended; optional **`RELAY_MASTER_TRUST_ROOT`**) *or* **`RELAY_AUTHORIZED_REPOS_PATH`** (YAML from **`sync-relay-catalog.sh`**). See **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**. Set **`RELAY_DEFAULT_REPO=relay-master`** for the catalog-as-apex model.
+
+**Examples below** that use **`RELAY_DEFAULT_REPO=snesology`** or **`snesology.*` Host headers are illustrative (pre-catalog defaults)**; production mesh config should follow **`relay-master`** + **`RELAY_DEFAULT_REPO=relay-master`** unless you intentionally run a different default repo.
 
 ---
 
@@ -173,11 +175,13 @@ These repos are the **canonical staging targets** for Linode: multi-repo servers
 
 ### Phase B: Peer-triggered fetch (2–3 days)
 
-1. **Add `POST /hooks/peer`**:
-   - Body: `{ "repo": "relay-template", "branch": "main", "peer": "node2.example.com" }`
-   - Header: `X-Relay-Peer-Secret: <shared_secret>`
-   - If valid, run `git fetch` from `git://{peer}/{repo}.git` for that repo.
-2. **Extend `handle_auto_push`** (optional): After pushing to peer, send HTTP POST to `https://{peer}/hooks/peer` to trigger immediate fetch on the peer. Requires `RELAY_PEER_SECRET` and peer URL list.
+Normative mesh / event roadmap (IRC-style roles, notify → pull, WebRTC options, **internal** anti–over-ping — **SHA-first**, optional **`via` / hops**, **no Slack dependency**): **[`RELAY_MESH_NETWORKING_PLAN.md`](./RELAY_MESH_NETWORKING_PLAN.md)**.
+
+1. **`POST /hooks/peer`** (**shipped** in `relay-server`):
+   - Body: `{ "repo", "peer", "branch"?, "new_sha"? }` — see **[`README.md`](../README.md)** (Webhooks).
+   - Header: **`X-Relay-Peer-Secret`** = env **`RELAY_PEER_SECRET`** (endpoint disabled if unset).
+   - Fetches from **`git://{peer}:{RELAY_GIT_PORT}/{repo}.git`** (default port **9418**). Optional **`RELAY_MASTER_PEER_LIST`** allowlists **`peer`**.
+2. **Extend `handle_auto_push`** (optional): After pushing to peer, send HTTP **`POST`** to **`http(s)://{peer}/hooks/peer`** to trigger immediate fetch on the peer (same secret + JSON body). Not wired in **`relay-hook-handler`** yet.
 
 ### Phase C: SNESology + paradigm-threat preset repos
 

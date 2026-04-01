@@ -4,7 +4,11 @@
 #   - RELAY_SEED_REPOS (name=url;name=url), or
 #   - Interactive catalog (clone URLs below) — all checked by default.
 #
-# Add repos: extend BOOTSTRAP_CATALOG_NAMES and BOOTSTRAP_CATALOG_URLS in parallel.
+# Production allowlist + clone sources: ../../relay-master (.gitmodules + relayRootCommit) and
+# scripts/sync-relay-catalog.sh — that is the single source of truth for which repos the mesh
+# mirrors and which root commits are trusted. This script’s BOOTSTRAP_CATALOG_* arrays are a
+# legacy/dev convenience (e.g. relay-template, relay-server) for first boot; they do not replace
+# the catalog. To add a served repo long-term, add a submodule to relay-master and run sync.
 set -euo pipefail
 
 : "${RELAY_SERVER_ID:?Set RELAY_SERVER_ID (e.g. relay-dallas1)}"

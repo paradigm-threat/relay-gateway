@@ -1,0 +1,44 @@
+# Example: SNESology / Paradigm Threat preset repo on Relay (not GitHub-canonical)
+# Copy relevant sections into your repo root as .relay.yaml
+
+name: "SNESology Presets"
+version: "1.0.0"
+
+git:
+  relayTrust:
+    authorizedServerIds:
+      - relay-atlanta1
+      - relay-dfw-primary
+    authorizedServerKeyFingerprints:
+      # ssh-keygen -lf -E sha256 /path/to/deploy_key.pub
+      - "SHA256:REPLACE_WITH_SEED_NODE_DEPLOY_KEY_FINGERPRINT"
+
+  autoPush:
+    branches: [ "main" ]
+    originList:
+      - "other-authorized-relay.example.com"
+    debounceSeconds: 2
+
+  branchRules:
+    default:
+      requireSigned: true
+      allowedKeyFingerprints:
+        - "SHA256:REPLACE_RELEASE_SIGNING_KEY"
+      allowedKeys:
+        - ".relay/keys/*.pub"
+    branches:
+      - name: public
+        rule:
+          allowUnsigned: true
+
+  github:
+    enabled: false
+
+server:
+  hooks:
+    pre-commit:
+      path: hooks/server/pre-commit.mjs
+    pre-receive:
+      path: hooks/server/pre-receive.mjs
+    index:
+      path: hooks/server/index.mjs

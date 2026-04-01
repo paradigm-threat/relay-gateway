@@ -10,7 +10,7 @@ use axum::{
 use git2::Repository;
 use serde::Serialize;
 
-use crate::{authorized_repos, git, helpers, types::*};
+use crate::{authorized_repos, git, helpers, notify, types::*};
 
 /// Serve a minimal OpenAPI YAML specification (placeholder)
 pub async fn get_openapi_yaml() -> impl IntoResponse {
@@ -59,6 +59,12 @@ pub async fn get_swagger_ui() -> impl IntoResponse {
     (StatusCode::OK, [("Content-Type", "text/html")], html)
 }
 
+fn read_startup_catalog_sync_status(repo_path: &std::path::Path) -> Option<serde_json::Value> {
+    let state_file = repo_path.parent()?.join("state").join("startup_catalog_sync.json");
+    let s = std::fs::read_to_string(&state_file).ok()?;
+    serde_json::from_str(&s).ok()
+}
+
 /// GET /api/config — peers, repo list, optional `node_fqdn`, server id, authorized repo names
 pub async fn get_api_config(State(state): State<AppState>) -> impl IntoResponse {
     #[derive(Serialize)]
@@ -77,6 +83,9 @@ pub async fn get_api_config(State(state): State<AppState>) -> impl IntoResponse 
         installed_features: Option<serde_json::Value>,
         /// When true, `POST /api/git/ensure-bare/:repo` is allowed (no HTTP auth; protect at firewall if needed).
         git_ensure_bare_enabled: bool,
+        /// Last `relay-startup-catalog-sync.sh` run (`state/startup_catalog_sync.json` next to `RELAY_REPO_PATH`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        startup_catalog_sync: Option<serde_json::Value>,
     }
 
     let peer_list = std::env::var("RELAY_MASTER_PEER_LIST")
@@ -104,6 +113,8 @@ pub async fn get_api_config(State(state): State<AppState>) -> impl IntoResponse 
         })
     });
 
+    let startup_catalog_sync = read_startup_catalog_sync_status(&state.repo_path);
+
     let config = Config {
         peers: peer_list,
         repos,
@@ -112,6 +123,7 @@ pub async fn get_api_config(State(state): State<AppState>) -> impl IntoResponse 
         authorized_repos,
         installed_features,
         git_ensure_bare_enabled: state.git_ensure_bare_enabled,
+        startup_catalog_sync,
     };
     (StatusCode::OK, Json(config))
 }
@@ -253,8 +265,15 @@ pub async fn post_git_pull(
         }
     };
 
+    let track_branch = state
+        .authorized_repos
+        .as_ref()
+        .and_then(|c| c.repos.get(&repo_label))
+        .map(|a| a.branch.clone())
+        .unwrap_or_else(|| "main".to_string());
+
     let before_commit = repo
-        .find_reference("refs/heads/main")
+        .find_reference(&format!("refs/heads/{}", track_branch))
         .ok()
         .and_then(|r| r.target())
         .map(|o| o.to_string());
@@ -285,6 +304,12 @@ pub async fn post_git_pull(
         if let Err(e2) = fallback {
             let msg = format!("Fetch failed: {} (fallback main: {})", e, e2);
             tracing::warn!("git-pull: {}", msg);
+            notify::spawn_slack_text(format!(
+                "[Relay] git_pull_fetch_failed\nrepo: {}\nnode: {:?}\n{}",
+                repo_label,
+                state.node_fqdn.as_deref(),
+                msg
+            ));
             return (
                 StatusCode::OK,
                 Json(GitPullResponse {
@@ -301,7 +326,7 @@ pub async fn post_git_pull(
     }
 
     let after_commit = repo
-        .find_reference("refs/heads/main")
+        .find_reference(&format!("refs/heads/{}", track_branch))
         .ok()
         .and_then(|r| r.target())
         .map(|o| o.to_string());
@@ -309,7 +334,20 @@ pub async fn post_git_pull(
     if let Some(ref cfg) = state.authorized_repos {
         if let Err(msg) = authorized_repos::validate_anchor(&repo, &repo_label, cfg) {
             tracing::warn!("git-pull trust validation failed: {}", msg);
-            authorized_repos::rollback_main(&repo, before_commit.as_deref());
+            let after_tip = after_commit.clone();
+            authorized_repos::rollback_branch(&repo, &track_branch, before_commit.as_deref());
+            crate::mesh_events::spawn_publish_pull_validation_failure(
+                crate::mesh_events::PullValidationPublishCtx {
+                    source: "git_pull".into(),
+                    repo: repo_label.clone(),
+                    branch: track_branch.clone(),
+                    error: msg.clone(),
+                    relay_server_id: state.relay_server_id.clone(),
+                    node_fqdn: state.node_fqdn.clone(),
+                    after_tip,
+                    trigger_peer: None,
+                },
+            );
             return (
                 StatusCode::FORBIDDEN,
                 Json(GitPullResponse {
@@ -328,15 +366,29 @@ pub async fn post_git_pull(
     let updated = before_commit != after_commit;
     let message = if updated {
         format!(
-            "Fetched {}. main: {:?} -> {:?}",
-            repo_label,
-            before_commit,
-            after_commit
+            "Fetched {}. {}: {:?} -> {:?}",
+            repo_label, track_branch, before_commit, after_commit
         )
     } else {
-        format!("{} already up to date with origin (main)", repo_label)
+        format!(
+            "{} already up to date with origin ({})",
+            repo_label, track_branch
+        )
     };
     tracing::info!("git-pull: {}", message);
+
+    if updated {
+        if let Some(ref after) = after_commit {
+            notify::spawn_commit_update_notify(
+                "git_pull",
+                repo_label.clone(),
+                track_branch.clone(),
+                after.clone(),
+                state.relay_server_id.clone(),
+                state.node_fqdn.clone(),
+            );
+        }
+    }
 
     (
         StatusCode::OK,
@@ -499,27 +551,6 @@ pub async fn post_github_hook(
     res
 }
 
-fn validate_git_repo_slug(raw: &str) -> Result<String, &'static str> {
-    let trimmed = raw.trim();
-    let base = trimmed.strip_suffix(".git").unwrap_or(trimmed);
-    if base.is_empty() || base.len() > 200 {
-        return Err("invalid repo name length");
-    }
-    if base.starts_with('.') {
-        return Err("repo name may not start with '.'");
-    }
-    if !base
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-    {
-        return Err("repo name must be ASCII letters, digits, '-', '_', or '.'");
-    }
-    if base.contains("..") {
-        return Err("repo name may not contain '..'");
-    }
-    Ok(base.to_string())
-}
-
 /// Create `RELAY_REPO_PATH/<repo>.git` when missing so `git push git://host:9418/<repo>.git` is accepted.
 /// Relay does **not** implement git-protocol authentication; optional policy lives in per-repo `.relay.yaml` / hooks.
 pub async fn post_ensure_bare(
@@ -552,7 +583,7 @@ pub async fn post_ensure_bare(
             .into_response();
     }
 
-    let slug = match validate_git_repo_slug(&repo) {
+    let slug = match crate::peer_hook::validate_repo_slug(&repo) {
         Ok(s) => s,
         Err(msg) => {
             return (

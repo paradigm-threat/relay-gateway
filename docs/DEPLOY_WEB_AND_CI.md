@@ -4,11 +4,11 @@ Normative **product / ops** notes for serving **relay-server**, **multiple Next.
 
 **Code status:** This document describes **planned** behavior. Implementations should update the “Implementation status” section at the bottom as pieces land.
 
-**Related:** **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (VM install), **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** (anchors, authorized repos), **[`LAUNCH_AND_TEST_PLAN.md`](./LAUNCH_AND_TEST_PLAN.md)** (default repo resolution, `RELAY_DEFAULT_REPO`), **[`SERVER_HOOKS.md`](./SERVER_HOOKS.md)** (per-repo `.relay.yaml`, hooks).
+**Related:** **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (VM install), **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)** (**`relay.env`**, rotation, shared deploy SSH key), **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** (**`relay-master`** catalog, submodules + **`relayRootCommit`**, emitted **`authorized-repos.yaml`**), **[`LAUNCH_AND_TEST_PLAN.md`](./LAUNCH_AND_TEST_PLAN.md)** (default repo resolution, **`RELAY_DEFAULT_REPO=relay-master`**), **[`SERVER_HOOKS.md`](./SERVER_HOOKS.md)** (per-repo `.relay.yaml`, hooks).
 
 ### Git sync to relay nodes (normative)
 
-Pushes that **land in relay’s bare repos** MUST use the **git daemon URL** — **`git://{node}:{port}/{repo}.git`** (default port **9418**). Do not use **SSH (`git@…`)** for that path; SSH is for **server administration**, not relay’s published git service. See **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (seed repos, **`POST /api/git/ensure-bare/:repo`**).
+Pushes that **land in relay’s bare repos** MUST use the **git daemon URL** — **`git://{node}:{port}/{repo}.git`** (default port **9418**). Do not use **SSH (`git@…`)** for that path; SSH is for **server administration**, not relay’s published git service. **Normative human-facing form:** **`git://relaygateway.net/{repo}.git`** — implement with **DNS / L4 routing** to the right node (**[`relay-master/README.md`](../../relay-master/README.md)**). See **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (seed repos, **`POST /api/git/ensure-bare/:repo`**). Until push-time bare provisioning exists, **`git daemon`** rejects unknown paths first; see **[`README.md`](../README.md)** (Git daemon).
 
 ---
 
@@ -95,24 +95,25 @@ Multiple repos may request a rebuild close together; **only one build should run
 
 Aligned with **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** and **[`SERVER_HOOKS.md`](./SERVER_HOOKS.md)**:
 
-- **Anchor checks** remain **standard for all relay nodes** for repos in **`authorized-repos.yaml`** (`POST /git-pull`, bootstrap, etc.). Each whitelisted name must list **`anchor_commit` (and branch) before `data/<name>.git` exists** so unrelated history cannot squat the reserved name; see **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** (*Whitelist slots*). **`git push`** over the daemon should enforce the same rule in **`pre-receive`** (planned).
+- **Anchor checks** remain **standard** for repos in **`authorized-repos.yaml`** (`POST /git-pull`, bootstrap, etc.). **Allowlist** rows are defined in **`relay-master`** (**submodules** + **`relayRootCommit`**) and emitted to YAML; see **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**. **`git push`** over the daemon should enforce the same rule in **`pre-receive`** (planned).
 - **Per-repo policy** continues to come from **`.relay.yaml`** (and hooks) **in the repository**, except for **machine-local or installer-written** snippets under paths owned by **`install.sh`** / **`update`** (document those paths when implemented so operators know what is not from Git).
 
 ### Working-tree size cap for non-authorized repos (planned)
 
 - **Metric:** total size of **files that would be served from the default branch’s tree** (working-tree content), **ignoring git object database / history**. Unit: **50 MB** maximum for repos **not** listed in **`authorized-repos.yaml`** (or equivalent allowlist).
-- Repos **in** **`authorized-repos.yaml`**: **no** this cap (subject to disk and ops limits); anchor and hook rules still apply.
+- Repos **in** **`authorized-repos.yaml`** (including emitted catalog entries): **no** this cap (subject to disk and ops limits); anchor and hook rules still apply.
 - Enforcement point: likely **pre-receive** and/or periodic check after push; exact rules TBD.
 
 ---
 
 ## 7. Default repo for node apex (`atlanta1.…` → relay-server)
 
-When the HTTP `Host` is the **node FQDN** only (no `{repo}.` prefix), relay should serve the **default repo**.
+When the HTTP `Host` is the **node FQDN** only (no `{repo}.` prefix), relay should serve the **default repo** — normatively **`relay-master`** when using the catalog model (**[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**).
 
 **Until `RELAY_DEFAULT_REPO` is implemented in relay-server** (see **[`LAUNCH_AND_TEST_PLAN.md`](./LAUNCH_AND_TEST_PLAN.md)** Part 0):
 
-- Operational rule: use the **first repo** in the **ordered clone/bootstrap list**:
+- **Catalog deployments:** set **`RELAY_DEFAULT_REPO=relay-master`** and do **not** rely on bootstrap ordering for the allowlist (**[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**).
+- **Legacy / pre-catalog:** operational rule: use the **first repo** in the **ordered clone/bootstrap list**:
   - **`RELAY_MASTER_REPO_LIST`** / Docker **`DEFAULT_REPOS`**: first **semicolon- (or comma-) separated** remote → bare repo **basename** is the default landing repo.
   - **`RELAY_SEED_REPOS`**: first **`name=url`** segment in order.
   - **`relay-bootstrap.sh` manifest**: first object in **`bareRepos[]`** (array order as in JSON; clone loop uses index `0..n-1`).
@@ -213,7 +214,9 @@ Remove support in **all** maintained repos so the protocol has a **single** bran
 | Item | Status |
 |------|--------|
 | GitLab CI **`package:linode-tgz`** + tests/smoke | **Done** (`.gitlab-ci.yml`) |
+| **`relay-master`** catalog (**`.gitmodules`** + **`relayRootCommit`**) + **`sync-relay-catalog.sh`** | **Done** (workspace **[`relay-master`](../../relay-master)**); **`relay-server`** still consumes emitted YAML |
 | **`POST /api/git/ensure-bare/:repo`** + normative **`git://`** sync docs | **Done** |
+| First **`git push`** creates bare when allowed (gateway / smart HTTP; root-commit identity) | **Planned** (see **`README`**, **`RELAY_TRUST_AND_BOOTSTRAP`**) |
 | **`scripts/relay-linode-redeploy-seed.sh`** + checklist in **`DEPLOY_LINODE.md`** | **Done** |
 | Caddy/nginx + multi-Next + relay split | Planned |
 | **`npm run build`** only (+ `npm ci`/`npm install`) | Planned |

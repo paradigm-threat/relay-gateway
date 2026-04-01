@@ -26,3 +26,38 @@ After the window reloads, the status bar shows **SSH: hostname**. Terminals, fil
 ## 4. Cursor Server install failures on Linux
 
 If Remote-SSH hangs on “Installing Cursor Server”, check disk space on the server, `~/.cursor-server` permissions, and [Cursor forum / GitHub issues](https://github.com/cursor/cursor/issues) for lock-file / proxy fixes.
+
+---
+
+## 5. Non-root SSH (normative for agents and hardened nodes)
+
+Relay nodes should be reached as a **normal UNIX user** with **`sudo`** (e.g. **`ari`**, **`deploy`**, **`ubuntu`**)—**not** **`root`**, especially after **`PermitRootLogin no`** and key-only auth.
+
+### `~/.ssh/config` (operators and automation)
+
+```sshconfig
+Host atlanta3
+  HostName atlanta3.relaygateway.net
+  User ari
+  IdentityFile ~/.ssh/id_ed25519
+```
+
+Use the same **`User`** for **Cursor Remote-SSH** (§1) so the agent’s terminal and file tree match **`ssh atlanta3`**.
+
+### Commands from a local agent or CI (non-interactive)
+
+Prefer explicit user and batch mode so failures are immediate (no password prompt):
+
+```bash
+ssh -o BatchMode=yes -o ConnectTimeout=15 ari@atlanta3.relaygateway.net 'hostname'
+```
+
+Catalog / **`relay-server`** maintenance still uses **`sudo`** on the server (e.g. **`sudo systemctl restart relay-server`**, **`sudo -u relay …`** for **`/opt/relay/data`**). Do **not** assume **`ssh root@…`** works on hardened hosts. **`scripts/relay-linode-redeploy-seed.sh`** defaults to **`RELAY_SSH_USER=ari`** and **`RELAY_SSH_IDENTITY=~/.ssh/id_ed25519_relay_gateway`** (override with env if needed).
+
+**Shared deploy key (policy):** use the **same** automation key on **all** Relay servers (e.g. **`id_ed25519_relay_gateway`**) so redeploy and agent SSH stay predictable. **`install.sh`** / **`relay-install.sh`** can verify **`authorized_keys`** contains that key’s fingerprint when **`RELAY_VALIDATE_DEPLOY_SSH_KEY=1`** — see **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)** §3.
+
+### Docs that use `root@` for scp/install
+
+**[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** keeps **`root@IP`** examples for **first boot** on images that still allow root. On hardened nodes, **scp to `~/`** and run **`sudo ./install.sh …`** over **`ssh user@IP`**, or use **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** (catalog update) with **`ssh user@node`**.
+
+See also **§ “Updating a catalog node”** in **`RELAY_TRUST_AND_BOOTSTRAP.md`** for **`sudo -u relay`** + **`sync-relay-catalog.sh`**.

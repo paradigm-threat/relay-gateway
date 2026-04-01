@@ -10,6 +10,8 @@ pub use general::{
     get_api_config, get_openapi_yaml, get_root, get_swagger_ui, options_capabilities,
     post_ensure_bare, post_git_pull, post_github_hook, serve_acme_challenge,
 };
+pub use crate::mesh_events::post_mesh_event;
+pub use crate::peer_hook::post_peer_hook;
 pub use head::{head_file, head_root};
 pub use write::{delete_file, put_file};
 pub use query::handle_query;

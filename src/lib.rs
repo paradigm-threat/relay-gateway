@@ -1,6 +1,10 @@
 pub mod git;
 pub mod cli;
 pub mod authorized_repos;
+pub mod mesh_events;
+pub mod mesh_role;
+pub mod notify;
+pub mod peer_hook;
 pub mod types;
 pub mod handlers;
 pub mod transpiler;
