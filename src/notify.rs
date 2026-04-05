@@ -365,6 +365,23 @@ pub fn notify_hook_error(context: &str, message: &str) {
     spawn_slack_text_blocking(text);
 }
 
+/// Structured Slack line for `pre-receive` rejections (branch policy, missing `.relay.yaml`, etc.).
+pub fn notify_pre_receive_rejection(
+    repo_slug: &str,
+    branch: &str,
+    refname: &str,
+    old_oid: &str,
+    new_oid: &str,
+    message: &str,
+) {
+    let msg: String = message.chars().take(1500).collect();
+    let text = format!(
+        "[Relay] pre_receive_rejected\nrepo: {}\nbranch: {}\nref: {}\nold: {}\nnew: {}\n{}",
+        repo_slug, branch, refname, old_oid, new_oid, msg
+    );
+    spawn_slack_text_blocking(text);
+}
+
 pub fn notify_auto_push_error(origin: &str, detail: &str) {
     let d: String = detail.chars().take(1200).collect();
     let text = format!(

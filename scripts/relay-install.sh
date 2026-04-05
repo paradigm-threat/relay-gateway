@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Relay server: install | update | repair | reconfigure-features
+# Relay gateway: install | update | repair | reconfigure-features
 # Works on common Linux distros (apt, dnf/yum, apk, pacman).
 # Feature selection (Piper TTS, npm packages) is recorded in state/features.json
-# and exposed at runtime via relay-server /api/config.
+# and exposed at runtime via relay-gateway /api/config.
 #
 # Non-interactive: RELAY_INSTALL_NONINTERACTIVE=1 RELAY_FEAT_PIPER=1 RELAY_FEAT_NPM_PKGS="songwalker-js"
 # Vercel DNS (first step of install unless skipped):
@@ -14,6 +14,8 @@
 set -euo pipefail
 
 INSTALL="${RELAY_INSTALL_ROOT:-/opt/relay}"
+# Installed HTTP binary and systemd unit (relay-gateway.service). Legacy relay-server is retired on install/repair/update.
+RELAY_HTTP_BIN="${RELAY_HTTP_BIN:-relay-gateway}"
 HTTP_PORT="${RELAY_HTTP_PORT:-8080}"
 GIT_PORT="${RELAY_GIT_PORT:-9418}"
 PIPER_HTTP_PORT="${RELAY_PIPER_HTTP_PORT:-5590}"
@@ -28,9 +30,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION_MARKER="2"
 PIPER_DEFAULT_VOICE_ID_DEFAULT="${RELAY_FEAT_PIPER_DEFAULT_VOICE:-en_GB-cori-medium}"
 PIPER_DEFAULT_VOICE_IDS="${RELAY_FEAT_PIPER_VOICES:-en_GB-cori-medium en_US-lessac-medium}"
+PIPER_CACHE_TTL_SECONDS="${RELAY_FEAT_PIPER_CACHE_TTL_SECONDS:-86400}"
+PIPER_CACHE_MAX_FILES="${RELAY_FEAT_PIPER_CACHE_MAX_FILES:-1000}"
 
 # Semicolon-separated FQDNs; used when RELAY_MASTER_PEER_LIST is unset (non-interactive) or when the operator accepts the interactive default (Enter).
-DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-atlanta2.relaygateway.net;atlanta3.relaygateway.net;jp-osa.relaygateway.net}"
+DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-atlanta2.relaygateway.net;atlanta3.relaygateway.net}"
 
 log() { echo "[relay-install] $*" >&2; }
 die() { echo "[relay-install] ERROR: $*" >&2; exit 1; }
@@ -284,7 +288,7 @@ install_piper_artifacts() {
     requested_voices="$(piper_normalize_voice_ids "$requested_voices")"
   fi
 
-  mkdir -p "$INSTALL/lib/piper" "$INSTALL/lib/piper/models"
+  mkdir -p "$INSTALL/lib/piper" "$INSTALL/lib/piper/models" "$INSTALL/cache/piper-tts"
   local arch url
   arch="$(uname -m)"
   case "$arch" in
@@ -315,7 +319,7 @@ install_piper_artifacts() {
   for voice_id in $requested_voices; do
     install_piper_voice_model "$voice_id"
   done
-  chown -R relay:relay "$INSTALL/lib/piper/models"
+  chown -R relay:relay "$INSTALL/lib/piper/models" "$INSTALL/cache/piper-tts"
 
   if ! piper_install_ok; then
     die "Piper install is incomplete after extraction (binary or shared libraries missing)"
@@ -345,6 +349,9 @@ Environment=PIPER_MODEL=$(piper_model_path_for_voice "$default_voice_id")
 Environment=PIPER_MODELS_DIR=$INSTALL/lib/piper/models
 Environment=LD_LIBRARY_PATH=$INSTALL/lib/piper
 Environment=PIPER_HTTP_PORT=$PIPER_HTTP_PORT
+Environment=PIPER_CACHE_DIR=$INSTALL/cache/piper-tts
+Environment=PIPER_CACHE_TTL_SECONDS=$PIPER_CACHE_TTL_SECONDS
+Environment=PIPER_CACHE_MAX_FILES=$PIPER_CACHE_MAX_FILES
 ExecStart=/usr/bin/python3 $INSTALL/bin/piper-tts-http.py
 Restart=always
 RestartSec=5
@@ -488,11 +495,23 @@ install_libretranslate_artifacts() {
 }
 
 # Copy binary into INSTALL/bin unless it is already that file (repair often uses RELAY_BIN_SOURCE=$INSTALL/bin).
+# Accepts relay-gateway or legacy relay-server in the source dir (tarballs / old trees).
 install_binaries() {
-  local src="${RELAY_BIN_SOURCE:-$SCRIPT_DIR}"
-  [[ -f "$src/relay-server" ]] || src="."
-  [[ -f "$src/relay-server" ]] || die "relay-server binary not found (place in $SCRIPT_DIR or cwd)"
-  [[ -f "$src/relay-hook-handler" ]] || die "relay-hook-handler binary not found beside relay-server in $src"
+  local src="${RELAY_BIN_SOURCE:-$SCRIPT_DIR}" gw_src=""
+  if [[ -f "$src/$RELAY_HTTP_BIN" ]]; then
+    gw_src="$src/$RELAY_HTTP_BIN"
+  elif [[ -f "$src/relay-server" ]]; then
+    gw_src="$src/relay-server"
+  else
+    src="."
+    if [[ -f "$src/$RELAY_HTTP_BIN" ]]; then
+      gw_src="$src/$RELAY_HTTP_BIN"
+    elif [[ -f "$src/relay-server" ]]; then
+      gw_src="$src/relay-server"
+    fi
+  fi
+  [[ -n "$gw_src" ]] || die "$RELAY_HTTP_BIN binary not found (place $RELAY_HTTP_BIN or legacy relay-server in $RELAY_BIN_SOURCE, $SCRIPT_DIR, or cwd)"
+  [[ -f "$src/relay-hook-handler" ]] || die "relay-hook-handler binary not found beside HTTP binary in $src"
   mkdir -p "$INSTALL/bin" "$INSTALL/hooks" "$INSTALL/data" "$INSTALL/logs" "$INSTALL/www" "$INSTALL/src"
   _copy_bin_if_needed() {
     local s="$1" d="$2"
@@ -501,16 +520,24 @@ install_binaries() {
     fi
     cp -f "$s" "$d"
   }
-  _copy_bin_if_needed "$src/relay-server" "$INSTALL/bin/relay-server"
+  _copy_bin_if_needed "$gw_src" "$INSTALL/bin/$RELAY_HTTP_BIN"
   _copy_bin_if_needed "$src/relay-hook-handler" "$INSTALL/bin/relay-hook-handler"
   if [[ -f "$src/relay-startup-catalog-sync.sh" ]]; then
     _copy_bin_if_needed "$src/relay-startup-catalog-sync.sh" "$INSTALL/bin/relay-startup-catalog-sync.sh"
   elif [[ -f "$SCRIPT_DIR/relay-startup-catalog-sync.sh" ]]; then
     cp -f "$SCRIPT_DIR/relay-startup-catalog-sync.sh" "$INSTALL/bin/relay-startup-catalog-sync.sh"
   fi
-  chmod +x "$INSTALL/bin/relay-server" "$INSTALL/bin/relay-hook-handler"
+  chmod +x "$INSTALL/bin/$RELAY_HTTP_BIN" "$INSTALL/bin/relay-hook-handler"
   [[ -f "$INSTALL/bin/relay-startup-catalog-sync.sh" ]] && chmod +x "$INSTALL/bin/relay-startup-catalog-sync.sh"
+  if [[ -f "$src/relay-reconcile.sh" ]]; then
+    _copy_bin_if_needed "$src/relay-reconcile.sh" "$INSTALL/bin/relay-reconcile.sh"
+  elif [[ -f "$SCRIPT_DIR/relay-reconcile.sh" ]]; then
+    cp -f "$SCRIPT_DIR/relay-reconcile.sh" "$INSTALL/bin/relay-reconcile.sh"
+  fi
+  [[ -f "$INSTALL/bin/relay-reconcile.sh" ]] && chmod +x "$INSTALL/bin/relay-reconcile.sh"
+  rm -f "$INSTALL/bin/relay-server"
   chown -R relay:relay "$INSTALL"
+  lock_relay_env_permissions
   for h in pre-receive post-receive post-update; do
     ln -sf "$INSTALL/bin/relay-hook-handler" "$INSTALL/hooks/$h"
   done
@@ -524,10 +551,26 @@ write_gitconfig_hooks() {
     printf '\n[daemon]\n\treceivepack = true\n' >>/etc/gitconfig
 }
 
+retire_relay_server_http_unit() {
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl list-unit-files relay-server.service 2>/dev/null | grep -q '^relay-server.service'; then
+      systemctl disable --now relay-server.service 2>/dev/null || true
+    fi
+  fi
+  # Orphan: relay-server.service was removed earlier but the process can still be running (not in unit-files list).
+  if command -v pgrep >/dev/null 2>&1 && pgrep -f "${INSTALL}/bin/relay-server serve" >/dev/null 2>&1; then
+    pkill -f "${INSTALL}/bin/relay-server serve" 2>/dev/null || true
+    sleep 1
+  fi
+  rm -f /etc/systemd/system/relay-server.service
+  rm -f "$INSTALL/bin/relay-server"
+}
+
 write_systemd_core() {
-  cat >/etc/systemd/system/relay-server.service <<EOF
+  retire_relay_server_http_unit
+  cat >/etc/systemd/system/relay-gateway.service <<EOF
 [Unit]
-Description=Relay HTTP server
+Description=Relay HTTP gateway
 After=network.target relay-git-daemon.service
 Wants=relay-git-daemon.service
 
@@ -545,7 +588,7 @@ Environment=RELAY_FEATURES_STATE_PATH=$FEATURES_JSON
 Environment=RUST_LOG=info
 EnvironmentFile=-$INSTALL/relay.env
 ExecStartPre=$INSTALL/bin/relay-startup-catalog-sync.sh
-ExecStart=$INSTALL/bin/relay-server serve
+ExecStart=$INSTALL/bin/$RELAY_HTTP_BIN serve
 Restart=always
 RestartSec=3
 
@@ -569,7 +612,69 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
+  write_reconcile_systemd
   systemctl daemon-reload
+  systemctl enable relay-gateway 2>/dev/null || true
+}
+
+ensure_reconcile_seed() {
+  mkdir -p "$INSTALL/etc"
+  local rf="$INSTALL/etc/reconcile-allowlist"
+  if [[ ! -f "$rf" ]]; then
+    cat >"$rf" <<'RECONEOF'
+# relay-master paths (relative to repo root) + SHA-256 of the blob at catalog HEAD.
+# Format: path<TAB>sha256_hex
+# Example: scripts/deploy/example.sh	abc123deadbeef...
+RECONEOF
+    chmod 600 "$rf"
+    chown root:root "$rf"
+  fi
+}
+
+write_reconcile_systemd() {
+  ensure_reconcile_seed
+  [[ -f "$INSTALL/bin/relay-reconcile.sh" ]] || return 0
+  cat >/etc/systemd/system/relay-reconcile.service <<EOF
+[Unit]
+Description=Relay Helm-style reconcile (relay-master manifest)
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=$INSTALL/bin/relay-reconcile.sh
+EnvironmentFile=-$INSTALL/relay.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  cat >/etc/systemd/system/relay-reconcile.timer <<EOF
+[Unit]
+Description=Timer for relay-reconcile (Helm-style deploy from relay-master)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+RandomizedDelaySec=3min
+Unit=relay-reconcile.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
+maybe_enable_reconcile_timer() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  case "${RELAY_RECONCILE_ENABLE_TIMER:-0}" in
+    1|yes|true|TRUE) ;;
+    *) return 0 ;;
+  esac
+  systemctl enable relay-reconcile.timer 2>/dev/null || true
+  systemctl start relay-reconcile.timer 2>/dev/null || true
+  log "relay-reconcile.timer enabled (RELAY_RECONCILE_ENABLE_TIMER=1)"
 }
 
 prompt_features() {
@@ -645,7 +750,7 @@ pkgs_to_json_array() {
 # If binaries exist but state was never written (manual copy / old install), create minimal features.json.
 bootstrap_features_json_if_missing() {
   [[ -f "$FEATURES_JSON" ]] && return 0
-  [[ -f "$INSTALL/bin/relay-server" ]] || return 0
+  [[ -f "$INSTALL/bin/$RELAY_HTTP_BIN" ]] || return 0
   log "No $FEATURES_JSON — bootstrapping minimal state (Piper/npm/translation off). Use reconfigure-features to enable."
   write_features_json 0 0 "[]" 0 "$(pkgs_to_json_array "")" 0
 }
@@ -880,6 +985,14 @@ configure_vercel_dns_first() {
   log "Vercel DNS configured and verified for $fqdn"
 }
 
+# relay.env: only root (install/repair) may edit; relay user receives vars via systemd EnvironmentFile.
+lock_relay_env_permissions() {
+  local f="$INSTALL/relay.env"
+  [[ -f "$f" ]] || return 0
+  chown root:root "$f"
+  chmod 600 "$f"
+}
+
 # Writes RELAY_PUBLIC_HOSTNAME from Vercel-configured FQDN and/or RELAY_PUBLIC_HOSTNAME env
 # (needed when RELAY_SKIP_VERCEL_DNS=1 but Host-based routing still requires the node name).
 append_relay_env_public_host() {
@@ -963,25 +1076,28 @@ do_install() {
   refresh_features_inventory
 
   touch "$INSTALL/relay.env"
-  chown relay:relay "$INSTALL/relay.env"
+  chown root:root "$INSTALL/relay.env"
+  chmod 600 "$INSTALL/relay.env"
   append_relay_env_public_host
   append_relay_env_server_id
   append_relay_env_peer_list
   append_relay_env_git_ensure_bare_default
-  systemctl enable relay-server relay-git-daemon
-  systemctl restart relay-git-daemon relay-server
+  lock_relay_env_permissions
+  systemctl enable relay-gateway relay-git-daemon
+  systemctl restart relay-git-daemon relay-gateway
+  maybe_enable_reconcile_timer
   [[ "$piper_en" == "1" ]] && systemctl restart relay-tts-piper 2>/dev/null || true
   [[ "$lt_en" == "1" ]] && systemctl restart libretranslate 2>/dev/null || true
 
   maybe_validate_deploy_ssh_key
   maybe_ufw
-  log "Install complete. HTTP :$HTTP_PORT  git :$GIT_PORT  LibreTranslate :$LIBRETRANSLATE_PORT (if enabled)  config: GET /api/config"
+  log "Install complete. HTTP :$HTTP_PORT  git :$GIT_PORT  LibreTranslate :$LIBRETRANSLATE_PORT (if enabled)  config: POST /api/config"
 }
 
 do_update() {
   need_root
   bootstrap_features_json_if_missing
-  [[ -f "$FEATURES_JSON" ]] || die "run install first (or ensure $INSTALL/bin/relay-server exists)"
+  [[ -f "$FEATURES_JSON" ]] || die "run install first (or ensure $INSTALL/bin/$RELAY_HTTP_BIN exists)"
   local piper_en piper_voices piper_default_voice
   piper_en="$(jq -r '.features.piper_tts.enabled // false' "$FEATURES_JSON" 2>/dev/null || echo false)"
   piper_voices="$(jq -r '.features.piper_tts.voices[]?.id' "$FEATURES_JSON" 2>/dev/null | tr '\n' ' ' | xargs echo -n)"
@@ -989,11 +1105,13 @@ do_update() {
   [[ -n "$piper_default_voice" ]] || piper_default_voice="$PIPER_DEFAULT_VOICE_ID_DEFAULT"
   [[ -n "$piper_voices" ]] || piper_voices="$piper_default_voice"
   install_binaries
+  write_systemd_core
   if [[ "$piper_en" == "true" ]]; then
     install_piper_artifacts "$piper_voices" "$piper_default_voice"
   fi
   refresh_features_inventory
-  systemctl restart relay-git-daemon relay-server
+  systemctl restart relay-git-daemon relay-gateway
+  maybe_enable_reconcile_timer
   systemctl try-restart relay-tts-piper 2>/dev/null || true
   systemctl try-restart libretranslate 2>/dev/null || true
   log "Binaries updated"
@@ -1049,7 +1167,9 @@ do_repair() {
     fi
   fi
   refresh_features_inventory
-  systemctl restart relay-git-daemon relay-server
+  lock_relay_env_permissions
+  systemctl restart relay-git-daemon relay-gateway
+  maybe_enable_reconcile_timer
   maybe_validate_deploy_ssh_key
   maybe_ufw
   log "Repair complete"
@@ -1100,7 +1220,7 @@ do_reconfigure_features() {
     systemctl stop libretranslate 2>/dev/null || true
   fi
   refresh_features_inventory
-  systemctl restart relay-server
+  systemctl restart relay-gateway
   maybe_ufw
   log "Features reconfigured"
 }
@@ -1144,7 +1264,7 @@ do_refresh_features() {
   bootstrap_features_json_if_missing
   [[ -f "$FEATURES_JSON" ]] || die "run install first (no $FEATURES_JSON)"
   refresh_features_inventory
-  systemctl try-restart relay-server 2>/dev/null || true
+  systemctl try-restart relay-gateway 2>/dev/null || true
   log "Feature inventory refreshed (Piper voices / Argos language pairs → $FEATURES_JSON)"
 }
 
@@ -1158,11 +1278,12 @@ case "${1:-install}" in
     echo "Usage: $0 {install|update|repair|reconfigure-features|refresh-features}"
     echo "  install   — Vercel DNS first (unless skipped), then base deps; Piper + npm + translation prompts (or RELAY_INSTALL_NONINTERACTIVE=1)"
     echo "  DNS env: RELAY_PUBLIC_FQDN, VERCEL_API_TOKEN, optional VERCEL_TEAM_ID, RELAY_VERCEL_DOMAIN, RELAY_SKIP_VERCEL_DNS=1"
-    echo "  Features env: RELAY_FEAT_PIPER, RELAY_FEAT_PIPER_VOICES, RELAY_FEAT_PIPER_DEFAULT_VOICE, RELAY_FEAT_NPM_PKGS, RELAY_FEAT_TRANSLATION, RELAY_FEAT_TRANSLATION_PKGS, RELAY_FEAT_LIBRETRANSLATE, RELAY_LIBRETRANSLATE_LOAD_ONLY (see docs/INSTALL_FEATURES.md)"
+    echo "  Features env: RELAY_FEAT_PIPER, RELAY_FEAT_PIPER_VOICES, RELAY_FEAT_PIPER_DEFAULT_VOICE, RELAY_FEAT_PIPER_CACHE_TTL_SECONDS, RELAY_FEAT_PIPER_CACHE_MAX_FILES, RELAY_FEAT_NPM_PKGS, RELAY_FEAT_TRANSLATION, RELAY_FEAT_TRANSLATION_PKGS, RELAY_FEAT_LIBRETRANSLATE, RELAY_LIBRETRANSLATE_LOAD_ONLY (see docs/INSTALL_FEATURES.md)"
     echo "  Node env: RELAY_SERVER_ID, RELAY_PUBLIC_HOSTNAME (if RELAY_SKIP_VERCEL_DNS=1), RELAY_MASTER_PEER_LIST (override; default mesh masters: $DEFAULT_RELAY_MASTER_PEER_LIST)"
     echo "  Deploy SSH policy (optional): RELAY_VALIDATE_DEPLOY_SSH_KEY=1, RELAY_DEPLOY_SSH_USER (default ari), RELAY_DEPLOY_SSH_KEY_FINGERPRINT (substring from ssh-keygen -lf -E sha256) — docs/SECRETS_POLICY.md"
     echo "  Startup catalog sync (optional): RELAY_STARTUP_CATALOG_SYNC=0 to skip ExecStartPre (default 1 when RELAY_MASTER_CATALOG_PATH has relay-catalog.json + scripts/sync-relay-catalog.sh); Slack: RELAY_NOTIFY_SLACK_WEBHOOK_URL"
-    echo "  update    — refresh relay-server binaries from this directory; rescan feature inventory"
+    echo "  Reconcile (optional): RELAY_RECONCILE_ENABLED=1, RELAY_RECONCILE_ENABLE_TIMER=1 (systemd timer); deploy/relay-gateway.json in relay-master — docs/RELAY_RECONCILE_PLAN.md"
+    echo "  update    — refresh relay-gateway binaries and systemd unit from this directory; rescan feature inventory"
     echo "  repair    — fix perms, reinstall features from state/features.json (bootstraps minimal state if missing)"
     echo "  reconfigure-features — change Piper/npm/translation (only supported way to add/remove optional features)"
     echo "  refresh-features — rescan Piper models + Argos packs into features.json (after adding voices or translation packages)"

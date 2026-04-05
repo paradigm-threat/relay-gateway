@@ -1,7 +1,7 @@
 # Relay Server Launch & Test Plan
 
 **Target window:** March 18–31, 2025 (Linode $100 credit expires end of month)  
-**Scope:** relay-server, SNESology + paradigm-threat preset staging, multi-repo rendering, dynamic runtime libraries (songwalker, Piper TTS), multi-node staging, stress tests, auth & repo rules
+**Scope:** relay-gateway, SNESology + paradigm-threat preset staging, multi-repo rendering, dynamic runtime libraries (songwalker, Piper TTS), multi-node staging, stress tests, auth & repo rules
 
 **Trust & provisioning:** **Min launch:** **`RELAY_SERVER_ID`** + **`RELAY_MASTER_CATALOG_PATH`** (recommended; optional **`RELAY_MASTER_TRUST_ROOT`**) *or* **`RELAY_AUTHORIZED_REPOS_PATH`** (YAML from **`sync-relay-catalog.sh`**). See **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**. Set **`RELAY_DEFAULT_REPO=relay-master`** for the catalog-as-apex model.
 
@@ -29,7 +29,7 @@ When multiple bare repos are deployed on one server, **GET/HEAD/OPTIONS and clie
 4. **`QUERY` method**  
    Branch / **`all`** → **request body**, not **`X-Relay-Branch`** (**§9** in DEPLOY_WEB_AND_CI).
 
-### Implementation notes for relay-server
+### Implementation notes for relay-gateway
 
 - **Rollout:** implement **Host** parsing (§8), then remove **`branch_from` header** usage; migrate **QUERY** body; update clients (**§11**).
 - Add explicit **`RELAY_DEFAULT_REPO`** (repo name without `.git`) so “first in list” is not the only story.
@@ -40,7 +40,7 @@ When multiple bare repos are deployed on one server, **GET/HEAD/OPTIONS and clie
 
 ## Part 1: Codebase Analysis & Recommendations
 
-### 1.1 relay-server Architecture Summary
+### 1.1 relay-gateway Architecture Summary
 
 | Component | Tech | Status |
 |-----------|------|--------|
@@ -128,7 +128,7 @@ These repos are the **canonical staging targets** for Linode: multi-repo servers
 |------|----------|------------|
 | PUT/DELETE unauthenticated | High | Add optional API key or token auth; document as "trusted network" deployment |
 | GitHub webhook unverified | Medium | Implement `X-Hub-Signature-256` verification |
-| `allowedKeys` not enforced | Medium | Implement key whitelist check in `enforce_branch_rules` |
+| `allowedKeys` not enforced | Medium | Addressed in `git/branch_policy` + `git verify-commit` (SSH allowed signers) |
 | Hook sandbox escape | Medium | REPODB_PLAN: remove `fs`, `path`, `child_process` from RelayHost; use Relay.fs only |
 
 ### 2.2 Unfinished / Incomplete Features
@@ -136,8 +136,8 @@ These repos are the **canonical staging targets** for Linode: multi-repo servers
 | Feature | Location | Status |
 |---------|----------|--------|
 | Auto-sync (fetch from origin) | `docker-entrypoint.sh` | Hourly loop only; no webhook-triggered fetch |
-| Auto-push (P2P sync) | `relay-hook-handler` | ✅ Implemented; uses `git push --force` to originList |
-| `allowedKeys` enforcement | `relay-hook-handler` | ❌ Parsed, not enforced |
+| Auto-push (P2P sync) | `relay-hook-handler` | ✅ Implemented; **fast-forward** `git push` to originList (no `--force`) |
+| `allowedKeys` enforcement | `relay-hook-handler` / `branch_policy` | ✅ Per-commit verify + allowlist |
 | Per-branch index.db | REPODB_PLAN | Planned; current uses `relay_index.json` |
 | Relay.fs sandbox | REPODB_PLAN | Planned; hooks still have full Node access |
 | git-pull multi-repo | `post_git_pull` | ❌ Assumes single repo |
@@ -177,7 +177,7 @@ These repos are the **canonical staging targets** for Linode: multi-repo servers
 
 Normative mesh / event roadmap (IRC-style roles, notify → pull, WebRTC options, **internal** anti–over-ping — **SHA-first**, optional **`via` / hops**, **no Slack dependency**): **[`RELAY_MESH_NETWORKING_PLAN.md`](./RELAY_MESH_NETWORKING_PLAN.md)**.
 
-1. **`POST /hooks/peer`** (**shipped** in `relay-server`):
+1. **`POST /hooks/peer`** (**shipped** in `relay-gateway`):
    - Body: `{ "repo", "peer", "branch"?, "new_sha"? }` — see **[`README.md`](../README.md)** (Webhooks).
    - Header: **`X-Relay-Peer-Secret`** = env **`RELAY_PEER_SECRET`** (endpoint disabled if unset).
    - Fetches from **`git://{peer}:{RELAY_GIT_PORT}/{repo}.git`** (default port **9418**). Optional **`RELAY_MASTER_PEER_LIST`** allowlists **`peer`**.
@@ -272,7 +272,7 @@ If you still want **paradigm-threat-site** or another hosted API as a fallback:
 | **Web (in-repo apps)** | Server with `songwalker-js` in node extensions resolves imports during transpile/serve; client uses **`Host`** so the correct repo’s hooks run. |
 | **Android / iOS / desktop** | **songwalker-core** linked in native relay clients; repos target a declared **minCoreVersion**; presets and scripts sync via relay Git. |
 
-### 5.4 Capability discovery (`/api/config`)
+### 5.4 Capability discovery (`POST /api/config`)
 
 Extend responses so clients can branch UI without query hacks:
 
@@ -435,7 +435,7 @@ Run: `k6 run stress.js`
 | `RELAY_REPO_PATH` | Root for bare repos (e.g. `/srv/relay/data`) |
 | `RELAY_MASTER_REPO_LIST` | Semicolon-separated repos to clone (**SNESology; paradigm-threat presets first**) |
 | **`RELAY_DEFAULT_REPO`** | Bare repo name (no `.git`) for landing when no header/subdomain match |
-| `RELAY_MASTER_PEER_LIST` | Peers for `/api/config` and auto-push targets |
+| `RELAY_MASTER_PEER_LIST` | Peers for `POST /api/config` and auto-push targets |
 | `RELAY_PEER_SECRET` | Shared secret for `/hooks/peer` (to add) |
 | `GITHUB_WEBHOOK_SECRET` | For GitHub webhook verification (to add) |
 | `RELAY_SERVICES` | e.g. `base`, `piper-tts`, `songwalker-js` |

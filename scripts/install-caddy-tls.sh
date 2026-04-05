@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install Caddy on :80 and :443 → relay-server on 127.0.0.1:8080 with Let's Encrypt (on-demand TLS).
+# Install Caddy on :80 and :443 → relay-gateway on 127.0.0.1:8080 with Let's Encrypt (on-demand TLS).
 # Removes the legacy UFW PREROUTING :80→:8080 redirect block (relay NAT hack) if present.
 #
 # Required env:
@@ -31,16 +31,27 @@ import sys
 from pathlib import Path
 p = Path(sys.argv[1])
 t = p.read_text()
-old = """# Redirect HTTP :80 -> relay-server :8080 (URLs without :8080)
+for label, old in (
+    ("relay-server", """# Redirect HTTP :80 -> relay-server :8080 (URLs without :8080)
 *nat
 :PREROUTING ACCEPT [0:0]
 -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 8080
 COMMIT
 
-"""
-if old in t:
-    p.write_text(t.replace(old, "", 1))
-    print("removed NAT redirect from", p)
+"""),
+    ("relay-gateway", """# Redirect HTTP :80 -> relay-gateway :8080 (URLs without :8080)
+*nat
+:PREROUTING ACCEPT [0:0]
+-A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 8080
+COMMIT
+
+"""),
+):
+    if old in t:
+        t = t.replace(old, "", 1)
+        p.write_text(t)
+        print("removed NAT redirect (%s) from" % label, p)
+        break
 PY
   done
 }

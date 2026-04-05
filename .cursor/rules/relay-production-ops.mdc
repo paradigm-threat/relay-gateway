@@ -1,0 +1,108 @@
+---
+description: Production Linode relay masters — SSH/autossh, standard deploy, debugging (relay-gateway)
+alwaysApply: true
+---
+
+# Relay production ops (SSH, autossh, deploy, debug)
+
+Use this when the user asks to deploy, restart, inspect logs, or debug **relay-gateway** on **Linode masters** (e.g. **atlanta2.relaygateway.net**, **atlanta3.relaygateway.net**). Paths below are relative to this crate root (**`relay-gateway/`**).
+
+## Identity and access
+
+- **User:** `ari` (sudo on hosts), unless the user says otherwise.
+- **Key:** `~/.ssh/id_ed25519_relay_gateway` with **`-o IdentitiesOnly=yes`** when not using a `Host` block that sets `IdentityFile`.
+- **`~/.ssh/config`:** Prefer existing `Host` entries (e.g. **atlanta3.relaygateway.net**). For **atlanta2**, use `ari@atlanta2.relaygateway.net` with the key above, or add a matching `Host` block for parity.
+- **Batch / agent runs:** Use **`ssh -o BatchMode=yes`** so failures are immediate (no hang on password).
+
+## autossh vs plain ssh
+
+- **One-off remote commands** (deploy, `journalctl`, `systemctl`, `curl` on the box): use **`ssh`** (or **`scp`**). This is the default for automation.
+- **Long-lived tunnel** (map remote **relay HTTP** to localhost for debugging through a stable connection that **reconnects** after network blips): use **`autossh`**.
+  - Install: `autossh` package on the operator machine.
+  - **Local forward** (hit the node’s relay HTTP as if it were local):
+
+    ```bash
+    autossh -M 0 -N -L 18080:127.0.0.1:8080 -i ~/.ssh/id_ed25519_relay_gateway -o IdentitiesOnly=yes ari@atlanta3.relaygateway.net
+    ```
+
+    Then: `curl -sS -X POST http://127.0.0.1:18080/api/config | head -c 400`
+  - **`-M 0`:** use SSH keepalives (see `ServerAliveInterval` in `~/.ssh/config`) instead of autossh’s legacy monitor port.
+  - **Background:** add **`-f`** once verified; stop with `pkill -f 'autossh.*18080:127.0.0.1:8080'` (adjust port/host as needed).
+- Do **not** assume autossh is required for every task; use it when the user needs a **persistent forward** or **resilient** interactive session.
+
+## Standard binary deploy (trusted build → masters)
+
+1. **Build tarball (local):**
+
+   ```bash
+   ./scripts/pack-linode-deploy.sh
+   ```
+
+   Produces **`target/relay-linode-deploy.tgz`**.
+
+2. **Push + update on a host** (non-root sudo user; matches **`docs/DEPLOY_LINODE.md`** hardened pattern):
+
+   ```bash
+   TGZ=target/relay-linode-deploy.tgz
+   HOST=atlanta3.relaygateway.net   # or atlanta2.relaygateway.net
+   scp -i ~/.ssh/id_ed25519_relay_gateway -o IdentitiesOnly=yes -o BatchMode=yes "$TGZ" "ari@${HOST}:/tmp/relay-linode-deploy.tgz"
+   ssh -i ~/.ssh/id_ed25519_relay_gateway -o IdentitiesOnly=yes -o BatchMode=yes "ari@${HOST}" 'sudo bash -s' <<'REMOTE'
+   set -euo pipefail
+   install -d -m 700 /root
+   cp -f /tmp/relay-linode-deploy.tgz /root/relay-linode-deploy.tgz
+   cd /root && rm -rf .relay-deploy-staging && mkdir .relay-deploy-staging && cd .relay-deploy-staging
+   tar xzf ../relay-linode-deploy.tgz
+   export RELAY_BIN_SOURCE=/root/.relay-deploy-staging RELAY_INSTALL_NONINTERACTIVE=1
+   ./install.sh update
+   cd /root && rm -rf .relay-deploy-staging && rm -f /tmp/relay-linode-deploy.tgz
+   REMOTE
+   ```
+
+3. **Both US masters (no seed):** tarball + `install.sh update` on **atlanta2** and **atlanta3**, strip retired **`jp-osa.relaygateway.net`** from **`/opt/relay/relay.env`** if present, restart **`relay-gateway`**:
+
+   ```bash
+   ./scripts/deploy-all-masters.sh
+   ```
+
+4. **Optional script** (upload + `install.sh update` + **POST** health check; **also** runs **`POST /api/git/ensure-bare/$RELAY_SEED_REPO`** unless skipped — avoid on production if that side effect is unwanted):
+
+   ```bash
+   RELAY_REDEPLOY_SKIP_SEED=1 ./scripts/relay-linode-redeploy-seed.sh atlanta3.relaygateway.net   # binary only
+   ./scripts/relay-linode-redeploy-seed.sh atlanta3.relaygateway.net   # includes ensure-bare
+   ```
+
+   Override **`RELAY_SSH_USER`**, **`RELAY_SSH_IDENTITY`**, **`RELAY_SEED_REPO`** as needed.
+
+## HTTP API checks (normative)
+
+- **`/api/config`** and **`/api/status`** are **POST only** (GET can collide with repo file routes). Example:
+
+  `curl -sS -X POST "https://atlanta3.relaygateway.net/api/status"`
+
+- On the box: **`curl -sS -X POST http://127.0.0.1:8080/api/config`**
+
+## `relay.env`
+
+- On hosts, **`install.sh`** sets **`/opt/relay/relay.env`** to **`root:root`** **`chmod 600`** (not writable by user **`relay`**). **`relay-gateway`** still receives vars via systemd **`EnvironmentFile`**. Edit with **`sudo`** or **`install.sh update` / `repair`**.
+
+## Debugging checklist
+
+- **Who owns :8080?** `sudo ss -tlnp | grep 8080` — expect **`relay-gateway`**, not legacy **`relay-server`**.
+- **Legacy orphan:** If **`/opt/relay/bin/relay-server serve`** still runs after an update, **`relay-gateway` cannot bind** and will flap. Fix:
+
+  ```bash
+  sudo systemctl stop relay-server 2>/dev/null || true
+  sudo pkill -f '/opt/relay/bin/relay-server serve' || true
+  sudo systemctl restart relay-gateway
+  ```
+
+  **`install.sh`** (current tree) should **`pkill`** stale **`relay-server`** during unit retirement; if an old installer ran, do the above once.
+- **Logs:** `journalctl -u relay-gateway -n 80 --no-pager` (may need `adm`/`sudo`).
+- **Git:** **`relay-git-daemon.service`** — restart if hook/binary issues after deploy: `sudo systemctl restart relay-git-daemon`.
+
+## Docs
+
+- **`docs/DEPLOY_LINODE.md`** — full operator flow, env, verification.
+- **`docs/DEPLOY_SELF_HOSTED.md`** — hosting the tarball, `RELAY_DEPLOY_TGZ_URL`, etc.
+
+When the user asks to “deploy both masters” or “debug atlanta2”, **run the commands** in the integrated terminal (do not only describe them), unless they explicitly forbid remote access.

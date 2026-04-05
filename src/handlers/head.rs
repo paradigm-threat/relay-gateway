@@ -54,7 +54,7 @@ fn headify_response(resp: Response, branch: &str, repo: &str) -> Response {
 /// HEAD / - returns same headers as GET but no body. Returns 204 No Content.
 pub async fn head_root(
     State(state): State<AppState>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     _query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
     // If index exists, signal 200 without body
@@ -62,6 +62,21 @@ pub async fn head_root(
         let head_resp = headify_response(resp, "", "");
         if head_resp.status() == StatusCode::OK {
             return head_resp;
+        }
+    }
+    if let Some(repo_name) = helpers::default_http_repo_from_apex(&state.repo_path) {
+        let branch = helpers::branch_for_request(&headers, &state.repo_path, Some(&repo_name));
+        if let GitResolveResult::Respond(resp) = git::git_resolve_and_respond(
+            &state.repo_path,
+            &headers,
+            &branch,
+            &repo_name,
+            "index.html",
+        ) {
+            let head_resp = headify_response(resp, &branch, &repo_name);
+            if head_resp.status() == StatusCode::OK {
+                return head_resp;
+            }
         }
     }
     StatusCode::NO_CONTENT.into_response()
@@ -78,7 +93,7 @@ pub async fn head_file(
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
 
     let repo_name_opt =
-        helpers::repo_from_host(&state.repo_path, state.node_fqdn.as_deref(), &headers);
+        helpers::repo_from_host_or_default(&state.repo_path, state.node_fqdn.as_deref(), &headers);
     let branch = helpers::branch_for_request(&headers, &state.repo_path, repo_name_opt.as_deref());
     let repo_name: String;
     if repo_name_opt.is_none() {

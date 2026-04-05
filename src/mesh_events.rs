@@ -137,11 +137,19 @@ pub struct PullValidationPublishCtx {
     pub trigger_peer: Option<String>,
 }
 
-fn slack_text_for_pull_validation(p: &MeshEventPayload) -> String {
+fn slack_headline_for_event_type(event_type: &str) -> &'static str {
+    match event_type {
+        "peer_signing_policy_failed" => "peer signing policy failed",
+        _ => "pull validation failed",
+    }
+}
+
+fn slack_text_for_mesh_validation(p: &MeshEventPayload) -> String {
     let mut lines: Vec<String> = Vec::new();
     lines.push(format!(
-        "[Relay] {} — pull validation failed",
-        p.event_type
+        "[Relay] {} — {}",
+        p.event_type,
+        slack_headline_for_event_type(&p.event_type)
     ));
     lines.push(format!("source: {}", p.source));
     lines.push(format!("repo: {}  branch: {}", p.repo, p.branch));
@@ -166,14 +174,14 @@ fn slack_text_for_pull_validation(p: &MeshEventPayload) -> String {
 }
 
 /// Fire-and-forget POST to peer **`/hooks/mesh-event`** endpoints and optional Slack Incoming Webhook (does not block the HTTP response path for long).
-pub fn spawn_publish_pull_validation_failure(ctx: PullValidationPublishCtx) {
+pub fn spawn_publish_validation_failure(ctx: PullValidationPublishCtx, event_type: &'static str) {
     let channel = std::env::var("RELAY_MESH_EVENT_CHANNEL")
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
     let payload = MeshEventPayload {
-        event_type: "pull_validation_failed".into(),
+        event_type: event_type.into(),
         source: ctx.source,
         repo: ctx.repo,
         branch: ctx.branch,
@@ -244,13 +252,21 @@ pub fn spawn_publish_pull_validation_failure(ctx: PullValidationPublishCtx) {
         }
 
         if let Some(ref su) = slack_url {
-            let text = slack_text_for_pull_validation(&payload);
+            let text = slack_text_for_mesh_validation(&payload);
             match notify::post_slack_webhook(&client, su, &text).await {
-                Ok(()) => tracing::info!("Slack notify: pull_validation_failed delivered"),
+                Ok(()) => tracing::info!(event=%payload.event_type, "Slack notify: mesh validation delivered"),
                 Err(e) => warn!(err=%e, "Slack notify failed"),
             }
         }
     });
+}
+
+pub fn spawn_publish_pull_validation_failure(ctx: PullValidationPublishCtx) {
+    spawn_publish_validation_failure(ctx, "pull_validation_failed");
+}
+
+pub fn spawn_publish_peer_signing_policy_failure(ctx: PullValidationPublishCtx) {
+    spawn_publish_validation_failure(ctx, "peer_signing_policy_failed");
 }
 
 fn mesh_header_secret_ok(provided: Option<&str>, expected: &str) -> bool {
@@ -430,7 +446,7 @@ mod tests {
             trigger_peer: Some("peer.example.net".into()),
             channel: Some("#relay-ops".into()),
         };
-        let t = slack_text_for_pull_validation(&p);
+        let t = slack_text_for_mesh_validation(&p);
         assert!(t.contains("relay-master"));
         assert!(t.contains("trust anchor"));
         assert!(t.contains("peer.example.net"));
@@ -439,14 +455,17 @@ mod tests {
     #[test]
     fn target_urls_for_peers_skips_self() {
         let u = mesh_event_urls_for_peers(
-            Some("jp-osa.example.net"),
-            "atlanta3.example.net;jp-osa.example.net",
+            Some("this-node.example.net"),
+            "atlanta2.example.net;atlanta3.example.net;this-node.example.net",
             8080,
             "http",
         );
         assert_eq!(
             u,
-            vec!["http://atlanta3.example.net:8080/hooks/mesh-event"]
+            vec![
+                "http://atlanta2.example.net:8080/hooks/mesh-event",
+                "http://atlanta3.example.net:8080/hooks/mesh-event",
+            ]
         );
     }
 }

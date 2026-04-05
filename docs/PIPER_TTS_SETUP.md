@@ -45,6 +45,9 @@ Environment=PIPER_BIN=/opt/relay/lib/piper/piper
 Environment=PIPER_MODEL=/opt/relay/lib/piper/models/en_GB-cori-medium.onnx
 Environment=PIPER_MODELS_DIR=/opt/relay/lib/piper/models
 Environment=PIPER_HTTP_PORT=5590
+Environment=PIPER_CACHE_DIR=/opt/relay/cache/piper-tts
+Environment=PIPER_CACHE_TTL_SECONDS=86400
+Environment=PIPER_CACHE_MAX_FILES=1000
 ...
 ```
 
@@ -59,6 +62,7 @@ When TTS is enabled during `./install.sh install`, `./install.sh update`, or `./
 3. **Systemd service** is configured with proper environment variables and the chosen default voice
 4. **Service is enabled** and automatically started
 5. **Shared libraries** are validated and repaired if Piper is incomplete
+6. **Identical synthesis responses** are cached on disk (default TTL: 1 day)
 
 ## Installation
 
@@ -72,6 +76,7 @@ RELAY_FEAT_PIPER=1 RELAY_INSTALL_NONINTERACTIVE=1 sudo -E ./install.sh install
 RELAY_FEAT_PIPER=1 \
 RELAY_FEAT_PIPER_VOICES="en_GB-cori-medium en_US-lessac-medium" \
 RELAY_FEAT_PIPER_DEFAULT_VOICE="en_GB-cori-medium" \
+RELAY_FEAT_PIPER_CACHE_TTL_SECONDS=86400 \
 RELAY_INSTALL_NONINTERACTIVE=1 \
 sudo -E ./install.sh install
 
@@ -93,6 +98,26 @@ sudo ./install.sh install
 ```
 
 ## Voice Model Management
+
+## Audio Response Cache
+
+The relay Piper wrapper caches synthesized WAV output on disk by request hash.
+Identical `POST /tts` calls with the same text, selected voice model, and rate will reuse the cached file until the TTL expires.
+
+Defaults:
+
+- `PIPER_CACHE_DIR=/opt/relay/cache/piper-tts`
+- `PIPER_CACHE_TTL_SECONDS=86400` (1 day)
+- `PIPER_CACHE_MAX_FILES=1000`
+
+Useful install-time overrides:
+
+```bash
+RELAY_FEAT_PIPER_CACHE_TTL_SECONDS=3600
+RELAY_FEAT_PIPER_CACHE_MAX_FILES=2000
+```
+
+Responses include `X-Cache: HIT|MISS` for verification.
 
 ### Adding More Voice Models
 

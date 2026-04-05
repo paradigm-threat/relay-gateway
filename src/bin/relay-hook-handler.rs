@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
         std::env::current_dir()?.join(&git_dir)
     };
 
-    let repo_name = absolute_git_dir.file_name()
+    let _repo_name = absolute_git_dir.file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown.git");
 
@@ -71,8 +71,18 @@ fn main() -> anyhow::Result<()> {
                 Err(e) => {
                     error!("Branch rule violation: {}", e);
                     eprintln!("[relay-hook-handler] Branch rule violation: {}", e);
-                    relay_server::notify::notify_hook_error(
-                        "pre-receive branch rules",
+                    let repo_slug = relay_server::notify::normalize_repo_slug(
+                        ctx.repo_path
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown.git"),
+                    );
+                    relay_server::notify::notify_pre_receive_rejection(
+                        &repo_slug,
+                        &ctx.branch,
+                        &ctx.refname,
+                        &ctx.old_commit,
+                        &ctx.new_commit,
                         &e.to_string(),
                     );
                     std::process::exit(1);
@@ -111,7 +121,6 @@ fn main() -> anyhow::Result<()> {
             );
             if let Err(e) = handle_auto_push(&ctx) {
                 error!("Auto-push failed: {}", e);
-                relay_server::notify::notify_hook_error("post-receive auto_push", &e.to_string());
             }
         }
     }
@@ -120,48 +129,16 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn enforce_branch_rules(ctx: &HookContext) -> anyhow::Result<()> {
-    let repo = git2::Repository::open_bare(&ctx.repo_path)?;
-    // Read from the new commit being pushed, as the branch ref hasn't moved yet
-    let git_config = match relay_server::git::read_git_config(&repo, &ctx.new_commit) {
-        Some(c) => c,
-        None => return Ok(()),
-    };
-
-    let rules_config = match git_config.branch_rules {
-        Some(r) => r,
-        None => return Ok(()),
-    };
-
-    // Find applicable rule
-    let mut active_rule = rules_config.default.clone();
-    if let Some(branches) = rules_config.branches {
-        for b in branches {
-            if b.name == ctx.branch {
-                active_rule = Some(b.rule);
-                break;
-            }
-        }
+    if !ctx.refname.starts_with("refs/heads/") {
+        return Ok(());
     }
-
-    let rule = match active_rule {
-        Some(r) => r,
-        None => return Ok(()),
-    };
-
-    // Check requireSigned
-    if rule.require_signed.unwrap_or(false) && !rule.allow_unsigned.unwrap_or(false) {
-        let verify_out = std::process::Command::new("git")
-            .arg("-C").arg(&ctx.repo_path)
-            .arg("verify-commit")
-            .arg(&ctx.new_commit)
-            .output()?;
-
-        if !verify_out.status.success() {
-            return Err(anyhow::anyhow!("Commit {} must be signed and verified", ctx.new_commit));
-        }
-    }
-
-    Ok(())
+    relay_server::git::enforce_push_range(
+        &ctx.repo_path,
+        &ctx.old_commit,
+        &ctx.new_commit,
+        &ctx.branch,
+    )
+    .map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 fn handle_auto_push(ctx: &HookContext) -> anyhow::Result<()> {
@@ -197,6 +174,7 @@ fn handle_auto_push(ctx: &HookContext) -> anyhow::Result<()> {
         .and_then(|s| s.to_str())
         .unwrap_or("unknown.git");
 
+    let mut any_failed = false;
     for origin in auto_push.origin_list {
         let push_url = if origin.contains("://") || origin.contains("@") {
             origin.clone()
@@ -211,7 +189,6 @@ fn handle_auto_push(ctx: &HookContext) -> anyhow::Result<()> {
         let mut cmd = std::process::Command::new("git");
         cmd.arg("-C").arg(&ctx.repo_path)
            .arg("push")
-           .arg("--force") // Use force for peer sync
            .arg(&push_url)
            .arg(format!("{}:{}", ctx.branch, ctx.branch))
            .env("RELAY_SYNC_IN_PROGRESS", "1");
@@ -219,6 +196,7 @@ fn handle_auto_push(ctx: &HookContext) -> anyhow::Result<()> {
         match cmd.output() {
             Ok(output) => {
                 if !output.status.success() {
+                    any_failed = true;
                     let detail = String::from_utf8_lossy(&output.stderr).to_string();
                     error!("Failed to push to {}: {}", origin, detail);
                     relay_server::notify::notify_auto_push_error(&origin, &detail);
@@ -227,11 +205,16 @@ fn handle_auto_push(ctx: &HookContext) -> anyhow::Result<()> {
                 }
             }
             Err(e) => {
+                any_failed = true;
                 error!("Error executing git push to {}: {}", origin, e);
+                relay_server::notify::notify_auto_push_error(&origin, &e.to_string());
             }
         }
     }
 
+    if any_failed {
+        anyhow::bail!("one or more auto-push targets failed (see logs / Slack per origin)");
+    }
     Ok(())
 }
 

@@ -1,6 +1,21 @@
 use git2::Repository;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
 use crate::types::ReadError;
+
+/// Fast-forward-only pushes: `git push --force` and non-FF updates are rejected by `receive-pack`.
+pub fn apply_bare_receive_security(repo: &Repository) -> Result<(), git2::Error> {
+    let mut cfg = repo.config()?;
+    cfg.set_str("receive.denyNonFastForwards", "true")?;
+    Ok(())
+}
+
+/// Apply [`apply_bare_receive_security`] when opening a bare repo by path (e.g. after `init_bare`).
+pub fn apply_bare_receive_security_at_path(repo_path: &Path) -> Result<(), String> {
+    let repo = Repository::open_bare(repo_path).map_err(|e| e.to_string())?;
+    apply_bare_receive_security(&repo).map_err(|e| e.to_string())
+}
 
 /// Returns a sorted list of bare repository names (without .git suffix) in the given root directory
 pub fn bare_repo_names(root: &PathBuf) -> Vec<String> {
@@ -55,6 +70,27 @@ pub fn read_relay_config(repo: &Repository, rev: &str) -> Option<crate::types::R
 /// Read hooks/git.yaml configuration from git tree for the given revision
 pub fn read_git_config(repo: &Repository, rev: &str) -> Option<crate::types::GitConfig> {
     read_relay_config(repo, rev).and_then(|c| c.git)
+}
+
+/// Read `git` config from `.relay.yaml` at `rev` using **`git show`** (inherits hook env).
+///
+/// During **`pre-receive`**, new objects live in a quarantine directory (`GIT_OBJECT_DIRECTORY` /
+/// alternates). **libgit2** often cannot resolve those commits; the Git CLI can.
+pub fn read_git_config_from_revision(repo_path: &Path, rev: &str) -> Option<crate::types::GitConfig> {
+    let spec = format!("{}:.relay.yaml", rev);
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .arg("show")
+        .arg(&spec)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let content = std::str::from_utf8(&out.stdout).ok()?;
+    let cfg: crate::types::RelayConfig = serde_yaml::from_str(content).ok()?;
+    cfg.git
 }
 
 /// Get commit information for a branch

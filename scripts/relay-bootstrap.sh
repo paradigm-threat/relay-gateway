@@ -7,7 +7,7 @@
 # Production allowlist + clone sources: ../../relay-master (.gitmodules + relayRootCommit) and
 # scripts/sync-relay-catalog.sh — that is the single source of truth for which repos the mesh
 # mirrors and which root commits are trusted. This script’s BOOTSTRAP_CATALOG_* arrays are a
-# legacy/dev convenience (e.g. relay-template, relay-server) for first boot; they do not replace
+# legacy/dev convenience (e.g. relay-template, relay-gateway) for first boot; they do not replace
 # the catalog. To add a served repo long-term, add a submodule to relay-master and run sync.
 set -euo pipefail
 
@@ -20,12 +20,12 @@ RUN_USER="${RELAY_RUN_USER:-relay}"
 # --- Catalog (extend both arrays in lockstep) ---
 BOOTSTRAP_CATALOG_NAMES=(
   relay-template
-  relay-server
+  relay-gateway
   songwalker-library
 )
 BOOTSTRAP_CATALOG_URLS=(
   "https://gitlab.com/clevertree/relay-template.git"
-  "https://gitlab.com/clevertree/relay-server.git"
+  "https://gitlab.com/clevertree/relay-gateway.git"
   "https://gitlab.com/clevertree/songwalker-library.git"
 )
 
@@ -173,6 +173,10 @@ else
 fi
 
 grep -q "^RELAY_SERVER_ID=" "$ENV_OUT" 2>/dev/null || echo "RELAY_SERVER_ID=${RELAY_SERVER_ID}" >>"$ENV_OUT"
-chown "$RUN_USER:$RUN_USER" "$ENV_OUT" 2>/dev/null || true
+# Match install.sh: relay.env is root-only (600); systemd injects vars. Run as root to append after install.
+if [[ $EUID -eq 0 ]] && [[ -f "$ENV_OUT" ]]; then
+  chown root:root "$ENV_OUT"
+  chmod 600 "$ENV_OUT"
+fi
 
-log "Done. Restart: systemctl restart relay-server relay-git-daemon"
+log "Done. Restart: systemctl restart relay-gateway relay-git-daemon"

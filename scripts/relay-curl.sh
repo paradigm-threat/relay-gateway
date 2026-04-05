@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Run from any Linux host (as root or pipe through sudo):
-#   curl -fsSL "https://gitlab.com/clevertree/relay-server/-/raw/main/scripts/relay-curl.sh" | sudo bash -s -- repair
+#   curl -fsSL "https://gitlab.com/clevertree/relay-gateway/-/raw/main/scripts/relay-curl.sh" | sudo bash -s -- repair
 #
 # Env:
-#   RELAY_RAW_BASE=https://gitlab.com/clevertree/relay-server/-/raw/main   base URL for raw scripts (no trailing slash required)
+#   RELAY_RAW_BASE=https://gitlab.com/clevertree/relay-gateway/-/raw/main   base URL for raw scripts (no trailing slash required)
 #   RELAY_DEPLOY_TGZ_URL=…             full deploy .tgz for install / update (update: prefer sudo env URL when piping:
 #                                      curl … | sudo env RELAY_DEPLOY_TGZ_URL=https://…/relay-linode-deploy.tgz bash -s -- update)
-#   RELAY_BIN_SOURCE=/path             dir containing relay-server + relay-hook-handler (overrides tarball)
+#   RELAY_BIN_SOURCE=/path             dir containing relay-gateway + relay-hook-handler (overrides tarball)
 set -euo pipefail
 
-RELAY_RAW_BASE="${RELAY_RAW_BASE:-https://gitlab.com/clevertree/relay-server/-/raw/main}"
+RELAY_RAW_BASE="${RELAY_RAW_BASE:-https://gitlab.com/clevertree/relay-gateway/-/raw/main}"
 BASE_RAW="${RELAY_RAW_BASE%/}"
 
 log() { echo "[relay-curl] $*" >&2; }
@@ -56,9 +56,10 @@ ensure_tools() {
 
 find_bin_dir() {
   local dir="$1"
+  [[ -f "$dir/relay-gateway" && -f "$dir/relay-hook-handler" ]] && echo "$dir" && return
   [[ -f "$dir/relay-server" && -f "$dir/relay-hook-handler" ]] && echo "$dir" && return
   local f
-  f="$(find "$dir" -maxdepth 3 -name relay-server -type f 2>/dev/null | head -1)"
+  f="$(find "$dir" -maxdepth 3 \( -name relay-gateway -o -name relay-server \) -type f 2>/dev/null | head -1)"
   [[ -n "$f" ]] && echo "$(dirname "$f")" && return
   return 1
 }
@@ -78,28 +79,28 @@ INSTALL="${RELAY_INSTALL_ROOT:-/opt/relay}"
 CMD="${1:-install}"
 BIN_DIR=""
 
-if [[ -n "${RELAY_BIN_SOURCE:-}" ]] && [[ -f "$RELAY_BIN_SOURCE/relay-server" ]]; then
+if [[ -n "${RELAY_BIN_SOURCE:-}" ]] && { [[ -f "$RELAY_BIN_SOURCE/relay-gateway" ]] || [[ -f "$RELAY_BIN_SOURCE/relay-server" ]]; }; then
   BIN_DIR="$(cd "$RELAY_BIN_SOURCE" && pwd)"
   log "Using RELAY_BIN_SOURCE=$BIN_DIR"
 elif [[ -n "${RELAY_DEPLOY_TGZ_URL:-}" ]]; then
   log "Downloading RELAY_DEPLOY_TGZ_URL…"
   curl -fsSL "$RELAY_DEPLOY_TGZ_URL" -o "$WORKDIR/dist.tgz"
   tar -xzf "$WORKDIR/dist.tgz" -C "$WORKDIR"
-  BIN_DIR="$(find_bin_dir "$WORKDIR")" || die "tarball missing relay-server binary"
+  BIN_DIR="$(find_bin_dir "$WORKDIR")" || die "tarball missing relay-gateway (or legacy relay-server) binary"
   log "Binaries from tarball: $BIN_DIR"
 elif [[ "$CMD" != "install" ]] || [[ "${RELAY_INSTALL_FRESH:-}" == "1" ]]; then
-  if [[ -f "$INSTALL/bin/relay-server" ]]; then
+  if [[ -f "$INSTALL/bin/relay-gateway" ]] || [[ -f "$INSTALL/bin/relay-server" ]]; then
     BIN_DIR="$INSTALL/bin"
     log "Using existing binaries in $BIN_DIR"
   fi
 fi
 
 if [[ -z "$BIN_DIR" ]] && [[ "$CMD" == "install" ]]; then
-  die "First install needs binaries. Set RELAY_DEPLOY_TGZ_URL to your relay-linode-deploy.tgz URL, or RELAY_BIN_SOURCE=/path/to/dir with relay-server + relay-hook-handler (e.g. after tar xzf)."
+  die "First install needs binaries. Set RELAY_DEPLOY_TGZ_URL to your relay-linode-deploy.tgz URL, or RELAY_BIN_SOURCE=/path/to/dir with relay-gateway + relay-hook-handler (e.g. after tar xzf)."
 fi
 
 if [[ -z "$BIN_DIR" ]]; then
-  die "No relay-server binary found. Set RELAY_DEPLOY_TGZ_URL or RELAY_BIN_SOURCE, or run from a machine that already has $INSTALL/bin/relay-server"
+  die "No relay-gateway binary found. Set RELAY_DEPLOY_TGZ_URL or RELAY_BIN_SOURCE, or run from a machine that already has $INSTALL/bin/relay-gateway"
 fi
 
 export RELAY_BIN_SOURCE="$BIN_DIR"

@@ -1,8 +1,28 @@
 [package]
-name = "relay-server"
+name = "relay-gateway"
 # Update with each release
-version = "0.3.4"
+version = "0.3.10"
 edition = "2021"
+description = "Self-hosted relay gateway for HTTP plus git protocol content delivery, mesh bootstrap, and optional on-node TTS"
+license = "MIT"
+repository = "https://gitlab.com/clevertree/relay-gateway"
+homepage = "https://gitlab.com/clevertree/relay-gateway"
+readme = "README.md"
+keywords = ["relay", "git", "gateway", "mesh", "tts"]
+categories = ["web-programming::http-server", "command-line-utilities"]
+exclude = ["libs/terraform", "libs/terraform/**"]
+
+[lib]
+name = "relay_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "relay-gateway"
+path = "src/main.rs"
+
+[[bin]]
+name = "relay-hook-handler"
+path = "src/bin/relay-hook-handler.rs"
 
 [dependencies]
 axum = { version = "0.7", features = ["macros"] }

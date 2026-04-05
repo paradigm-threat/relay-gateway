@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Redeploy relay-server from a local Linode tarball over SSH, then create a bare repo slot
+# Redeploy relay-gateway from a local Linode tarball over SSH, then create a bare repo slot
 # (POST /api/git/ensure-bare) and optionally git push from a local clone (git:// only).
 #
 # Prerequisites: SSH key auth (default user **ari** with sudo; override RELAY_SSH_USER); local tarball.
@@ -14,6 +14,7 @@
 #   RELAY_SEED_REPO    bare name without .git (default: paradigm-threat-files)
 #   RELAY_LOCAL_REPO   if set, cd here and git push to git://NODE:9418/$RELAY_SEED_REPO.git
 #   RELAY_SEED_BRANCH  branch to push (default: master)
+#   RELAY_REDEPLOY_SKIP_SEED=1  skip POST ensure-bare and git push (binary update only; use for production masters)
 set -euo pipefail
 
 NODE="${1:?Usage: $0 <node-ip-or-hostname> [relay-linode-deploy.tgz]}"
@@ -22,8 +23,8 @@ KEY="${RELAY_SSH_IDENTITY:-$HOME/.ssh/id_ed25519_relay_gateway}"
 SSH_USER="${RELAY_SSH_USER:-ari}"
 REPO="${RELAY_SEED_REPO:-paradigm-threat-files}"
 BRANCH="${RELAY_SEED_BRANCH:-master}"
-SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new)
-SCP=(scp -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new)
+SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes)
+SCP=(scp -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes)
 TARGET="${SSH_USER}@${NODE}"
 
 [[ -f "$TGZ" ]] || { echo "Missing tarball: $TGZ (run ./scripts/pack-linode-deploy.sh)" >&2; exit 1; }
@@ -73,13 +74,18 @@ fi
 echo "[relay-redeploy] Waiting for HTTP..."
 ok=0
 for _ in $(seq 1 20); do
-  if curl -fsS --connect-timeout 3 "http://${NODE}:8080/api/config" >/dev/null 2>&1; then
+  if curl -fsS --connect-timeout 3 -X POST "http://${NODE}:8080/api/config" >/dev/null 2>&1; then
     ok=1
     break
   fi
   sleep 2
 done
 [[ "$ok" == 1 ]] || { echo "HTTP did not come back on :8080" >&2; exit 1; }
+
+if [[ "${RELAY_REDEPLOY_SKIP_SEED:-0}" == "1" ]]; then
+  echo "[relay-redeploy] RELAY_REDEPLOY_SKIP_SEED=1 — skipping ensure-bare and git push"
+  exit 0
+fi
 
 echo "[relay-redeploy] POST /api/git/ensure-bare/${REPO}"
 curl -fsS -X POST "http://${NODE}:8080/api/git/ensure-bare/${REPO}"

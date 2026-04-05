@@ -202,7 +202,8 @@ pub fn fetch_from_peer_url(
         .remote_anonymous(remote_url)
         .map_err(|e| PeerFetchError::Other(format!("remote_anonymous: {}", e)))?;
 
-    let refspec = format!("+refs/heads/{}:refs/heads/{}", branch, branch);
+    // No `+` prefix: fast-forward fetch only (force would bypass append-only / signing guarantees).
+    let refspec = format!("refs/heads/{}:refs/heads/{}", branch, branch);
     remote
         .fetch(&[refspec.as_str()], None, None)
         .map_err(|e| PeerFetchError::Other(format!("fetch: {}", e)))?;
@@ -222,6 +223,16 @@ pub fn fetch_from_peer_url(
                 after_tip: after,
                 trigger_peer: None,
             });
+        }
+    }
+
+    if let Some(ref a) = after {
+        let old_sid = before
+            .as_deref()
+            .unwrap_or("0000000000000000000000000000000000000000");
+        if let Err(msg) = crate::git::enforce_push_range(bare_path, old_sid, a, branch) {
+            authorized_repos::rollback_branch(&repo, branch, before.as_deref());
+            return Err(PeerFetchError::Other(format!("peer fetch signing policy: {}", msg)));
         }
     }
 
@@ -491,6 +502,32 @@ pub async fn post_peer_hook(
             )
                 .into_response()
         }
+        Err(PeerFetchError::Other(msg)) if msg.contains("peer fetch signing policy") => {
+            mesh_events::spawn_publish_peer_signing_policy_failure(mesh_events::PullValidationPublishCtx {
+                source: "peer_hook".into(),
+                repo: repo_err.clone(),
+                branch: branch_err.clone(),
+                error: msg.clone(),
+                relay_server_id: state.relay_server_id.clone(),
+                node_fqdn: state.node_fqdn.clone(),
+                after_tip: None,
+                trigger_peer: Some(peer_err.clone()),
+            });
+            (
+                StatusCode::FORBIDDEN,
+                Json(PeerHookResponse {
+                    ok: false,
+                    skipped: false,
+                    repo: repo_err,
+                    peer: peer_err,
+                    branch: branch_err,
+                    before: None,
+                    after: None,
+                    error: Some(msg),
+                }),
+            )
+                .into_response()
+        }
         Err(PeerFetchError::Other(msg)) => {
             let status = if msg.contains("not found") || msg.contains("invalid") {
                 StatusCode::BAD_REQUEST
@@ -560,7 +597,17 @@ mod tests {
 
         let u = Repository::init_bare(&upstream).unwrap();
         let sig = Signature::now("a", "a@a").unwrap();
-        let tb = u.treebuilder(None).unwrap();
+        let relay_yaml = br#"git:
+  branchRules:
+    branches:
+      - name: "*"
+        rule:
+          allowUnsigned: true
+          requireSigned: false
+"#;
+        let blob = u.blob(relay_yaml).unwrap();
+        let mut tb = u.treebuilder(None).unwrap();
+        tb.insert(".relay.yaml", blob, 0o100644).unwrap();
         let t = tb.write().unwrap();
         let tree = u.find_tree(t).unwrap();
         u.commit(Some("refs/heads/main"), &sig, &sig, "u", &tree, &[])

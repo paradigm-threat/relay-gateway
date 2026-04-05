@@ -116,7 +116,8 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/openapi.yaml", get(handlers::get_openapi_yaml))
         .route("/swagger-ui", get(handlers::get_swagger_ui))
-        .route("/api/config", get(handlers::get_api_config))
+        .route("/api/config", post(handlers::post_api_config))
+        .route("/api/status", post(handlers::post_api_status))
         .route(
             "/api/git/ensure-bare/:repo",
             post(handlers::post_ensure_bare),

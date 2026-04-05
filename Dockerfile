@@ -1,4 +1,4 @@
-# Multi-stage build for relay-server using cargo-chef
+# Multi-stage build for relay-gateway using cargo-chef
 FROM lukemathwalker/cargo-chef:latest-rust-1.85-slim AS chef
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -16,7 +16,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 # Build application
 COPY . .
-RUN cargo build --release --bin relay-server \
+RUN cargo build --release --bin relay-gateway \
     && cargo build --release --bin relay-hook-handler
 
 FROM debian:bookworm-slim
@@ -42,7 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy server binary
-COPY --from=builder /app/target/release/relay-server /usr/local/bin/relay-server
+COPY --from=builder /app/target/release/relay-gateway /usr/local/bin/relay-gateway
 COPY --from=builder /app/target/release/relay-hook-handler /usr/local/bin/relay-hook-handler
 
 # Create default dirs and set permissions

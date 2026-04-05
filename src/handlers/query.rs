@@ -16,7 +16,7 @@ pub async fn handle_query(
     body: Option<Json<serde_json::Value>>,
 ) -> impl IntoResponse {
     let repo_name_opt =
-        helpers::repo_from_host(&state.repo_path, state.node_fqdn.as_deref(), &headers);
+        helpers::repo_from_host_or_default(&state.repo_path, state.node_fqdn.as_deref(), &headers);
     let repo_name = match repo_name_opt {
         Some(name) => name,
         None => return (StatusCode::BAD_REQUEST, "Host must be {repo}.{RELAY_PUBLIC_HOSTNAME}").into_response(),

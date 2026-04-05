@@ -80,8 +80,8 @@ mod tests {
     #[test]
     fn host_in_list_case_insensitive() {
         assert!(host_in_master_peer_list(
-            "jp-osa.relaygateway.net",
-            "Atlanta3.Relaygateway.Net;jp-osa.relaygateway.net"
+            "atlanta2.relaygateway.net",
+            "Atlanta3.Relaygateway.Net;atlanta2.relaygateway.net"
         ));
         assert!(!host_in_master_peer_list(
             "edge1.example.com",

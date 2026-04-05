@@ -59,14 +59,14 @@ pub async fn get_swagger_ui() -> impl IntoResponse {
     (StatusCode::OK, [("Content-Type", "text/html")], html)
 }
 
-fn read_startup_catalog_sync_status(repo_path: &std::path::Path) -> Option<serde_json::Value> {
+pub(crate) fn read_startup_catalog_sync_status(repo_path: &std::path::Path) -> Option<serde_json::Value> {
     let state_file = repo_path.parent()?.join("state").join("startup_catalog_sync.json");
     let s = std::fs::read_to_string(&state_file).ok()?;
     serde_json::from_str(&s).ok()
 }
 
-/// GET /api/config — peers, repo list, optional `node_fqdn`, server id, authorized repo names
-pub async fn get_api_config(State(state): State<AppState>) -> impl IntoResponse {
+/// POST /api/config — peers, repo list, optional `node_fqdn`, server id, authorized repo names
+pub async fn post_api_config(State(state): State<AppState>) -> impl IntoResponse {
     #[derive(Serialize)]
     struct Config {
         peers: Vec<String>,
@@ -128,7 +128,7 @@ pub async fn get_api_config(State(state): State<AppState>) -> impl IntoResponse 
     (StatusCode::OK, Json(config))
 }
 
-fn summarize_features(m: &std::sync::Arc<serde_json::Value>) -> serde_json::Value {
+pub(crate) fn summarize_features(m: &std::sync::Arc<serde_json::Value>) -> serde_json::Value {
     let f = m.get("features").cloned().unwrap_or(serde_json::json!({}));
     let piper = f.get("piper_tts");
     let npm = f.get("npm_extensions");
@@ -191,7 +191,7 @@ pub async fn post_git_pull(
     let names = git::bare_repo_names(&state.repo_path);
 
     let (bare_path, repo_label) = if let Some(n) =
-        helpers::repo_from_host(&state.repo_path, state.node_fqdn.as_deref(), &headers)
+        helpers::repo_from_host_or_default(&state.repo_path, state.node_fqdn.as_deref(), &headers)
     {
         (state.repo_path.join(format!("{}.git", n)), n)
     } else if names.is_empty() && Repository::open_bare(&state.repo_path).is_ok() {
@@ -428,7 +428,7 @@ pub async fn options_capabilities(
     _query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
     let repo_name =
-        helpers::repo_from_host(&state.repo_path, state.node_fqdn.as_deref(), &headers);
+        helpers::repo_from_host_or_default(&state.repo_path, state.node_fqdn.as_deref(), &headers);
     let branch = helpers::branch_for_request(&headers, &state.repo_path, repo_name.as_deref());
 
     let repo_names = git::bare_repo_names(&state.repo_path);
@@ -493,12 +493,25 @@ pub async fn options_capabilities(
 
 pub async fn get_root(
     State(state): State<AppState>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     _query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
     // Try serving SPA index.html from configured static paths
     if let Some(resp) = crate::handlers::try_static(&state, "index.html").await {
         return resp;
+    }
+    // Apex host (no `{repo}.` prefix): serve **`RELAY_DEFAULT_REPO`** (default `relay-master`) index if present
+    if let Some(repo_name) = helpers::default_http_repo_from_apex(&state.repo_path) {
+        let branch = helpers::branch_for_request(&headers, &state.repo_path, Some(&repo_name));
+        if let GitResolveResult::Respond(resp) = git::git_resolve_and_respond(
+            &state.repo_path,
+            &headers,
+            &branch,
+            &repo_name,
+            "index.html",
+        ) {
+            return resp;
+        }
     }
     StatusCode::NO_CONTENT.into_response()
 }
@@ -610,9 +623,11 @@ pub async fn post_ensure_bare(
             if !r.is_bare() {
                 return Err("path exists but is not a bare git repository".to_string());
             }
+            git::apply_bare_receive_security_at_path(&dest)?;
             return Ok((false, dest));
         }
         Repository::init_bare(&dest).map_err(|e| e.to_string())?;
+        git::apply_bare_receive_security_at_path(&dest)?;
         Ok((true, dest))
     })
     .await;

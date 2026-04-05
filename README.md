@@ -1,4 +1,4 @@
-# <img src="icon.png" width="32" height="32" align="center" /> Relay Server (Rust)
+# <img src="icon.png" width="32" height="32" align="center" /> Relay Gateway (Rust)
 
 Implements the Relay API over bare Git repositories with static directory serving and detailed error reporting.
 
@@ -12,7 +12,21 @@ Implements the Relay API over bare Git repositories with static directory servin
 - Optional HTTPS support with automatic certificate loading
 - CORS-enabled; responses may include informational headers (e.g. echo of resolved repo/branch — **not** input channels). **`X-Relay-Branch` is deprecated**; branch selection is **Host-only** — see **[`docs/DEPLOY_WEB_AND_CI.md`](docs/DEPLOY_WEB_AND_CI.md)** §8–§11.
 
-Install-time **optional capabilities** (Piper TTS, offline Argos translation, npm hook packages) are recorded in **`state/features.json`** and advertised in **`GET /api/config` → `installed_features`** so peers know what each node offers. See **[docs/INSTALL_FEATURES.md](docs/INSTALL_FEATURES.md)**.
+Install-time **optional capabilities** (Piper TTS, offline Argos translation, npm hook packages) are recorded in **`state/features.json`** and advertised in **`POST /api/config` → `installed_features`** so peers know what each node offers. See **[docs/INSTALL_FEATURES.md](docs/INSTALL_FEATURES.md)**.
+
+**`POST /api/status`** returns this node’s version, mesh role, feature summary, and reachability of each **`RELAY_MASTER_PEER_LIST`** host (probes **`POST https://{host}/api/config`** by default). JSON by default; **`Accept: text/html`** or **`?format=html`** for a simple dashboard; **`?strict=1`** returns **503** when any peer is down (for load checks). Override probe URL with **`RELAY_STATUS_PEER_URL_TEMPLATE`** (use **`{host}`**). **GET is not supported** for **`/api/config`** or **`/api/status`** (repo paths could collide with **`/api/...`** on the wildcard).
+
+**Examples (deployed masters):** `curl -sS -X POST 'https://atlanta2.relaygateway.net/api/status?format=html'` · same for **`atlanta3`**. JSON: **`curl -sS -X POST 'https://atlanta2.relaygateway.net/api/config'`**. Full table: **[`docs/DEPLOY_LINODE.md`](docs/DEPLOY_LINODE.md)** (operator URL table).
+
+## Fresh Ubuntu server from GitLab tarball
+
+We only test this path on **Ubuntu** 22.04/24.04. **One-line install** (latest successful **`main`** pipeline artifact **`package:linode-tgz`**, non-interactive installer, Vercel DNS skipped—add **`RELAY_PUBLIC_FQDN`** + **`VERCEL_API_TOKEN`** and drop **`RELAY_SKIP_VERCEL_DNS=1`** to register DNS; private GitLab needs **`PRIVATE-TOKEN`** / tokenized URLs on **`curl`**):
+
+```bash
+curl -fsSL 'https://gitlab.com/clevertree/relay-gateway/-/raw/main/scripts/relay-curl.sh' | sudo env RELAY_DEPLOY_TGZ_URL='https://gitlab.com/clevertree/relay-gateway/-/jobs/artifacts/main/raw/target/relay-linode-deploy.tgz?job=package%3Alinode-tgz' RELAY_SKIP_VERCEL_DNS=1 RELAY_INSTALL_NONINTERACTIVE=1 bash -s -- install
+```
+
+Configure trust and catalog in **`/opt/relay/relay.env`** afterward (**[`docs/DEPLOY_LINODE.md`](docs/DEPLOY_LINODE.md)**). Forks: set **`RELAY_RAW_BASE`** to your raw base and point **`RELAY_DEPLOY_TGZ_URL`** at your artifact or generic-package URL.
 
 ## Repository Policy
 
@@ -25,6 +39,7 @@ Endpoints
   HEAD commits (branchHeads). The **current repo** is derived from the HTTP **`Host`** header (see below).
 - GET /{path} — read file from the bare repo and branch implied by **`Host`**: `{repo}.{RELAY_PUBLIC_HOSTNAME}` or
   `{repo}{DELIM}{branch-slug}.{RELAY_PUBLIC_HOSTNAME}` (see **[`docs/DEPLOY_WEB_AND_CI.md`](docs/DEPLOY_WEB_AND_CI.md)** §8).
+  When **`Host`** is the **node apex** only (no `{repo}.` prefix), the server uses **`RELAY_DEFAULT_REPO`** (default bare **`relay-master`**) if that repo exists under **`RELAY_REPO_PATH`**; missing paths return **404**.
   **Default branch** when the host label has **no** delimiter: the bare repo’s symbolic **`HEAD`** (e.g. **`master`** after `git push` if that is the default), else **`main`**. Optional override: **`X-Relay-Branch`** (deprecated; prefer Host branch slug when §8 delimiter is in use). Browsers send **`Host`** automatically for `http://repo.node/...` **if DNS** resolves **`repo.node`** (often a wildcard **`*.your-node-fqdn`** → server IP).
     - If the path resolves to a directory, returns a markdown listing with breadcrumbs and links.
     - If the file/dir is missing, returns 404 with `text/html` body. If `/site/404.md` exists on that branch, it is
@@ -46,13 +61,13 @@ Relay repositories use a unified configuration file `.relay.yaml` at the root to
 
 ### Catalog repo (`relay-master`)
 
-**[`relay-master`](../relay-master)** is the **allowlist** for which Git repositories a node may mirror: each entry in **`relay-catalog.json`** supplies **`url`** (clone source) and **`relayRootCommit`** (trusted root; **`scripts/sync-relay-catalog.sh`** verifies it is an ancestor of the branch tip). **`relay-server`** loads policy from **`RELAY_MASTER_CATALOG_PATH`** (path to a **`relay-master` checkout** with **`relay-catalog.json`**) or, alternatively, from **`RELAY_AUTHORIZED_REPOS_PATH`** (YAML, e.g. emitted by **`sync-relay-catalog.sh`**—never set both). Use **`RELAY_MASTER_TRUST_ROOT`** (40 hex) so startup fails if the checkout is the wrong Git history. See **[`docs/RELAY_TRUST_AND_BOOTSTRAP.md`](./docs/RELAY_TRUST_AND_BOOTSTRAP.md)**. Set **`RELAY_DEFAULT_REPO=relay-master`** for the catalog apex. **User-facing clone URLs** like **`git://relaygateway.net/<repo>.git`** are documented there (routing/DNS, not HTTP redirects).
+**[`relay-master`](../relay-master)** is the **allowlist** for which Git repositories a node may mirror: each entry in **`relay-catalog.json`** supplies **`url`** (clone source) and **`relayRootCommit`** (trusted root; **`scripts/sync-relay-catalog.sh`** verifies it is an ancestor of the branch tip). **`relay-gateway`** loads policy from **`RELAY_MASTER_CATALOG_PATH`** (path to a **`relay-master` checkout** with **`relay-catalog.json`**) or, alternatively, from **`RELAY_AUTHORIZED_REPOS_PATH`** (YAML, e.g. emitted by **`sync-relay-catalog.sh`**—never set both). Use **`RELAY_MASTER_TRUST_ROOT`** (40 hex) so startup fails if the checkout is the wrong Git history. See **[`docs/RELAY_TRUST_AND_BOOTSTRAP.md`](./docs/RELAY_TRUST_AND_BOOTSTRAP.md)**. Set **`RELAY_DEFAULT_REPO=relay-master`** for the catalog apex. **User-facing clone URLs** like **`git://relaygateway.net/<repo>.git`** are documented there (routing/DNS, not HTTP redirects).
 
 ### Git daemon (`git://`, default port **9418**)
 
 The bundled **`git daemon`** enables **`receive-pack`**: there is **no git transport authentication** (no SSH keys / HTTP basic auth on that path). Optional enforcement (signed commits, custom **`pre-receive`**, etc.) is per repository via **`.relay.yaml`** and **`relay-hook-handler`**.
 
-**Today:** `git daemon` only serves **existing** bare repos under **`RELAY_REPO_PATH`**. It validates the path **before** running **`--access-hook`**, so a hook cannot create a missing bare repo on first connect. Operators must create the directory first—typically **`POST /api/git/ensure-bare/{repo}`** (returns **201** when created)—then **`git push git://…/{repo}.git`**. This is **on by default**; set **`RELAY_GIT_ENSURE_BARE_ENABLED=0`** to disable and create **`*.git`** directories only manually. **`GET /api/config`** includes **`git_ensure_bare_enabled`**.
+**Today:** `git daemon` only serves **existing** bare repos under **`RELAY_REPO_PATH`**. It validates the path **before** running **`--access-hook`**, so a hook cannot create a missing bare repo on first connect. Operators must create the directory first—typically **`POST /api/git/ensure-bare/{repo}`** (returns **201** when created)—then **`git push git://…/{repo}.git`**. **`ensure-bare`** sets **`receive.denyNonFastForwards=true`** on the bare repo (fast-forward pushes only). This is **on by default**; set **`RELAY_GIT_ENSURE_BARE_ENABLED=0`** to disable and create **`*.git`** directories only manually. **`POST /api/config`** includes **`git_ensure_bare_enabled`**.
 
 **Planned:** First **`git push`** should be able to **create** the bare repo when policy allows, without a separate HTTP step. That requires relay code (or another front) to run **before** stock `git receive-pack`—for example a small **`git://` gateway** that parses the requested repo, calls the same provisioning logic as **`ensure-bare`**, then hands off to Git, or a **smart HTTP** git endpoint that can provision and delegate. See **[`docs/RELAY_TRUST_AND_BOOTSTRAP.md`](./docs/RELAY_TRUST_AND_BOOTSTRAP.md)** for how **repository identity** (root commit) should gate creation and updates.
 
@@ -60,9 +75,9 @@ The bundled **`git daemon`** enables **`receive-pack`**: there is **no git trans
 The server includes a native `relay-hook-handler` binary that should be symlinked to `hooks/pre-receive` and `hooks/post-receive` in your bare repositories.
 - **Branch Protection**: Enforces GPG/SSH signature requirements natively in Rust.
 - **Custom Validation**: Dispatches to Node.js scripts (`pre-receive`) with full commit context.
-- **Auto-Push**: Synchronizes successful pushes to a list of peer servers automatically.
+- **Auto-Push**: Synchronizes successful pushes to a list of peer servers with **fast-forward** `git push` (no `--force`).
 
-**Mesh (shipped pieces):** **`RELAY_MASTER_PEER_LIST`** (semicolon-separated FQDNs) is exposed in **`GET /api/config` → `peers`**. **`RELAY_NODE_ROLE`** (`master` \| `edge`) or inference from **`RELAY_PUBLIC_HOSTNAME`** in that list selects behavior: **only masters** fan out **`POST /hooks/mesh-event`** HTTP to peers (**edges** still get Slack if configured). **`RELAY_MASTER_MESH_SECRET`** (masters only): inter-master **`x-relay-mesh-secret`** / **`X-Relay-Peer-Secret`** when set; **`POST /hooks/peer`** on a master with this set accepts **only** that secret (not **`RELAY_PEER_SECRET`**). **`POST /hooks/peer`** on **edges** uses **`RELAY_PEER_SECRET`** (masters poke edges with the same value). See **[`docs/RELAY_MESH_NETWORKING_PLAN.md`](docs/RELAY_MESH_NETWORKING_PLAN.md)**. **mTLS** between masters is a **reverse-proxy** concern, not yet in-process. **Internal** anti–over-ping remains **Slack-independent**; optional Slack: **[`docs/SLACK_MESH_NOTIFY.md`](docs/SLACK_MESH_NOTIFY.md)**.
+**Mesh (shipped pieces):** **`RELAY_MASTER_PEER_LIST`** (semicolon-separated FQDNs) is exposed in **`POST /api/config` → `peers`**. **`RELAY_NODE_ROLE`** (`master` \| `edge`) or inference from **`RELAY_PUBLIC_HOSTNAME`** in that list selects behavior: **only masters** fan out **`POST /hooks/mesh-event`** HTTP to peers (**edges** still get Slack if configured). **`RELAY_MASTER_MESH_SECRET`** (masters only): inter-master **`x-relay-mesh-secret`** / **`X-Relay-Peer-Secret`** when set; **`POST /hooks/peer`** on a master with this set accepts **only** that secret (not **`RELAY_PEER_SECRET`**). **`POST /hooks/peer`** on **edges** uses **`RELAY_PEER_SECRET`** (masters poke edges with the same value). See **[`docs/RELAY_MESH_NETWORKING_PLAN.md`](docs/RELAY_MESH_NETWORKING_PLAN.md)**. **mTLS** between masters is a **reverse-proxy** concern, not yet in-process. **Internal** anti–over-ping remains **Slack-independent**; optional Slack: **[`docs/SLACK_MESH_NOTIFY.md`](docs/SLACK_MESH_NOTIFY.md)**.
 
 ### Webhooks
 - **GitHub**: `POST /hooks/github/{repo}` (repo name without `.git`) — see `.relay.yaml` `server.git.github` for enable/path metadata.
@@ -81,22 +96,22 @@ The server includes a native `relay-hook-handler` binary that should be symlinke
 - `RELAY_HTTP_PORT`: HTTP port (default: 80)
 - `RELAY_HTTPS_PORT`: HTTPS port (default: 443)
 - `RELAY_BIND`: Override bind address (format: `host:port`)
-- **`RELAY_MASTER_PEER_LIST`**: Semicolon-separated peer FQDNs for **`/api/config`**, mesh bootstrap, and **`POST /hooks/peer`** allowlisting. **`install.sh`** defaults this to **`atlanta3.relaygateway.net;jp-osa.relaygateway.net`** (designated **master** mesh nodes) unless you set **`RELAY_MASTER_PEER_LIST`** or **`DEFAULT_RELAY_MASTER_PEER_LIST`**. If empty after install, **`POST /hooks/peer`** allows any **`peer`** hostname once the shared secret matches.
+- **`RELAY_MASTER_PEER_LIST`**: Semicolon-separated peer FQDNs for **`POST /api/config`**, mesh bootstrap, and **`POST /hooks/peer`** allowlisting. **`install.sh`** defaults this to **`atlanta2.relaygateway.net;atlanta3.relaygateway.net`** (designated **master** mesh nodes) unless you set **`RELAY_MASTER_PEER_LIST`** or **`DEFAULT_RELAY_MASTER_PEER_LIST`**. If empty after install, **`POST /hooks/peer`** allows any **`peer`** hostname once the shared secret matches.
 - **`RELAY_NODE_ROLE`**: Optional **`master`** or **`edge`**. If unset, **master** when **`RELAY_MASTER_PEER_LIST`** is empty (dev), else **master** when **`RELAY_PUBLIC_HOSTNAME`** is listed, otherwise **edge**.
 - **`RELAY_MASTER_MESH_SECRET`**: Same value on all **masters**; omit on **edges**. When set on a master, that node accepts **only** this secret for **`POST /hooks/mesh-event`** ingest and for **`POST /hooks/peer`** (inter-master inject). Outbound mesh POSTs to hosts in **`RELAY_MASTER_PEER_LIST`** use this header when set.
 - **`RELAY_PEER_SECRET`**: **Edge** **`POST /hooks/peer`**; also fallback mesh-event secret when **`RELAY_MESH_EVENT_SECRET`** unset. On **masters** without **`RELAY_MASTER_MESH_SECRET`**, peer hook still uses this (legacy).
 - **`RELAY_GIT_PORT`**: Git daemon port for building **`git://`** fetch URLs in the peer hook (default **9418**).
 
 ### Repository Management
-- **`RELAY_DEFAULT_REPO`**: Bare repo name (no `.git`) served at the **node apex** when **`Host`** is the node FQDN only — use **`relay-master`** when following the catalog model (**[`docs/RELAY_TRUST_AND_BOOTSTRAP.md`](./docs/RELAY_TRUST_AND_BOOTSTRAP.md)**).
-- **`RELAY_MASTER_CATALOG_PATH`**: Filesystem path to a **`relay-master` worktree** (contains **`relay-catalog.json`**). Builds the same allowlist **`relay-server`** would read from YAML. **Mutually exclusive** with **`RELAY_AUTHORIZED_REPOS_PATH`**.
+- **`RELAY_DEFAULT_REPO`**: Bare repo name (no `.git`) served at the **node apex** when **`Host`** is the node FQDN only (defaults to **`relay-master`** if unset and that bare exists). Use **`relay-master`** when following the catalog model (**[`docs/RELAY_TRUST_AND_BOOTSTRAP.md`](./docs/RELAY_TRUST_AND_BOOTSTRAP.md)**).
+- **`RELAY_MASTER_CATALOG_PATH`**: Filesystem path to a **`relay-master` worktree** (contains **`relay-catalog.json`**). Builds the same allowlist **`relay-gateway`** would read from YAML. **Mutually exclusive** with **`RELAY_AUTHORIZED_REPOS_PATH`**.
 - **`RELAY_MASTER_TRUST_ROOT`**: Optional but **recommended in production**: 40-character commit id—the **initial (root) commit** of your canonical **`relay-master`** (`git rev-list --max-parents=0 main`). Startup verifies it is an **ancestor** of the checkout **`HEAD`** so a mistaken clone path cannot point at an unrelated repo.
 - **`RELAY_MASTER_BRANCH`**: If the catalog checkout is in **detached HEAD**, set this branch name for the synthetic **`relay-master`** policy row (default **`main`**).
 - **`RELAY_AUTHORIZED_REPOS_PATH`**: YAML allowlist (legacy / CI); do not set together with **`RELAY_MASTER_CATALOG_PATH`**.
 - `RELAY_MASTER_REPO_LIST`: Semicolon-separated list of repos to clone on startup (e.g., `https://github.com/clevertree/relay-template`)
 - `DEFAULT_REPOS`: Alternative to RELAY_MASTER_REPO_LIST for Docker entrypoint
 - **`RELAY_GIT_ENSURE_BARE_ENABLED`**: When enabled (default: **on** if unset), **`POST /api/git/ensure-bare/:repo`** may create **`RELAY_REPO_PATH/<repo>.git`**. Set to **`0`** / **`false`** / **`no`** to turn off.
-- **`GET /api/config` → `startup_catalog_sync`**: JSON from **`state/startup_catalog_sync.json`** (last **`relay-startup-catalog-sync.sh`** run: forge sync ok, optional error tail, peer fetch counts). Omitted if the file is missing. Forge sync failure does **not** block **`relay-server`**; HTTP serves whatever bare repos exist.
+- **`POST /api/config` → `startup_catalog_sync`**: JSON from **`state/startup_catalog_sync.json`** (last **`relay-startup-catalog-sync.sh`** run: forge sync ok, optional error tail, peer fetch counts). Omitted if the file is missing. Forge sync failure does **not** block **`relay-gateway`**; HTTP serves whatever bare repos exist.
 
 ### TLS/HTTPS Configuration
 - `RELAY_TLS_CERT`: Path to TLS certificate file
@@ -131,13 +146,15 @@ Repository Scripts
 
 ### 1. Build
 ```bash
-cargo build --release
+cargo build --release --bin relay-gateway --bin relay-hook-handler
 ```
+Binaries: **`target/release/relay-gateway`**, **`target/release/relay-hook-handler`**.
 
-### 2. Run Server
+### 2. Run server
 ```bash
 cargo run --release -- serve [OPTIONS]
 ```
+(You can omit **`serve`** and run **`cargo run --release`** with the same env vars; use **`query`** for the CLI query helper.)
 
 **Options:**
 - `--repo <PATH>`: Bare Git repository root directory (default: from `RELAY_REPO_PATH` env or `./data`)
@@ -152,11 +169,19 @@ RELAY_HTTP_PORT=8080 \
 cargo run --release -- serve
 ```
 
+**GET serving order:** `--static` paths first, then the selected bare repo/branch. **Logs:** stdout and rolling files under **`./logs/server.log*`** (method, path, status, latency).
+
+**Quick local checks** (use **`Host`** for repo selection; **`X-Relay-Branch` deprecated** — see **`docs/DEPLOY_WEB_AND_CI.md`**):
+```bash
+curl -sS "http://127.0.0.1:8080/api/config" | head
+curl -sS -H "Host: relay-template.localhost" "http://127.0.0.1:8080/" | head
+```
+
 ### 3. Docker
 
 **Build:**
 ```bash
-docker build -t relay-server .
+docker build -t relay-gateway .
 ```
 
 **Run:**
@@ -165,62 +190,14 @@ docker run -d \
   -p 8080:8080 \
   -e DEFAULT_REPOS="https://github.com/clevertree/relay-template" \
   -e RELAY_HTTP_PORT=8080 \
-  relay-server
+  relay-gateway
 ```
 
 The entrypoint script will:
 1. Clone repositories from `DEFAULT_REPOS` (bare) to `/srv/relay/data/<name>.git`
 2. Copy prebuilt static assets from `/srv/relay/prebuilt` to `/srv/relay/www`
 3. Start hourly git fetch loop in background
-4. Start relay-server on specified port
-
-## CLI & Run
-
-1) Build everything
-   cargo build --workspace
-
-2) Run server (ensure .relay/pre-commit.mjs is available in your template repo)
-   cargo run --manifest-path apps/server/Cargo.toml -- serve
-
-   Options:
-   --repo <PATH>        Path to the bare Git repository (default from RELAY_REPO_PATH or ./data/repo.git)
-   --static <DIR>       Additional static directory to serve files from (can repeat)
-   --bind <HOST:PORT>   Bind address (default from RELAY_BIND or 0.0.0.0:8088)
-
-3) Create an IPFS hash for a built UI directory and seed it locally
-   # This runs `ipfs add -r <dir>` and prints the root CID
-   cargo run --manifest-path apps/server/Cargo.toml -- ipfs-add template-ui/dist
-
-4) Try requests
-    - Root listing with breadcrumbs:
-      curl -i "http://localhost:8080/?branch=main"
-    - Put a file (validates via .relay/pre-commit.mjs if present):
-      curl -i -X PUT "http://localhost:8080/README.md?branch=main" \
-      -H "Content-Type: application/octet-stream" \
-      --data-binary @-
-      Hello Relay!
-      [Ctrl+D]
-    - Fetch it:
-      curl -i "http://localhost:8080/README.md?branch=main"
-    - Query (QUERY method; use **Host** `repo.localhost` and body for branch — **`X-Relay-Branch` deprecated**):
-      curl -i -X QUERY "http://localhost:8080" -H "Host: relay-template.localhost" -H "Content-Type: application/json"
-      --data '{"branch":"main","filter":{"title":"Inception"}}'
-
-Serving order (GET requests)
-
-1. Static directories: if `--static` paths are provided, the server will first try to serve the file from these
-   directories.
-2. Git repository: the server reads from the selected bare repo/branch.
-
-Notes:
-
-- The server never serves `.html`, `.htm`, or `.js` files from the Git repository. HTML/JS must come from static
-  directories during development.
-
-Logs
-
-- Structured logs are written to stdout and to rolling daily files under `./logs/server.log*`.
-- HTTP request/response spans are included (method, path, status, latency).
+4. Start **`relay-gateway`** on the configured port
 
 ## Detailed Error Messages
 
@@ -250,7 +227,7 @@ handles:
 1. **Repository Initialization**: Clones template repository if none exists
 2. **SSL Certificate Provisioning**: Uses Let's Encrypt when `RELAY_CERTBOT_EMAIL` is set
 3. **DNS Registration**: Registers with Vercel DNS when `VERCEL_API_TOKEN` is provided
-4. **Nginx Proxy Configuration**: Automatically configures nginx to proxy HTTPS to the relay-server
+4. **Nginx Proxy Configuration**: Automatically configures nginx to proxy HTTPS to **`relay-gateway`**
 
 **Bare metal (Linode tarball):** **`install.sh`** runs the same Vercel DNS flow **first** (FQDN + token, or skip with **`RELAY_SKIP_VERCEL_DNS=1`**). See **[`docs/DEPLOY_LINODE.md`](docs/DEPLOY_LINODE.md)** and **[`docs/DEPLOY_SELF_HOSTED.md`](docs/DEPLOY_SELF_HOSTED.md)** (build/publish tarball without cloud CI). Planned **static multi-site** layout (no Next/Node runtime on relay; builds off-box): **[`docs/DEPLOY_WEB_AND_CI.md`](docs/DEPLOY_WEB_AND_CI.md)**.
 
@@ -261,15 +238,16 @@ docker run -p 80:80 -p 443:443 \
   -e RELAY_CERTBOT_EMAIL="admin@example.com" \
   -e RELAY_DNS_SUBDOMAIN="node1" \
   -e VERCEL_API_TOKEN="your-token" \
-  relay-server
+  relay-gateway
 ```
 
 The server will be accessible at `https://node-dfw1.relaynet.online` with automatic HTTP to HTTPS redirection.
 
-Developing and deploying a UI for repositories
+## Developing and deploying a UI for repositories
 
 A. Build/export all HTML/JS/asset files of your UI (e.g., into `template-ui/dist`).
-B. Test locally: run the server and add your UI folder as an additional static directory, then exercise the app.
+B. Test locally: run **`relay-gateway`** and pass **`--static`** (repeatable) for your UI folder.
 
-- Example:
-  cargo run --manifest-path apps/server/Cargo.toml -- serve --repo ./data/repo.git --static ./template-ui/dist
+```bash
+cargo run --release -- serve --repo ./data --static ./template-ui/dist
+```

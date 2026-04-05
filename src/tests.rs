@@ -245,6 +245,21 @@ mod tests {
         assert_eq!(selected, None);
     }
 
+    /// Apex host + **`relay-master.git`** exists → default repo (**`RELAY_DEFAULT_REPO`**)
+    #[test]
+    fn test_repo_from_host_or_default_apex_relay_master() {
+        let repo_dir = tempdir().unwrap();
+        let _ = Repository::init_bare(repo_dir.path().join("relay-master.git")).unwrap();
+        let mut h = HeaderMap::new();
+        h.insert(HOST, "test.local".parse().unwrap());
+        let selected = helpers::repo_from_host_or_default(
+            &repo_dir.path().to_path_buf(),
+            Some("test.local"),
+            &h,
+        );
+        assert_eq!(selected, Some("relay-master".to_string()));
+    }
+
     /// Test bare_repo_names correctly lists repos
     #[tokio::test]
     async fn test_bare_repo_names() {
@@ -539,6 +554,10 @@ process.exit(0);
         let bytes2 = axum::body::to_bytes(body2, usize::MAX).await.unwrap();
         let v2: serde_json::Value = serde_json::from_slice(&bytes2).unwrap();
         assert_eq!(v2["created"], false);
+
+        let bare = git2::Repository::open_bare(repo_dir.path().join("new-repo.git")).unwrap();
+        let deny = bare.config().unwrap().get_string("receive.denyNonFastForwards").unwrap();
+        assert_eq!(deny, "true");
     }
 
     #[tokio::test]

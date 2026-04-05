@@ -1,11 +1,11 @@
 # Install-time server features (`features.json`)
 
-Optional Relay capabilities are chosen when you run **`install.sh`** (or **`reconfigure-features`**), stored under **`${RELAY_INSTALL_ROOT:-/opt/relay}/state/features.json`**, and exposed to clients as **`GET /api/config` → `installed_features.manifest`** plus a short **`installed_features.summary`**.
+Optional Relay capabilities are chosen when you run **`install.sh`** (or **`reconfigure-features`**), stored under **`${RELAY_INSTALL_ROOT:-/opt/relay}/state/features.json`**, and exposed to clients as **`POST /api/config` → `installed_features.manifest`** plus a short **`installed_features.summary`**.
 
-Peers and client apps can poll **`/api/config`** on each node to discover what is **enabled** and which **subfeatures** (voices, language pairs, npm packages, etc.) are present on that server.
+Peers and client apps can **`POST /api/config`** on each node to discover what is **enabled** and which **subfeatures** (voices, language pairs, npm packages, etc.) are present on that server.
 
 - **Manifest** — full structure written by **`install.sh`** (ports, paths, flags, inventories).
-- **Summary** — compact view assembled by **`relay-server`** (counts, language lists, package names).
+- **Summary** — compact view assembled by **`relay-gateway`** (counts, language lists, package names).
 
 Schemas use **`schema_version`** (currently **2**). Older nodes may still serve **`1`** until they run **`reconfigure-features`** or a fresh **`install`**.
 
@@ -19,7 +19,7 @@ Schemas use **`schema_version`** (currently **2**). Older nodes may still serve 
 | `sudo ./install.sh reconfigure-features` | Add/remove optional features; reinstalls Piper / Argos venv / npm per answers. |
 | `sudo ./install.sh refresh-features` | **Rescan inventories only** (Piper `*.onnx` voices, Argos installed packs) into `features.json` — use after you add Piper models or `argospm install …` without changing enabled flags. |
 | `sudo ./install.sh repair` | Reapply binaries, systemd, and features **from existing** `features.json`. |
-| `sudo ./install.sh update` | Replace **`relay-server`** / **`relay-hook-handler`** from the tarball directory; refreshes inventories. |
+| `sudo ./install.sh update` | Replace **`relay-gateway`** / **`relay-hook-handler`** from the tarball directory; refreshes inventories. |
 
 See also **[DEPLOY_LINODE.md](./DEPLOY_LINODE.md)** for DNS, tarball download, and non-interactive examples.
 
@@ -114,7 +114,7 @@ If Argos is enabled but the probe fails (venv missing, import error), **`probe_e
    sudo ./install.sh refresh-features
    ```
 
-3. Other nodes learn what is available by reading **`installed_features`** from this host’s **`/api/config`**.
+3. Other nodes learn what is available by reading **`installed_features`** from this host’s **`POST /api/config`** response.
 
 ### Non-interactive env
 
@@ -127,7 +127,7 @@ If Argos is enabled but the probe fails (venv missing, import error), **`probe_e
 
 ## Federating capability metadata
 
-There is no background mesh sync yet: each peer should call **`GET /api/config`** on the node (with the correct per-repo **`Host`** header if you also need repo context) and merge **`installed_features.summary`** (or the full manifest) into its own client or routing layer. The roadmap for **event streams, subscriptions, pull-based propagation**, and **internal** mesh anti–over-ping (**SHA-first**; optional **`via` / hops**; independent of Slack) is **[`RELAY_MESH_NETWORKING_PLAN.md`](./RELAY_MESH_NETWORKING_PLAN.md)**.
+There is no background mesh sync yet: each peer should call **`POST /api/config`** on the node (with the correct per-repo **`Host`** header if you also need repo context) and merge **`installed_features.summary`** (or the full manifest) into its own client or routing layer. The roadmap for **event streams, subscriptions, pull-based propagation**, and **internal** mesh anti–over-ping (**SHA-first**; optional **`via` / hops**; independent of Slack) is **[`RELAY_MESH_NETWORKING_PLAN.md`](./RELAY_MESH_NETWORKING_PLAN.md)**.
 
 Recommended client behaviour:
 

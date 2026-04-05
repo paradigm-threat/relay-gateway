@@ -4,19 +4,20 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-cargo build --release --bin relay-server --bin relay-hook-handler
+cargo build --release --bin relay-gateway --bin relay-hook-handler
 DIST="$ROOT/target/linode-deploy"
 rm -rf "$DIST"
 mkdir -p "$DIST"
-cp target/release/relay-server target/release/relay-hook-handler "$DIST/"
+cp target/release/relay-gateway target/release/relay-hook-handler "$DIST/"
 cp "$ROOT/scripts/relay-install.sh" "$DIST/install.sh"
 cp "$ROOT/scripts/piper-tts-http.py" "$DIST/piper-tts-http.py"
 cp "$ROOT/scripts/relay-probe-features.py" "$DIST/relay-probe-features.py"
 cp "$ROOT/scripts/relay-bootstrap.sh" "$DIST/relay-bootstrap.sh"
 cp "$ROOT/scripts/relay-startup-catalog-sync.sh" "$DIST/relay-startup-catalog-sync.sh"
+cp "$ROOT/scripts/relay-reconcile.sh" "$DIST/relay-reconcile.sh"
 cp "$ROOT/scripts/install-caddy-tls.sh" "$DIST/install-caddy-tls.sh"
 cp "$ROOT/scripts/caddy-ask.py" "$DIST/caddy-ask.py"
-chmod +x "$DIST/install.sh" "$DIST/relay-bootstrap.sh" "$DIST/relay-startup-catalog-sync.sh" "$DIST/install-caddy-tls.sh" "$DIST/relay-probe-features.py"
+chmod +x "$DIST/install.sh" "$DIST/relay-bootstrap.sh" "$DIST/relay-startup-catalog-sync.sh" "$DIST/relay-reconcile.sh" "$DIST/install-caddy-tls.sh" "$DIST/relay-probe-features.py"
 tar -czvf "$ROOT/target/relay-linode-deploy.tgz" -C "$DIST" .
 echo "Created $ROOT/target/relay-linode-deploy.tgz"
 echo "Deploy (hardened: user ari): RELAY_SSH_USER=ari ./scripts/relay-linode-redeploy-seed.sh YOUR_IP"

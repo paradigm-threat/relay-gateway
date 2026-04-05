@@ -149,7 +149,7 @@ SSL_MODE=${RELAY_SSL_MODE:-auto}
 if [[ "$SSL_MODE" != "none" && -n "${RELAY_CERTBOT_EMAIL:-}" && -n "${FQDN:-}" ]]; then
   log "Starting certbot flow for ${FQDN}"
   # Start server in background first so it can serve ACME challenges
-  /usr/local/bin/relay-server serve &
+  /usr/local/bin/relay-gateway serve &
   RELAY_PID=$!
   sleep 5
   
@@ -159,11 +159,11 @@ if [[ "$SSL_MODE" != "none" && -n "${RELAY_CERTBOT_EMAIL:-}" && -n "${FQDN:-}" ]
     export RELAY_TLS_KEY="/etc/letsencrypt/live/${FQDN}/privkey.pem"
     kill $RELAY_PID
     sleep 2
-    exec /usr/local/bin/relay-server serve
+    exec /usr/local/bin/relay-gateway serve
   else
     log "Certbot failed, falling back to HTTP"
     wait $RELAY_PID
   fi
 else
-  exec /usr/local/bin/relay-server serve
+  exec /usr/local/bin/relay-gateway serve
 fi

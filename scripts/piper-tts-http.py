@@ -7,17 +7,111 @@ Endpoints:
   POST /tts     — synthesize text to audio
 """
 import glob
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PIPER = os.environ.get("PIPER_BIN", "/opt/relay/lib/piper/piper")
 MODEL = os.environ.get("PIPER_MODEL", "")
 PORT = int(os.environ.get("PIPER_HTTP_PORT", "5590"))
 MODELS_DIR = os.environ.get("PIPER_MODELS_DIR", "/opt/relay/lib/piper/models")
+CACHE_DIR = os.environ.get("PIPER_CACHE_DIR", "/opt/relay/cache/piper-tts")
+CACHE_TTL_SECONDS = max(0, int(os.environ.get("PIPER_CACHE_TTL_SECONDS", "86400")))
+CACHE_MAX_FILES = max(0, int(os.environ.get("PIPER_CACHE_MAX_FILES", "1000")))
+
+
+def ensure_cache_dir(cache_dir=CACHE_DIR):
+    os.makedirs(cache_dir, exist_ok=True)
+
+
+def cache_key(text, model_path, rate):
+    payload = json.dumps(
+        {
+            "text": text,
+            "model": os.path.basename(model_path or ""),
+            "rate": round(float(rate or 1.0), 3),
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def cache_path_for_key(key, cache_dir=CACHE_DIR):
+    return os.path.join(cache_dir, f"{key}.wav")
+
+
+def prune_cache(cache_dir=CACHE_DIR, ttl_seconds=CACHE_TTL_SECONDS, max_files=CACHE_MAX_FILES):
+    try:
+        entries = []
+        now = time.time()
+        for name in os.listdir(cache_dir):
+            if not name.endswith(".wav"):
+                continue
+            full = os.path.join(cache_dir, name)
+            try:
+                stat = os.stat(full)
+            except OSError:
+                continue
+            age = now - stat.st_mtime
+            if ttl_seconds > 0 and age > ttl_seconds:
+                try:
+                    os.unlink(full)
+                except OSError:
+                    pass
+                continue
+            entries.append((stat.st_mtime, full))
+        if max_files > 0 and len(entries) > max_files:
+            entries.sort(key=lambda item: item[0])
+            for _, full in entries[: len(entries) - max_files]:
+                try:
+                    os.unlink(full)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+def get_cached_audio(key, cache_dir=CACHE_DIR, ttl_seconds=CACHE_TTL_SECONDS):
+    if ttl_seconds <= 0:
+        return None
+    path = cache_path_for_key(key, cache_dir)
+    if not os.path.isfile(path):
+        return None
+    try:
+        stat = os.stat(path)
+        if time.time() - stat.st_mtime > ttl_seconds:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            return None
+        return path, stat.st_size
+    except OSError:
+        return None
+
+
+def put_cached_audio(key, wav, cache_dir=CACHE_DIR):
+    ensure_cache_dir(cache_dir)
+    target = cache_path_for_key(key, cache_dir)
+    fd, tmp_path = tempfile.mkstemp(prefix="piper-cache-", suffix=".wav", dir=cache_dir)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(wav)
+        os.replace(tmp_path, target)
+    except OSError:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return
+    prune_cache(cache_dir)
 
 
 def title_case(value):
@@ -127,6 +221,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}")
             text = (body.get("text") or "").strip()
             voice_id = (body.get("voiceId") or "").strip()
+            rate = body.get("rate") or 1.0
             if not text or len(text) > 8000:
                 self.send_response(400)
                 self.end_headers()
@@ -153,6 +248,19 @@ class Handler(BaseHTTPRequestHandler):
                         ).encode()
                     )
                     return
+            cache_key_value = cache_key(text, model_path, rate)
+            cached = get_cached_audio(cache_key_value)
+            if cached:
+                cached_path, cached_size = cached
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Content-Length", str(cached_size))
+                self.send_header("Cache-Control", f"public, max-age={CACHE_TTL_SECONDS}")
+                self.send_header("X-Cache", "HIT")
+                self.end_headers()
+                with open(cached_path, "rb") as f:
+                    self.wfile.write(f.read())
+                return
             proc = subprocess.run(
                 [PIPER, "--model", model_path, "--output_file", "-"],
                 input=text.encode(),
@@ -164,9 +272,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             wav = proc.stdout
+            if wav and CACHE_TTL_SECONDS > 0:
+                put_cached_audio(cache_key_value, wav)
             self.send_response(200)
             self.send_header("Content-Type", "audio/wav")
             self.send_header("Content-Length", str(len(wav)))
+            self.send_header("Cache-Control", f"public, max-age={CACHE_TTL_SECONDS}")
+            self.send_header("X-Cache", "MISS")
             self.end_headers()
             self.wfile.write(wav)
         except Exception as e:
@@ -179,4 +291,6 @@ if __name__ == "__main__":
     if not MODEL or not os.path.isfile(MODEL):
         sys.stderr.write("PIPER_MODEL must point to an .onnx file\n")
         sys.exit(1)
+    ensure_cache_dir()
+    prune_cache()
     HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

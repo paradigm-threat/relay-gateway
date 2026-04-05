@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run before relay-server: sync relay-master catalog bare mirrors from forge (GitLab, etc.),
+# Run before relay-gateway: sync relay-master catalog bare mirrors from forge (GitLab, etc.),
 # then best-effort git fetch from other master peers over git:// (same repos as relay-catalog.json).
 #
 # Environment (typical: EnvironmentFile=/opt/relay/relay.env + systemd defaults):
@@ -15,9 +15,9 @@
 #   RELAY_SERVER_ID              optional, included in Slack lines
 #   RELAY_NOTIFY_SLACK_WEBHOOK_URL  optional; progress posted as Incoming Webhook JSON
 #
-# Always exits 0 so relay-server HTTP still starts; failures are recorded in
+# Always exits 0 so relay-gateway HTTP still starts; failures are recorded in
 #   $RELAY_INSTALL_ROOT/state/startup_catalog_sync.json
-# and surfaced in GET /api/config → startup_catalog_sync. Peer fetch errors are warned only.
+# and surfaced in POST /api/config → startup_catalog_sync. Peer fetch errors are warned only.
 set -euo pipefail
 
 # Do not `source` relay.env here: values like RELAY_MASTER_PEER_LIST contain `;` and break bash unless
@@ -135,7 +135,7 @@ if [[ ! -f "$catalog_json" || ! -f "$sync_script" ]]; then
   mkdir -p "$(dirname "$catalog")"
   slack ":construction: *Relay startup sync* — \`${node_label:-unknown}\` — cloning catalog → \`$catalog\` (\`$catalog_branch\`)"
   clone_out=""
-  # Shallow depth 1 omits ancestors: RELAY_MASTER_TRUST_ROOT merge-base check in relay-server then fails.
+  # Shallow depth 1 omits ancestors: RELAY_MASTER_TRUST_ROOT merge-base check in relay-gateway then fails.
   clone_depth="${RELAY_MASTER_CATALOG_CLONE_DEPTH:-128}"
   if ! clone_out="$(git clone --depth "$clone_depth" --branch "$catalog_branch" --single-branch "$catalog_url" "$catalog" 2>&1)"; then
     echo "$clone_out" >&2
@@ -215,7 +215,7 @@ peer_fetch_other_masters() {
   done < <(list_catalog_repo_names)
 
   if [[ "$summary_fail" -gt 0 ]]; then
-    slack ":warning: *Relay startup sync* — \`${node_label:-unknown}\` — peer fetch finished with *${summary_fail}* failed attempt(s), *${summary_ok}* ok (see journalctl -u relay-server)"
+    slack ":warning: *Relay startup sync* — \`${node_label:-unknown}\` — peer fetch finished with *${summary_fail}* failed attempt(s), *${summary_ok}* ok (see journalctl -u relay-gateway)"
   else
     slack ":white_check_mark: *Relay startup sync* — \`${node_label:-unknown}\` — peer \`git fetch\` round complete (*${summary_ok}* ok)"
   fi
@@ -230,9 +230,9 @@ PEER_FETCH_OK=0
 PEER_FETCH_FAIL=0
 if ! out="$(bash "$sync_script" 2>&1)"; then
   echo "$out" >&2
-  slack ":warning: *Relay startup sync* — \`${node_label:-unknown}\` — *catalog forge sync failed* (HTTP still starts). Fix catalog/GitLab, then \`systemctl restart relay-server\`.\n\`\`\`${out:0:1500}\`\`\`"
+  slack ":warning: *Relay startup sync* — \`${node_label:-unknown}\` — *catalog forge sync failed* (HTTP still starts). Fix catalog/GitLab, then \`systemctl restart relay-gateway\`.\n\`\`\`${out:0:1500}\`\`\`"
   write_startup_sync_state 0 "sync-relay-catalog.sh exited non-zero" "$out" 0 0
-  slack ":checkered_flag: *Relay startup sync* — \`${node_label:-unknown}\` — finished (with errors); starting relay-server"
+  slack ":checkered_flag: *Relay startup sync* — \`${node_label:-unknown}\` — finished (with errors); starting relay-gateway"
   exit 0
 fi
 echo "$out" >&2
@@ -242,6 +242,6 @@ peer_fetch_other_masters
 
 write_startup_sync_state 1 "" "$out" "${PEER_FETCH_OK:-0}" "${PEER_FETCH_FAIL:-0}"
 
-slack ":checkered_flag: *Relay startup sync* — \`${node_label:-unknown}\` — finished; starting relay-server"
+slack ":checkered_flag: *Relay startup sync* — \`${node_label:-unknown}\` — finished; starting relay-gateway"
 
 exit 0

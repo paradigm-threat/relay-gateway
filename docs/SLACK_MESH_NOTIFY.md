@@ -22,7 +22,7 @@
 | **`git_pull_fetch_failed`** | **`POST /git-pull`** when **`git fetch`** fails | |
 | **`hook_error`** | **`relay-hook-handler`** | Pre-receive branch rules, configured hook failure, auto-push setup failure. |
 | **`auto_push_failed`** | **`relay-hook-handler`** | Per-origin **`git push`** failure from Auto-Push. |
-| **Startup catalog sync** | **`relay-startup-catalog-sync.sh`** (**`ExecStartPre`** for **`relay-server`**) | Real-time lines: start, catalog forge sync result, peer **`git fetch`** round (ok / partial failures), finished. **HTTP always starts** even if forge sync fails; failures are **`catalog forge sync failed`** (warning) plus **`GET /api/config` → `startup_catalog_sync`**. Only when **`RELAY_NOTIFY_SLACK_WEBHOOK_URL`** is set and **`RELAY_STARTUP_CATALOG_SYNC`** is on. See **`scripts/relay-startup-catalog-sync.sh`**. |
+| **Startup catalog sync** | **`relay-startup-catalog-sync.sh`** (**`ExecStartPre`** for **`relay-gateway`**) | Real-time lines: start, catalog forge sync result, peer **`git fetch`** round (ok / partial failures), finished. **HTTP always starts** even if forge sync fails; failures are **`catalog forge sync failed`** (warning) plus **`POST /api/config` → `startup_catalog_sync`**. Only when **`RELAY_NOTIFY_SLACK_WEBHOOK_URL`** is set and **`RELAY_STARTUP_CATALOG_SYNC`** is on. See **`scripts/relay-startup-catalog-sync.sh`**. |
 
 **Not Slack:** Git state between nodes is still synchronized by **Git** (**`git fetch`**, **`POST /hooks/peer`**, anchors, Auto-Push). Slack is **observability only**; dedup only reduces **duplicate chat lines**, not replication logic.
 

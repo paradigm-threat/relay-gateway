@@ -1,8 +1,10 @@
-# Deploy relay-server to Linode (bare metal — no Docker)
+# Deploy relay-gateway to Linode (bare metal — no Docker)
 
 **Repo replication (normative):** Content pushed **into** relay’s bare repos MUST use the **git protocol** — **`git://HOST:9418/{repo}.git`** (or **`RELAY_GIT_PORT`**). Do **not** use **`git@host:…`** SSH remotes for relay sync; SSH is for **VM admin** only. Optional rules live in per-repo **`.relay.yaml`** / hooks.
 
-**See also:** **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)** (build tarball, optional vendored binaries, no cloud CI), **[`DEPLOY_WEB_AND_CI.md`](./DEPLOY_WEB_AND_CI.md)** — static sites (pre-built HTML/Next export), reverse proxy, off-box builds, multi-site on one VM. **Secrets / `relay.env` / rotation / deploy SSH key:** **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)**. **SSH (non-root, agents):** **[`CURSOR_AGENTIC_SSH.md`](./CURSOR_AGENTIC_SSH.md)** §5.
+**See also:** **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)** (build tarball, optional vendored binaries, no cloud CI), **[`DEPLOY_WEB_AND_CI.md`](./DEPLOY_WEB_AND_CI.md)** — static sites (pre-built HTML/Next export), reverse proxy, off-box builds, multi-site on one VM. **Secrets / `relay.env` / rotation / deploy SSH key:** **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)**. **SSH (non-root, agents):** **[`CURSOR_AGENTIC_SSH.md`](./CURSOR_AGENTIC_SSH.md)** §5. **Helm-style reconcile (relay-master → masters):** **[`RELAY_RECONCILE_PLAN.md`](./RELAY_RECONCILE_PLAN.md)**.
+
+**`relay.env` permissions:** **`install.sh`** sets **`$INSTALL/relay.env`** to **`root:root`** **`chmod 600`**. Only root (installer, **`install.sh update`**, **`repair`**, or **`relay-bootstrap.sh`** run as root) should edit it; the **`relay`** user gets variables from systemd **`EnvironmentFile`**.
 
 **DNS / IPs:** For the current phase, **public IPs can be set manually**; automated DNS (Vercel API or other) remains optional via **`RELAY_SKIP_VERCEL_DNS=1`** or the existing Vercel flow below.
 
@@ -19,21 +21,21 @@
 
 **Example hosted tarball URL** (you choose the host):
 
-`https://git.example.com/api/v4/projects/…/packages/generic/relay-server/v0.3.2/relay-linode-deploy.tgz`
+`https://git.example.com/api/v4/projects/…/packages/generic/relay-gateway/v0.3.10/relay-linode-deploy.tgz`
 
 ---
 
 ## Minimum launch (required)
 
 1. **`RELAY_SERVER_ID`** — unique name (e.g. `relay-atlanta1`).
-2. **Allowlist** — **either** point **`relay-server`** at the catalog worktree **or** at YAML (never both). **Policy source of truth:** **[`relay-master`](../../relay-master)** (**`relay-catalog.json`** + **`relayRootCommit`**).
+2. **Allowlist** — **either** point **`relay-gateway`** at the catalog worktree **or** at YAML (never both). **Policy source of truth:** **[`relay-master`](../../relay-master)** (**`relay-catalog.json`** + **`relayRootCommit`**).
 
 **Preferred — catalog path:**
 
 ```bash
 sudo -u relay bash -lc 'cd /opt/relay/src/relay-master && git pull origin main && \
   RELAY_REPO_PATH=/opt/relay/data ./scripts/sync-relay-catalog.sh'
-sudo systemctl restart relay-server
+sudo systemctl restart relay-gateway
 ```
 
 **Catalog URLs and shallow clones:** each **`url`** in **`relay-catalog.json`** should use forge repos whose **first commit is minimal** (README-only stub) so **`sync-relay-catalog.sh`** can **`git clone --bare --depth 1`** and keep GitLab/GitHub free of private payloads. Full trees arrive via **`git push git://…:9418/…`** to the node. See **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** § “Public forge URL vs private body”.
@@ -63,29 +65,42 @@ Catalog checkout needs **`remote.origin`** if you mirror **`relay-master.git`** 
 
 If **`install.sh`** completed Vercel DNS, it may have appended **`RELAY_PUBLIC_HOSTNAME=your.fqdn`** (non-secret). That value is the **node** hostname; each bare repo is served at **`{repo-name}.{RELAY_PUBLIC_HOSTNAME}`** (HTTP **`Host`** header). Add a **wildcard** DNS record **`*.your.fqdn`** → same server IP so every repo subdomain resolves. Trust settings are still required regardless.
 
-**Startup catalog sync:** **`relay-server.service`** runs **`relay-startup-catalog-sync.sh`** as **`ExecStartPre`** when **`/opt/relay/bin/relay-startup-catalog-sync.sh`** exists. If **`RELAY_MASTER_CATALOG_GIT_URL`** is set and the catalog worktree is missing or empty, it **`git clone`**s into **`RELAY_MASTER_CATALOG_PATH`** (default **`/opt/relay/src/relay-master`** when only the URL is set). Then it runs **`sync-relay-catalog.sh`**, then best-effort **`git fetch`** from other **`RELAY_MASTER_PEER_LIST`** masters over **`git://`**. **HTTP always starts** even if clone/forge sync fails; status is in **`state/startup_catalog_sync.json`** and **`GET /api/config` → `startup_catalog_sync`**. Optional Slack progress: **`RELAY_NOTIFY_SLACK_WEBHOOK_URL`**. Disable with **`RELAY_STARTUP_CATALOG_SYNC=0`**. Private forge: use a token embedded in the HTTPS URL or **`git` credential** for user **`relay`**. See **`scripts/relay-startup-catalog-sync.sh`**, **`docs/SLACK_MESH_NOTIFY.md`**, **`docs/RELAY_TRUST_AND_BOOTSTRAP.md`** (stub README for new repos).
+**Startup catalog sync:** **`relay-gateway.service`** (and legacy **`relay-server.service`**) may run **`relay-startup-catalog-sync.sh`** as **`ExecStartPre`** when **`/opt/relay/bin/relay-startup-catalog-sync.sh`** exists. If **`RELAY_MASTER_CATALOG_GIT_URL`** is set and the catalog worktree is missing or empty, it **`git clone`**s into **`RELAY_MASTER_CATALOG_PATH`** (default **`/opt/relay/src/relay-master`** when only the URL is set). Then it runs **`sync-relay-catalog.sh`**, then best-effort **`git fetch`** from other **`RELAY_MASTER_PEER_LIST`** masters over **`git://`**. **HTTP always starts** even if clone/forge sync fails; status is in **`state/startup_catalog_sync.json`** and **`POST /api/config` → `startup_catalog_sync`**. Optional Slack progress: **`RELAY_NOTIFY_SLACK_WEBHOOK_URL`**. Disable with **`RELAY_STARTUP_CATALOG_SYNC=0`**. Private forge: use a token embedded in the HTTPS URL or **`git` credential** for user **`relay`**. See **`scripts/relay-startup-catalog-sync.sh`**, **`docs/SLACK_MESH_NOTIFY.md`**, **`docs/RELAY_TRUST_AND_BOOTSTRAP.md`** (stub README for new repos).
 
 ### Greenfield checklist: smooth first boot when `relay.env` is complete
 
-After **`install.sh`** (or an equivalent tarball install) has created **`/opt/relay`**, systemd, and **`relay-server.service`**, a **new** node should need **no manual git steps** on the catalog if **`/opt/relay/relay.env`** is filled out consistently with your other masters.
+After **`install.sh`** (or an equivalent tarball install) has created **`/opt/relay`**, systemd, and **`relay-gateway.service`**, a **new** node should need **no manual git steps** on the catalog if **`/opt/relay/relay.env`** is filled out consistently with your other masters.
 
 | Area | Set in `relay.env` (or installer) | Notes |
 |------|-------------------------------------|--------|
 | **HTTP routing** | **`RELAY_PUBLIC_HOSTNAME`**, **`RELAY_SERVER_ID`** | Wildcard DNS **`*.node`** → server IP for **`{repo}.{node}`** hosts. |
 | **Catalog clone** | **`RELAY_MASTER_CATALOG_GIT_URL`** (HTTPS), **`RELAY_MASTER_TRUST_ROOT`** (40 hex) | **`RELAY_MASTER_CATALOG_PATH`** defaults to **`/opt/relay/src/relay-master`** when the URL is set. Branch: **`RELAY_MASTER_CATALOG_BRANCH`** (default **`main`**). |
 | **Site apex** | **`RELAY_DEFAULT_REPO=relay-master`** | Optional but typical for catalog-as-homepage. |
-| **Masters** | **`RELAY_MASTER_PEER_LIST`** | Semicolon-separated FQDNs of **every** master (installer default includes **`atlanta2`**, **`atlanta3`**, **`jp-osa`**). **Listing this host is fine** — startup sync **skips self** for peer fetch. Align list + mesh secrets across masters per **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)**. |
+| **Masters** | **`RELAY_MASTER_PEER_LIST`** | Semicolon-separated FQDNs of **every** master (installer default includes **`atlanta2`**, **`atlanta3`**). **Listing this host is fine** — startup sync **skips self** for peer fetch. Align list + mesh secrets across masters per **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)**. |
 | **Network** | UFW / cloud firewall | **22**, **8080**, **9418** (and **5590** if Piper). Masters must reach each other on **`RELAY_GIT_PORT`** (**9418**) for peer **`git fetch`**. |
 
-**Verify after first start:** `curl -s http://127.0.0.1:8080/api/config` → **`startup_catalog_sync.catalog_forge_sync_ok`** should be **`true`**; **`peer_fetch`** reports **`ok` / `failed`** counts (peer round is best-effort). If **`catalog_forge_sync_ok`** is **`false`**, fix forge/auth, then **`sudo systemctl restart relay-server`**.
+**Verify after first start:** `curl -sS -X POST 'http://127.0.0.1:8080/api/config'` → **`startup_catalog_sync.catalog_forge_sync_ok`** should be **`true`**; **`peer_fetch`** reports **`ok` / `failed`** counts (peer round is best-effort). If **`catalog_forge_sync_ok`** is **`false`**, fix forge/auth, then **`sudo systemctl restart relay-gateway`**.
 
-**`RELAY_MASTER_TRUST_ROOT` vs shallow catalog:** **`relay-server`** checks that the trust root is an ancestor of catalog **`HEAD`**. The startup script clones with **`RELAY_MASTER_CATALOG_CLONE_DEPTH`** (default **128** in **`relay-startup-catalog-sync.sh`**) and **deepens** a shallow catalog when needed. If the service still errors on **`merge-base`** / missing object, run **`sudo -u relay git -C /opt/relay/src/relay-master fetch --deepen 2048 origin`** (adjust path/remote if yours differ), then **`sudo systemctl restart relay-server`**.
+**Example deployed masters (default installer `RELAY_MASTER_PEER_LIST`):** **`atlanta2.relaygateway.net`** and **`atlanta3.relaygateway.net`**. Use your real FQDNs if you override the list.
+
+**`/api/config`** and **`/api/status`** use **POST** (not GET) so paths like **`/api/status`** are never served as repo files from the **`/*path`** wildcard. Call with **`curl -X POST`**. HTML status: `curl -sS -X POST 'https://atlanta2.relaygateway.net/api/status?format=html'` (pipe to a file or **`less`**; browsers do not send POST from a plain bookmark).
+
+| Node | HTML status (`POST`, `?format=html`) | JSON status (`POST`) | JSON config (`POST`) |
+|------|--------------------------------------|----------------------|----------------------|
+| **Atlanta2** | `curl -sS -X POST 'https://atlanta2.relaygateway.net/api/status?format=html'` | `curl -sS -X POST 'https://atlanta2.relaygateway.net/api/status'` | `curl -sS -X POST 'https://atlanta2.relaygateway.net/api/config'` |
+| **Atlanta3** | `curl -sS -X POST 'https://atlanta3.relaygateway.net/api/status?format=html'` | `curl -sS -X POST 'https://atlanta3.relaygateway.net/api/status'` | `curl -sS -X POST 'https://atlanta3.relaygateway.net/api/config'` |
+
+**`/api/config`** returns **JSON only** (no HTML). **`POST /api/status`** defaults to JSON; use **`?format=html`** or **`Accept: text/html`** for the operator page body. For load checks, **`?strict=1`** returns HTTP **503** when any configured peer probe fails.
+
+**Redeploy to masters (e.g. atlanta2 / atlanta3):** build **`relay-linode-deploy.tgz`** on a trusted machine (**`./scripts/pack-linode-deploy.sh`**; see **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)**). Copy to each host and run **`sudo ./install.sh update`** from the unpacked bundle (or replace **`/opt/relay/bin/relay-gateway`** and **`relay-hook-handler`**, then **`sudo systemctl restart relay-gateway relay-git-daemon`**). Confirm with **`curl -sS -X POST 'http://127.0.0.1:8080/api/config' | head -c 400`** on the VM.
+
+**`RELAY_MASTER_TRUST_ROOT` vs shallow catalog:** **`relay-gateway`** checks that the trust root is an ancestor of catalog **`HEAD`**. The startup script clones with **`RELAY_MASTER_CATALOG_CLONE_DEPTH`** (default **128** in **`relay-startup-catalog-sync.sh`**) and **deepens** a shallow catalog when needed. If the service still errors on **`merge-base`** / missing object, run **`sudo -u relay git -C /opt/relay/src/relay-master fetch --deepen 2048 origin`** (adjust path/remote if yours differ), then **`sudo systemctl restart relay-gateway`**.
 
 **Every catalog `url`** in **`relay-catalog.json`** must be **clonable without an interactive password** as user **`relay`** (public **`https://`** forge project, or read-only token / **`git` credential**). Private GitLab URLs produce **`could not read Username for 'https://…'`** until fixed.
 
 **Catalog tree copied or repaired without `origin`:** plain **`git pull`** can fail (“no tracking information” / no remote). Repair: **`sudo -u relay git -C /opt/relay/src/relay-master remote add origin <same URL as RELAY_MASTER_CATALOG_GIT_URL>`**, **`git fetch origin`**, **`git branch --set-upstream-to=origin/main main`** (or your branch). Then run sync as in **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** § “Updating a catalog node”.
 
-**Stale bare directories:** Removing a repo from **`relay-catalog.json`** does **not** remove **`/opt/relay/data/<name>.git`**. **`GET /api/config` → `repos`** may list extra names on one node; safe to leave, or remove the bare directory manually after you no longer need it.
+**Stale bare directories:** Removing a repo from **`relay-catalog.json`** does **not** remove **`/opt/relay/data/<name>.git`**. **`POST /api/config` → `repos`** may list extra names on one node; safe to leave, or remove the bare directory manually after you no longer need it.
 
 ### Secrets (mesh / future)
 
@@ -168,7 +183,7 @@ If you previously used the **iptables :80 → :8080** redirect, **`install-caddy
 
 **Legacy one-liner (no TLS):** UFW **`*nat` `REDIRECT`** **:80 → :8080** is documented in git history only; prefer Caddy for production.
 
-**State:** **`/opt/relay/state/features.json`** records enabled features, ports, and **inventories** (Piper voices, Argos language pairs, npm package list). **`relay-server`** reads it (`RELAY_FEATURES_STATE_PATH` in the unit file) and exposes it under **`GET /api/config`** → **`installed_features`** (`manifest` + `summary`). Peers and clients use that to see what each node offers.
+**State:** **`/opt/relay/state/features.json`** records enabled features, ports, and **inventories** (Piper voices, Argos language pairs, npm package list). **`relay-gateway`** reads it (`RELAY_FEATURES_STATE_PATH` in the unit file) and exposes it under **`POST /api/config`** → **`installed_features`** (`manifest` + `summary`). Peers and clients use that to see what each node offers.
 
 **Feature catalog (Piper TTS, offline translation, npm extensions, subfeatures):** **[INSTALL_FEATURES.md](./INSTALL_FEATURES.md)**.
 
@@ -189,7 +204,7 @@ Optional: **`VERCEL_TEAM_ID=...`**, **`RELAY_VERCEL_DOMAIN=relaygateway.net`** (
 
 Skipping DNS (no token on host, or DNS managed manually):
 
-Set **`RELAY_PUBLIC_HOSTNAME`** to this node’s FQDN (required for **`Host: {repo}.{node}`** routing when Vercel did not append it). Set **`RELAY_SERVER_ID`**. **`RELAY_MASTER_PEER_LIST`** defaults in **`install.sh`** to the canonical mesh / **master** FQDNs (**`atlanta2.relaygateway.net;atlanta3.relaygateway.net;jp-osa.relaygateway.net`**); override only when you need a different set. Roadmap for mesh events, **internal** anti–over-ping (**SHA-first**, optional **`via` / hops**; **Slack-independent**), and subscriptions: **[`RELAY_MESH_NETWORKING_PLAN.md`](./RELAY_MESH_NETWORKING_PLAN.md)**. Optional operator Slack: **[`SLACK_MESH_NOTIFY.md`](./SLACK_MESH_NOTIFY.md)**.
+Set **`RELAY_PUBLIC_HOSTNAME`** to this node’s FQDN (required for **`Host: {repo}.{node}`** routing when Vercel did not append it). Set **`RELAY_SERVER_ID`**. **`RELAY_MASTER_PEER_LIST`** defaults in **`install.sh`** to the canonical mesh / **master** FQDNs (**`atlanta2.relaygateway.net;atlanta3.relaygateway.net`**); override only when you need a different set. Roadmap for mesh events, **internal** anti–over-ping (**SHA-first**, optional **`via` / hops**; **Slack-independent**), and subscriptions: **[`RELAY_MESH_NETWORKING_PLAN.md`](./RELAY_MESH_NETWORKING_PLAN.md)**. Optional operator Slack: **[`SLACK_MESH_NOTIFY.md`](./SLACK_MESH_NOTIFY.md)**.
 
 ```bash
 sudo RELAY_INSTALL_NONINTERACTIVE=1 RELAY_SKIP_VERCEL_DNS=1 \

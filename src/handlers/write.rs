@@ -14,6 +14,7 @@ use thiserror::Error;
 use tracing::{debug, error};
 
 use crate::{git, helpers, types::AppState};
+use git::enforce_unsigned_http_allowed;
 
 /// Handle PUT writes into a repo branch and commit changes.
 pub async fn put_file(
@@ -24,7 +25,7 @@ pub async fn put_file(
     body: Bytes,
 ) -> impl IntoResponse {
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
-    let repo_name = match helpers::repo_from_host(&state.repo_path, state.node_fqdn.as_deref(), &headers) {
+    let repo_name = match helpers::repo_from_host_or_default(&state.repo_path, state.node_fqdn.as_deref(), &headers) {
         Some(r) => r,
         None => {
             return (
@@ -60,7 +61,7 @@ pub async fn delete_file(
     _query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
-    let repo_name = match helpers::repo_from_host(&state.repo_path, state.node_fqdn.as_deref(), &headers) {
+    let repo_name = match helpers::repo_from_host_or_default(&state.repo_path, state.node_fqdn.as_deref(), &headers) {
         Some(r) => r,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -117,6 +118,19 @@ pub fn write_file_to_repo(
             (None, t)
         }
     };
+
+    if let Some(ref p) = parent_commit {
+        enforce_unsigned_http_allowed(
+            &repo.path().to_path_buf(),
+            branch,
+            Some(&p.id().to_string()),
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+    } else {
+        anyhow::bail!(
+            "HTTP PUT cannot create the first commit on an empty branch; push .relay.yaml via git first"
+        );
+    }
 
     // Write blob
     let blob_oid = repo.blob(content)?;
@@ -247,6 +261,19 @@ pub fn delete_file_in_repo(
         }
         Err(_) => return Err(RepoEditError::NotFound),
     };
+
+    enforce_unsigned_http_allowed(
+        &repo.path().to_path_buf(),
+        branch,
+        Some(
+            &parent_commit
+                .as_ref()
+                .expect("branch exists")
+                .id()
+                .to_string(),
+        ),
+    )
+    .map_err(|e| RepoEditError::Other(anyhow::anyhow!(e)))?;
 
     // Recursively remove path
     fn remove_path(

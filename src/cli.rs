@@ -3,9 +3,9 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "relay-server",
+    name = "relay-gateway",
     version,
-    about = "Relay Server and CLI utilities",
+    about = "Relay gateway and CLI utilities",
     propagate_version = true
 )]
 pub struct Cli {

@@ -52,6 +52,32 @@ pub fn repo_from_host(
     repo_slug_from_host(h, node, &names)
 }
 
+/// Bare name from **`RELAY_DEFAULT_REPO`** (default **`relay-master`**) if that repo exists.
+/// Documented as the apex site when **`Host`** is the node FQDN only (no `{repo}.` prefix).
+fn default_repo_name_for_apex() -> String {
+    std::env::var("RELAY_DEFAULT_REPO")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "relay-master".to_string())
+}
+
+/// When **`Host`** is the node apex (no repo subdomain), serve this bare if present.
+pub fn default_http_repo_from_apex(root: &PathBuf) -> Option<String> {
+    let name = default_repo_name_for_apex();
+    let names = crate::git::bare_repo_names(root);
+    names.iter().find(|n| *n == &name).map(|_| name)
+}
+
+/// [`repo_from_host`], else apex default (**`RELAY_DEFAULT_REPO`** / **`relay-master`**) when that bare exists.
+pub fn repo_from_host_or_default(
+    root: &PathBuf,
+    node_fqdn: Option<&str>,
+    headers: &HeaderMap,
+) -> Option<String> {
+    repo_from_host(root, node_fqdn, headers).or_else(|| default_http_repo_from_apex(root))
+}
+
 /// Resolve the branch name from `X-Relay-Branch` header only, defaults to **main**.
 /// For HTTP handlers that know the repo, prefer [`branch_for_request`] so the bare repo's `HEAD` is used.
 pub fn branch_from(headers: &HeaderMap) -> String {
