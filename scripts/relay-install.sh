@@ -222,17 +222,17 @@ install_piper_artifacts() {
   log "Downloading Piper..."
   curl -fsSL "$url" -o /tmp/piper.tgz
   tar -xzf /tmp/piper.tgz -C /tmp
-  # release layout: piper/piper or flat
-  if [[ -f /tmp/piper/piper ]]; then
-    cp /tmp/piper/piper "$INSTALL/lib/piper/piper"
-  elif [[ -f /tmp/piper_amd64/piper ]]; then
-    cp /tmp/piper_amd64/piper "$INSTALL/lib/piper/piper"
-  elif [[ -f /tmp/piper_arm64/piper ]]; then
-    cp /tmp/piper_arm64/piper "$INSTALL/lib/piper/piper"
+  # release layout: piper/ directory with binary, libraries, and espeak-ng-data
+  # Copy entire piper directory (binary + all .so libraries + espeak-ng-data)
+  if [[ -d /tmp/piper ]]; then
+    # Copy all files from piper directory (binary, libs, data)
+    cp -r /tmp/piper/* "$INSTALL/lib/piper/"
+  elif [[ -d /tmp/piper_amd64 ]]; then
+    cp -r /tmp/piper_amd64/* "$INSTALL/lib/piper/"
+  elif [[ -d /tmp/piper_arm64 ]]; then
+    cp -r /tmp/piper_arm64/* "$INSTALL/lib/piper/"
   else
-    P=$(find /tmp -name piper -type f -perm -111 2>/dev/null | head -1)
-    [[ -n "$P" ]] || die "could not find piper binary in archive"
-    cp "$P" "$INSTALL/lib/piper/piper"
+    die "could not find piper directory in archive"
   fi
   chmod +x "$INSTALL/lib/piper/piper"
   chown -R relay:relay "$INSTALL/lib/piper"
