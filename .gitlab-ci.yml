@@ -29,7 +29,8 @@ test:verify:
   image: rust:${RUST_VERSION}-bookworm
   before_script:
     - export PATH="/usr/local/cargo/bin:$PATH"
-    - apt-get update -qq && apt-get install -y -qq curl jq
+    - apt-get update -qq && apt-get install -y -qq curl jq nodejs
+    - node -v
     - rustc -Vv
   script:
     - cargo test --locked
