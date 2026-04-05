@@ -26,6 +26,8 @@ STATE_DIR="$INSTALL/state"
 FEATURES_JSON="$STATE_DIR/features.json"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION_MARKER="2"
+PIPER_DEFAULT_VOICE_ID_DEFAULT="${RELAY_FEAT_PIPER_DEFAULT_VOICE:-en_GB-cori-medium}"
+PIPER_DEFAULT_VOICE_IDS="${RELAY_FEAT_PIPER_VOICES:-en_GB-cori-medium en_US-lessac-medium}"
 
 # Semicolon-separated FQDNs; used when RELAY_MASTER_PEER_LIST is unset (non-interactive) or when the operator accepts the interactive default (Enter).
 DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-atlanta2.relaygateway.net;atlanta3.relaygateway.net;jp-osa.relaygateway.net}"
@@ -98,10 +100,66 @@ refresh_features_inventory() {
   python3 "$SCRIPT_DIR/relay-probe-features.py" merge "$INSTALL" || log "WARN: feature inventory refresh failed"
 }
 
+piper_model_path_for_voice() {
+  local voice_id="$1"
+  printf '%s/lib/piper/models/%s.onnx' "$INSTALL" "$voice_id"
+}
+
+piper_normalize_voice_ids() {
+  local raw="$1"
+  local voice norm out=() seen=" "
+  read -ra raw_arr <<<"$raw"
+  for voice in "${raw_arr[@]}"; do
+    norm="${voice//,/ }"
+    read -ra norm_arr <<<"$norm"
+    for voice in "${norm_arr[@]}"; do
+      [[ -n "$voice" ]] || continue
+      if [[ "$seen" != *" $voice "* ]]; then
+        out+=("$voice")
+        seen+="$voice "
+      fi
+    done
+  done
+  printf '%s' "${out[*]}"
+}
+
+piper_voice_url_base() {
+  local voice_id="$1"
+  if [[ ! "$voice_id" =~ ^([a-z]{2}_[A-Z]{2})-(.+)-(low|medium|high|x_low)$ ]]; then
+    die "unsupported Piper voice id format: $voice_id"
+  fi
+  local lang="${BASH_REMATCH[1]}"
+  local voice_name="${BASH_REMATCH[2]}"
+  local quality="${BASH_REMATCH[3]}"
+  local family="${lang%%_*}"
+  printf 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/%s/%s/%s/%s' "$family" "$lang" "$voice_name" "$quality"
+}
+
+install_piper_voice_model() {
+  local voice_id="$1"
+  local base target_json
+  base="$(piper_voice_url_base "$voice_id")"
+  log "Downloading Piper voice model: $voice_id"
+  curl -fsSL "$base/$voice_id.onnx" -o "$INSTALL/lib/piper/models/$voice_id.onnx"
+  target_json="$INSTALL/lib/piper/models/$voice_id.onnx.json"
+  curl -fsSL "$base/$voice_id.onnx.json" -o "$target_json" || rm -f "$target_json"
+}
+
+piper_install_ok() {
+  [[ -x "$INSTALL/lib/piper/piper" ]] || return 1
+  [[ -f "$INSTALL/lib/piper/libpiper_phonemize.so.1" ]] || return 1
+  [[ -f "$INSTALL/lib/piper/libespeak-ng.so.1" ]] || return 1
+  [[ -f "$INSTALL/lib/piper/libonnxruntime.so.1.14.1" ]] || return 1
+  [[ -d "$INSTALL/lib/piper/espeak-ng-data" ]] || return 1
+  LD_LIBRARY_PATH="$INSTALL/lib/piper${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    "$INSTALL/lib/piper/piper" --version >/dev/null 2>&1
+}
+
 write_features_json() {
-  local piper_en="$1" npm_en="$2" npm_pkgs_json="$3" trans_en="$4" trans_pkgs_json="$5" lt_en="$6"
+  local piper_en="$1" piper_voices_json="$2" piper_default_voice="$3" npm_en="$4" npm_pkgs_json="$5" trans_en="$6" trans_pkgs_json="$7" lt_en="$8"
   mkdir -p "$STATE_DIR"
-  local model="$INSTALL/lib/piper/models/en_US-lessac-medium.onnx"
+  local model
+  model="$(piper_model_path_for_voice "$piper_default_voice")"
   RELAY_WFJ_INSTALL="$INSTALL" \
   RELAY_WFJ_HTTP_PORT="$HTTP_PORT" \
   RELAY_WFJ_GIT_PORT="$GIT_PORT" \
@@ -110,6 +168,8 @@ write_features_json() {
   RELAY_WFJ_LT_ROOT="$LIBRETRANSLATE_ROOT" \
   RELAY_WFJ_VERSION="$VERSION_MARKER" \
   RELAY_WFJ_PIPER_EN="$piper_en" \
+  RELAY_WFJ_PIPER_VOICES_JSON="$piper_voices_json" \
+  RELAY_WFJ_PIPER_DEFAULT_VOICE="$piper_default_voice" \
   RELAY_WFJ_NPM_EN="$npm_en" \
   RELAY_WFJ_NPM_PKGS_JSON="$npm_pkgs_json" \
   RELAY_WFJ_TRANS_EN="$trans_en" \
@@ -133,6 +193,8 @@ lt_root = os.environ["RELAY_WFJ_LT_ROOT"]
 ver = int(os.environ["RELAY_WFJ_VERSION"])
 
 piper = os.environ["RELAY_WFJ_PIPER_EN"] == "1"
+piper_voices = json.loads(os.environ["RELAY_WFJ_PIPER_VOICES_JSON"])
+piper_default_voice = os.environ["RELAY_WFJ_PIPER_DEFAULT_VOICE"]
 npm_on = os.environ["RELAY_WFJ_NPM_EN"] == "1"
 trans = os.environ["RELAY_WFJ_TRANS_EN"] == "1"
 lt = os.environ["RELAY_WFJ_LT_EN"] == "1"
@@ -152,11 +214,12 @@ data = {
             "binary": f"{install}/lib/piper/piper" if piper else None,
             "models_dir": f"{install}/lib/piper/models" if piper else None,
             "default_model": model if piper else None,
+            "default_voice_id": piper_default_voice if piper else None,
             "http_port": piper_port if piper else None,
             "health_path": "/health" if piper else None,
             "tts_path": "/tts" if piper else None,
             "service": "relay-tts-piper.service" if piper else None,
-            "voices": [],
+            "voices": piper_voices if piper else [],
             "languages": [],
         },
         "npm_extensions": {
@@ -211,7 +274,17 @@ PY
 }
 
 install_piper_artifacts() {
-  mkdir -p "$INSTALL/lib/piper/models"
+  local requested_voices_raw="${1:-$PIPER_DEFAULT_VOICE_IDS}"
+  local default_voice_id="${2:-$PIPER_DEFAULT_VOICE_ID_DEFAULT}"
+  local requested_voices
+  requested_voices="$(piper_normalize_voice_ids "$requested_voices_raw")"
+  [[ -n "$requested_voices" ]] || requested_voices="$PIPER_DEFAULT_VOICE_IDS"
+  if [[ " $requested_voices " != *" $default_voice_id "* ]]; then
+    requested_voices="$default_voice_id $requested_voices"
+    requested_voices="$(piper_normalize_voice_ids "$requested_voices")"
+  fi
+
+  mkdir -p "$INSTALL/lib/piper" "$INSTALL/lib/piper/models"
   local arch url
   arch="$(uname -m)"
   case "$arch" in
@@ -238,11 +311,15 @@ install_piper_artifacts() {
   chown -R relay:relay "$INSTALL/lib/piper"
   rm -rf /tmp/piper.tgz /tmp/piper /tmp/piper_amd64 /tmp/piper_arm64 /tmp/piper_linux_* 2>/dev/null || true
 
-  local mbase="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium"
-  log "Downloading default voice model..."
-  curl -fsSL "$mbase/en_US-lessac-medium.onnx" -o "$INSTALL/lib/piper/models/en_US-lessac-medium.onnx"
-  curl -fsSL "$mbase/en_US-lessac-medium.onnx.json" -o "$INSTALL/lib/piper/models/en_US-lessac-medium.onnx.json" || true
+  local voice_id
+  for voice_id in $requested_voices; do
+    install_piper_voice_model "$voice_id"
+  done
   chown -R relay:relay "$INSTALL/lib/piper/models"
+
+  if ! piper_install_ok; then
+    die "Piper install is incomplete after extraction (binary or shared libraries missing)"
+  fi
 
   if [[ -f "$SCRIPT_DIR/piper-tts-http.py" ]]; then
     cp "$SCRIPT_DIR/piper-tts-http.py" "$INSTALL/bin/piper-tts-http.py"
@@ -264,8 +341,9 @@ Type=simple
 User=relay
 Group=relay
 Environment=PIPER_BIN=$INSTALL/lib/piper/piper
-Environment=PIPER_MODEL=$INSTALL/lib/piper/models/en_US-lessac-medium.onnx
+Environment=PIPER_MODEL=$(piper_model_path_for_voice "$default_voice_id")
 Environment=PIPER_MODELS_DIR=$INSTALL/lib/piper/models
+Environment=LD_LIBRARY_PATH=$INSTALL/lib/piper
 Environment=PIPER_HTTP_PORT=$PIPER_HTTP_PORT
 ExecStart=/usr/bin/python3 $INSTALL/bin/piper-tts-http.py
 Restart=always
@@ -495,23 +573,38 @@ EOF
 }
 
 prompt_features() {
-  local piper=0 npm_en=0 npm_pkgs="songwalker-js" trans=0 trans_pkgs="" lt=0
+  local piper=0 piper_voices="$PIPER_DEFAULT_VOICE_IDS" piper_default_voice="$PIPER_DEFAULT_VOICE_ID_DEFAULT" npm_en=0 npm_pkgs="songwalker-js" trans=0 trans_pkgs="" lt=0
   if [[ "${RELAY_INSTALL_NONINTERACTIVE:-}" == "1" ]]; then
     [[ "${RELAY_FEAT_PIPER:-0}" == "1" ]] && piper=1
+    [[ -n "${RELAY_FEAT_PIPER_VOICES:-}" ]] && piper_voices="$(piper_normalize_voice_ids "${RELAY_FEAT_PIPER_VOICES}")"
+    [[ -n "${RELAY_FEAT_PIPER_DEFAULT_VOICE:-}" ]] && piper_default_voice="${RELAY_FEAT_PIPER_DEFAULT_VOICE}"
+    if [[ "$piper" == "1" && " $piper_voices " != *" $piper_default_voice "* ]]; then
+      piper_voices="$(piper_normalize_voice_ids "$piper_default_voice $piper_voices")"
+    fi
     if [[ -n "${RELAY_FEAT_NPM_PKGS:-}" ]]; then npm_en=1; npm_pkgs="${RELAY_FEAT_NPM_PKGS}"; fi
     [[ "${RELAY_FEAT_TRANSLATION:-0}" == "1" ]] && trans=1
     trans_pkgs="${RELAY_FEAT_TRANSLATION_PKGS:-}"
     [[ "${RELAY_FEAT_LIBRETRANSLATE:-0}" == "1" ]] && lt=1
-    printf '%s\0%s\0%s\0%s\0%s\0%s\0' "$piper" "$npm_en" "$npm_pkgs" "$trans" "$trans_pkgs" "$lt"
+    printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' "$piper" "$piper_voices" "$piper_default_voice" "$npm_en" "$npm_pkgs" "$trans" "$trans_pkgs" "$lt"
     return
   fi
   if [[ ! -t 0 ]]; then
     log "non-TTY: set RELAY_INSTALL_NONINTERACTIVE=1 … RELAY_FEAT_LIBRETRANSLATE=0/1 RELAY_LIBRETRANSLATE_LOAD_ONLY=en,ru"
-    printf '%s\0%s\0%s\0%s\0%s\0%s\0' "0" "0" "" "0" "" "0"
+    printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' "0" "$PIPER_DEFAULT_VOICE_IDS" "$PIPER_DEFAULT_VOICE_ID_DEFAULT" "0" "" "0" "" "0"
     return
   fi
   read -r -p "Enable Piper TTS (HTTP on port $PIPER_HTTP_PORT)? [y/N] " a
   [[ "${a,,}" == "y" ]] && piper=1
+  if [[ "$piper" == "1" ]]; then
+    echo "Available starter Piper voices: en_GB-cori-medium en_GB-cori-high en_GB-alba-medium en_US-lessac-medium"
+    read -r -p "Voice ids to install (space-separated) [$PIPER_DEFAULT_VOICE_IDS]: " pv
+    [[ -n "$pv" ]] && piper_voices="$(piper_normalize_voice_ids "$pv")"
+    read -r -p "Default Piper voice id [$PIPER_DEFAULT_VOICE_ID_DEFAULT]: " pd
+    [[ -n "$pd" ]] && piper_default_voice="$pd"
+    if [[ " $piper_voices " != *" $piper_default_voice "* ]]; then
+      piper_voices="$(piper_normalize_voice_ids "$piper_default_voice $piper_voices")"
+    fi
+  fi
   read -r -p "Install npm packages into node_extensions (e.g. songwalker-js)? [y/N] " b
   if [[ "${b,,}" == "y" ]]; then
     npm_en=1
@@ -530,7 +623,7 @@ prompt_features() {
     read -r -p "LibreTranslate --load-only language codes [en,ru]: " lo
     [[ -n "$lo" ]] && RELAY_LIBRETRANSLATE_LOAD_ONLY="$lo"
   fi
-  printf '%s\0%s\0%s\0%s\0%s\0%s\0' "$piper" "$npm_en" "$npm_pkgs" "$trans" "$trans_pkgs" "$lt"
+  printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' "$piper" "$piper_voices" "$piper_default_voice" "$npm_en" "$npm_pkgs" "$trans" "$trans_pkgs" "$lt"
 }
 
 pkgs_to_json_array() {
@@ -850,15 +943,16 @@ do_install() {
   configure_vercel_dns_first
   ensure_base_deps
   ensure_user_relay
-  { IFS= read -r -d '' piper_en && IFS= read -r -d '' npm_en && IFS= read -r -d '' npm_pkgs && IFS= read -r -d '' trans_en && IFS= read -r -d '' trans_pkgs && IFS= read -r -d '' lt_en; } < <(prompt_features)
-  local npm_json trans_json
+  { IFS= read -r -d '' piper_en && IFS= read -r -d '' piper_voices && IFS= read -r -d '' piper_default_voice && IFS= read -r -d '' npm_en && IFS= read -r -d '' npm_pkgs && IFS= read -r -d '' trans_en && IFS= read -r -d '' trans_pkgs && IFS= read -r -d '' lt_en; } < <(prompt_features)
+  local piper_voices_json npm_json trans_json
+  piper_voices_json="$(pkgs_to_json_array "$piper_voices")"
   npm_json="$(pkgs_to_json_array "$npm_pkgs")"
   trans_json="$(pkgs_to_json_array "$trans_pkgs")"
-  write_features_json "$piper_en" "$npm_en" "$npm_json" "$trans_en" "$trans_json" "$lt_en"
+  write_features_json "$piper_en" "$piper_voices_json" "$piper_default_voice" "$npm_en" "$npm_json" "$trans_en" "$trans_json" "$lt_en"
   install_binaries
   write_gitconfig_hooks
   write_systemd_core
-  [[ "$piper_en" == "1" ]] && install_piper_artifacts
+  [[ "$piper_en" == "1" ]] && install_piper_artifacts "$piper_voices" "$piper_default_voice"
   [[ "$npm_en" == "1" && -n "$npm_pkgs" ]] && install_npm_extensions "$npm_pkgs"
   if [[ "$trans_en" == "1" ]]; then
     install_translation_artifacts $trans_pkgs
@@ -888,7 +982,16 @@ do_update() {
   need_root
   bootstrap_features_json_if_missing
   [[ -f "$FEATURES_JSON" ]] || die "run install first (or ensure $INSTALL/bin/relay-server exists)"
+  local piper_en piper_voices piper_default_voice
+  piper_en="$(jq -r '.features.piper_tts.enabled // false' "$FEATURES_JSON" 2>/dev/null || echo false)"
+  piper_voices="$(jq -r '.features.piper_tts.voices[]?.id' "$FEATURES_JSON" 2>/dev/null | tr '\n' ' ' | xargs echo -n)"
+  piper_default_voice="$(jq -r '.features.piper_tts.default_voice_id // empty' "$FEATURES_JSON" 2>/dev/null || true)"
+  [[ -n "$piper_default_voice" ]] || piper_default_voice="$PIPER_DEFAULT_VOICE_ID_DEFAULT"
+  [[ -n "$piper_voices" ]] || piper_voices="$piper_default_voice"
   install_binaries
+  if [[ "$piper_en" == "true" ]]; then
+    install_piper_artifacts "$piper_voices" "$piper_default_voice"
+  fi
   refresh_features_inventory
   systemctl restart relay-git-daemon relay-server
   systemctl try-restart relay-tts-piper 2>/dev/null || true
@@ -913,7 +1016,12 @@ do_repair() {
   write_gitconfig_hooks
   write_systemd_core
   if [[ "$piper_en" == "true" ]]; then
-    [[ -x "$INSTALL/lib/piper/piper" ]] || install_piper_artifacts
+    local piper_voices piper_default_voice
+    piper_voices="$(jq -r '.features.piper_tts.voices[]?.id' "$FEATURES_JSON" 2>/dev/null | tr '\n' ' ' | xargs echo -n)"
+    piper_default_voice="$(jq -r '.features.piper_tts.default_voice_id // empty' "$FEATURES_JSON" 2>/dev/null || true)"
+    [[ -n "$piper_default_voice" ]] || piper_default_voice="$PIPER_DEFAULT_VOICE_ID_DEFAULT"
+    [[ -n "$piper_voices" ]] || piper_voices="$piper_default_voice"
+    piper_install_ok || install_piper_artifacts "$piper_voices" "$piper_default_voice"
     systemctl enable relay-tts-piper 2>/dev/null || true
     systemctl restart relay-tts-piper 2>/dev/null || true
   fi
@@ -956,16 +1064,17 @@ do_reconfigure_features() {
     read -r -p "[y/N] " c
     [[ "${c,,}" == "y" ]] || exit 0
   fi
-  { IFS= read -r -d '' piper_en && IFS= read -r -d '' npm_en && IFS= read -r -d '' npm_pkgs && IFS= read -r -d '' trans_en && IFS= read -r -d '' trans_pkgs && IFS= read -r -d '' lt_en; } < <(prompt_features)
-  local npm_json trans_json
+  { IFS= read -r -d '' piper_en && IFS= read -r -d '' piper_voices && IFS= read -r -d '' piper_default_voice && IFS= read -r -d '' npm_en && IFS= read -r -d '' npm_pkgs && IFS= read -r -d '' trans_en && IFS= read -r -d '' trans_pkgs && IFS= read -r -d '' lt_en; } < <(prompt_features)
+  local piper_voices_json npm_json trans_json
+  piper_voices_json="$(pkgs_to_json_array "$piper_voices")"
   npm_json="$(pkgs_to_json_array "$npm_pkgs")"
   trans_json="$(pkgs_to_json_array "$trans_pkgs")"
   systemctl stop relay-tts-piper 2>/dev/null || true
   systemctl stop libretranslate 2>/dev/null || true
-  write_features_json "$piper_en" "$npm_en" "$npm_json" "$trans_en" "$trans_json" "$lt_en"
+  write_features_json "$piper_en" "$piper_voices_json" "$piper_default_voice" "$npm_en" "$npm_json" "$trans_en" "$trans_json" "$lt_en"
   if [[ "$piper_en" == "1" ]]; then
     rm -rf "$INSTALL/lib/piper" 2>/dev/null || true
-    install_piper_artifacts
+    install_piper_artifacts "$piper_voices" "$piper_default_voice"
     systemctl enable relay-tts-piper
     systemctl start relay-tts-piper
   else
@@ -1049,7 +1158,7 @@ case "${1:-install}" in
     echo "Usage: $0 {install|update|repair|reconfigure-features|refresh-features}"
     echo "  install   — Vercel DNS first (unless skipped), then base deps; Piper + npm + translation prompts (or RELAY_INSTALL_NONINTERACTIVE=1)"
     echo "  DNS env: RELAY_PUBLIC_FQDN, VERCEL_API_TOKEN, optional VERCEL_TEAM_ID, RELAY_VERCEL_DOMAIN, RELAY_SKIP_VERCEL_DNS=1"
-    echo "  Features env: RELAY_FEAT_PIPER, RELAY_FEAT_NPM_PKGS, RELAY_FEAT_TRANSLATION, RELAY_FEAT_TRANSLATION_PKGS, RELAY_FEAT_LIBRETRANSLATE, RELAY_LIBRETRANSLATE_LOAD_ONLY (see docs/INSTALL_FEATURES.md)"
+    echo "  Features env: RELAY_FEAT_PIPER, RELAY_FEAT_PIPER_VOICES, RELAY_FEAT_PIPER_DEFAULT_VOICE, RELAY_FEAT_NPM_PKGS, RELAY_FEAT_TRANSLATION, RELAY_FEAT_TRANSLATION_PKGS, RELAY_FEAT_LIBRETRANSLATE, RELAY_LIBRETRANSLATE_LOAD_ONLY (see docs/INSTALL_FEATURES.md)"
     echo "  Node env: RELAY_SERVER_ID, RELAY_PUBLIC_HOSTNAME (if RELAY_SKIP_VERCEL_DNS=1), RELAY_MASTER_PEER_LIST (override; default mesh masters: $DEFAULT_RELAY_MASTER_PEER_LIST)"
     echo "  Deploy SSH policy (optional): RELAY_VALIDATE_DEPLOY_SSH_KEY=1, RELAY_DEPLOY_SSH_USER (default ari), RELAY_DEPLOY_SSH_KEY_FINGERPRINT (substring from ssh-keygen -lf -E sha256) — docs/SECRETS_POLICY.md"
     echo "  Startup catalog sync (optional): RELAY_STARTUP_CATALOG_SYNC=0 to skip ExecStartPre (default 1 when RELAY_MASTER_CATALOG_PATH has relay-catalog.json + scripts/sync-relay-catalog.sh); Slack: RELAY_NOTIFY_SLACK_WEBHOOK_URL"

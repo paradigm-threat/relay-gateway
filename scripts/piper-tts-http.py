@@ -20,6 +20,24 @@ PORT = int(os.environ.get("PIPER_HTTP_PORT", "5590"))
 MODELS_DIR = os.environ.get("PIPER_MODELS_DIR", "/opt/relay/lib/piper/models")
 
 
+def title_case(value):
+    return " ".join(part.capitalize() for part in value.replace("_", " ").split())
+
+
+def display_name(lang, voice_name, quality):
+    region = lang.split("_", 1)[1] if "_" in lang else lang
+    return f"{title_case(voice_name)} ({region}, {quality})"
+
+
+def model_path_for_voice_id(voice_id, models_dir=MODELS_DIR):
+    if not voice_id:
+        return None
+    candidate = os.path.join(models_dir, f"{voice_id}.onnx")
+    if os.path.isfile(candidate):
+        return candidate
+    return None
+
+
 def discover_voices(models_dir=MODELS_DIR):
     """Scan models directory and return list of available voices."""
     voices = []
@@ -49,6 +67,8 @@ def discover_voices(models_dir=MODELS_DIR):
         voices.append(
             {
                 "id": voice_id,
+                "name": display_name(lang, voice_name, quality),
+                "lang": lang,
                 "language": lang,
                 "voice": voice_name,
                 "quality": quality,
@@ -106,6 +126,7 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(n) or b"{}")
             text = (body.get("text") or "").strip()
+            voice_id = (body.get("voiceId") or "").strip()
             if not text or len(text) > 8000:
                 self.send_response(400)
                 self.end_headers()
@@ -115,8 +136,25 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         try:
+            model_path = MODEL
+            if voice_id:
+                model_path = model_path_for_voice_id(voice_id)
+                if not model_path:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(
+                        json.dumps(
+                            {
+                                "error": f"Requested Piper voice is not installed: {voice_id}",
+                                "availableVoiceIds": [voice["id"] for voice in discover_voices()],
+                                "defaultVoiceId": os.path.basename(MODEL).replace(".onnx", "") if os.path.isfile(MODEL) else None,
+                            }
+                        ).encode()
+                    )
+                    return
             proc = subprocess.run(
-                [PIPER, "--model", MODEL, "--output_file", "-"],
+                [PIPER, "--model", model_path, "--output_file", "-"],
                 input=text.encode(),
                 capture_output=True,
                 timeout=120,

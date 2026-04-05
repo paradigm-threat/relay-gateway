@@ -42,22 +42,23 @@ The `relay-tts-piper.service` now includes the `PIPER_MODELS_DIR` environment va
 [Service]
 ...
 Environment=PIPER_BIN=/opt/relay/lib/piper/piper
-Environment=PIPER_MODEL=/opt/relay/lib/piper/models/en_US-lessac-medium.onnx
+Environment=PIPER_MODEL=/opt/relay/lib/piper/models/en_GB-cori-medium.onnx
 Environment=PIPER_MODELS_DIR=/opt/relay/lib/piper/models
 Environment=PIPER_HTTP_PORT=5590
 ...
 ```
 
-This allows the `/voices` endpoint to discover all installed models automatically.
+This allows the `/voices` endpoint to discover all installed models automatically, while `PIPER_MODEL` determines the server default voice.
 
 ### 3. Automatic Installation & Updates
 
-When TTS is enabled during `./install.sh install` or `./install.sh reconfigure-features`:
+When TTS is enabled during `./install.sh install`, `./install.sh update`, or `./install.sh reconfigure-features`:
 
 1. **Enhanced wrapper** is copied to `/opt/relay/bin/piper-tts-http.py`
-2. **Models directory** is created and populated with default voice
-3. **Systemd service** is configured with proper environment variables
+2. **Models directory** is created and populated with the selected voices
+3. **Systemd service** is configured with proper environment variables and the chosen default voice
 4. **Service is enabled** and automatically started
+5. **Shared libraries** are validated and repaired if Piper is incomplete
 
 ## Installation
 
@@ -66,6 +67,13 @@ When TTS is enabled during `./install.sh install` or `./install.sh reconfigure-f
 ```bash
 # Enable Piper TTS during install
 RELAY_FEAT_PIPER=1 RELAY_INSTALL_NONINTERACTIVE=1 sudo -E ./install.sh install
+
+# Explicit voice list + default
+RELAY_FEAT_PIPER=1 \
+RELAY_FEAT_PIPER_VOICES="en_GB-cori-medium en_US-lessac-medium" \
+RELAY_FEAT_PIPER_DEFAULT_VOICE="en_GB-cori-medium" \
+RELAY_INSTALL_NONINTERACTIVE=1 \
+sudo -E ./install.sh install
 
 # Or reconfigure existing install
 RELAY_FEAT_PIPER=1 RELAY_INSTALL_NONINTERACTIVE=1 sudo -E ./install.sh reconfigure-features
@@ -78,7 +86,10 @@ RELAY_FEAT_PIPER=1 RELAY_INSTALL_NONINTERACTIVE=1 sudo -E ./install.sh reconfigu
 
 ```bash
 sudo ./install.sh install
-# Prompts: "Enable Piper TTS (HTTP on port 5590)? [y/N]" → answer 'y'
+# Prompts:
+#   "Enable Piper TTS (HTTP on port 5590)? [y/N]"
+#   "Voice ids to install..." (example: en_GB-cori-medium en_US-lessac-medium)
+#   "Default Piper voice id..." (example: en_GB-cori-medium)
 ```
 
 ## Voice Model Management
@@ -90,13 +101,13 @@ sudo ./install.sh install
 ```bash
 cd /opt/relay/lib/piper/models
 
-# Download a model (example: Spanish voice)
-curl -fsSL https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/es/es_ES/shivam-medium.onnx \
-  -o es_ES-shivam-medium.onnx
+# Download a model (example: GB Cori)
+curl -fsSL https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/cori/medium/en_GB-cori-medium.onnx \
+  -o en_GB-cori-medium.onnx
 
 # Optional: Download metadata
-curl -fsSL https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/es/es_ES/shivam-medium.onnx.json \
-  -o es_ES-shivam-medium.onnx.json
+curl -fsSL https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/cori/medium/en_GB-cori-medium.onnx.json \
+  -o en_GB-cori-medium.onnx.json
 ```
 
 2. Refresh the feature inventory:
