@@ -4,21 +4,21 @@
 
 **[`relay-master`](../../relay-master)** is the **master repository** for a Relay mesh: it lists **which repositories** may be mirrored, **where to clone them from**, and the **trusted root commit** for each entry. That same repository is the **default HTTP site** for the node apex when operators set **`RELAY_DEFAULT_REPO=relay-master`** (repo name without `.git`).
 
-### Whitelist = Git submodules
+### Whitelist = `relay-catalog.json`
 
-Each submodule in **`relay-master`** defines one catalog entry:
+Each entry under **`repos`** in **`relay-master/relay-catalog.json`** defines one catalog entry:
 
-| Source | Meaning |
+| Field | Meaning |
 |--------|---------|
-| **`[submodule "repo-name"]` → `path`** | Worktree path inside **`relay-master`** (e.g. `repos/paradigm-threat-files`). |
-| **`url`** | **Authoritative clone URL** for relays (HTTPS, `git://`, etc.). |
-| **`relayRootCommit`** | Relay-specific key in **`.gitmodules`**: 40-character object id. Git ignores it; **`scripts/sync-relay-catalog.sh`** and docs use it. After clone/fetch, that commit **must be an ancestor** of the configured branch tip—**same check** **`relay-server` applies to `anchor_commit`** after pull. |
+| **`url`** | **Authoritative clone URL** for relays (HTTPS, `git://`, etc.). Used by **`sync-relay-catalog.sh`** for bare mirrors; **`relay-master`** does not nest git checkouts for these repos. |
+| **`relayRootCommit`** | 40-character object id of the trusted root. After clone/fetch, that commit **must be an ancestor** of the configured branch tip—**same check** **`relay-server` applies to `anchor_commit`** after pull. |
+| **`branch`** | Branch to verify (default **`main`**). |
 
-**Other uses of submodules (not only policy):** pinned SHAs in the superproject commit, optional **`branch`** / **`update`** for **`git submodule update --remote`**, shallow clones in CI, **`ignore`** / layout. Relay policy is **`url` + `relayRootCommit`**.
+Relay policy is **`url` + `relayRootCommit` + `branch`** (no git submodules in **`relay-master`**).
 
 ### Public forge URL vs private body (copyright / ops)
 
-For any repository listed in **`relay-master`**, the **`url`** in **`.gitmodules`** is what relay nodes **clone or fetch** from the forge. Treat that URL as **public-facing policy**: it should point at a Git history whose **first commit is intentionally minimal** (typically **README-only**), so operators and **`sync-relay-catalog.sh`** can use:
+For any repository listed in **`relay-master`**, the **`url`** in **`relay-catalog.json`** is what relay nodes **clone or fetch** from the forge. Treat that URL as **public-facing policy**: it should point at a Git history whose **first commit is intentionally minimal** (typically **README-only**), so operators and **`sync-relay-catalog.sh`** can use:
 
 ```bash
 git clone --depth 1 <repository_URL>
@@ -32,9 +32,9 @@ git clone --depth 1 <repository_URL>
 - If you add **new commits on the forge** (e.g. README edits), ensure **`git clone --depth 1`** still reaches **`relayRootCommit`** (with the default **`RELAY_CATALOG_CLONE_DEPTH=1`**, that means the root must be the **tip** or you must increase depth — see **`relay-master/scripts/sync-relay-catalog.sh`**).
 - **Never** point the catalog **`url`** at a private dump you refuse to host publicly; use a **stub repo** + push the real tree to relay only.
 
-**Authentication on nodes:** **`sync-relay-catalog.sh`** runs **`git clone` / `git fetch`** as the **`relay`** (or equivalent) UNIX user. If the forge project is **private**, that user needs **non-interactive** read access (e.g. **Public** or **Internal** visibility for a README-only stub, a **read-only deploy token** in **`git credential`**, or an **SSH submodule URL** plus a deploy key). Otherwise **`fatal: could not read Username for 'https://gitlab.com'`** is expected.
+**Authentication on nodes:** **`sync-relay-catalog.sh`** runs **`git clone` / `git fetch`** as the **`relay`** (or equivalent) UNIX user. If the forge project is **private**, that user needs **non-interactive** read access (e.g. **Public** or **Internal** visibility for a README-only stub, a **read-only deploy token** in **`git credential`**, or an **SSH `url`** in **`relay-catalog.json`** plus a deploy key). Otherwise **`fatal: could not read Username for 'https://gitlab.com'`** is expected.
 
-**Helper:** **`relay-master/scripts/init-minimal-public-catalog-repo.sh`** creates a fresh repo whose only commit is **`README.md`** (print **`relayRootCommit`** for **`.gitmodules`**). **`relay-master/scripts/publish-catalog-stub-to-gitlab.sh`** (optional **`GITLAB_TOKEN`**) creates the GitLab project and pushes that single commit.
+**Helper:** **`relay-master/scripts/init-minimal-public-catalog-repo.sh`** creates a fresh repo whose only commit is **`README.md`** (print **`relayRootCommit=`** for **`relay-catalog.json`**). **`relay-master/scripts/publish-catalog-stub-to-gitlab.sh`** (optional **`GITLAB_TOKEN`**) creates the GitLab project and pushes that single commit.
 
 ### First commit should read as an intentional empty / stub repo
 
@@ -46,9 +46,9 @@ When you add a **new** catalog repo, make the **first commit on the forge** (and
 
 ### How operators add a repo
 
-1. **Merge** a change to **`relay-master`** that adds the submodule (**`url`**, **`path`**, **`relayRootCommit`**). Obtain the root with `git rev-list --max-parents=0 <branch>` on a trusted clone; if history has multiple roots, pick the **canonical** root your policy requires and record it in the PR. For **stub remotes**, the root is usually the **only** commit on the forge branch.
+1. **Merge** a change to **`relay-master`** that adds or updates a **`repos.<name>`** object (**`url`**, **`relayRootCommit`**, **`branch`**). Obtain the root with `git rev-list --max-parents=0 <branch>` on a trusted clone; if history has multiple roots, pick the **canonical** root your policy requires and record it in the PR. For **stub remotes**, the root is usually the **only** commit on the forge branch.
 2. On each node, **update the `relay-master` checkout** (pull, deploy artifact, etc.).
-3. Run **`./scripts/sync-relay-catalog.sh`** from that checkout. It **clones or fetches** bare mirrors under **`RELAY_REPO_PATH/<submodule-name>.git`** (default **shallow** from the forge) and **rejects** catalogs whose upstream no longer contains **`relayRootCommit`** in the branch ancestry (blocks unrelated history).
+3. Run **`./scripts/sync-relay-catalog.sh`** from that checkout. It **clones or fetches** bare mirrors under **`RELAY_REPO_PATH/<name>.git`** (default **shallow** from the forge) and **rejects** catalogs whose upstream no longer contains **`relayRootCommit`** in the branch ancestry (blocks unrelated history).
 
 ### `relay-server` enforcement (catalog path **or** YAML)
 
@@ -56,14 +56,14 @@ Set **exactly one** of:
 
 | Mode | Env | Behavior |
 |------|-----|----------|
-| **Preferred** | **`RELAY_MASTER_CATALOG_PATH`** | Server reads **`.gitmodules`** from that **worktree** at startup: synthetic **`relay-master`** row from checkout **`HEAD`**, plus each submodule’s **`relayRootCommit`** and **`branch`**. |
+| **Preferred** | **`RELAY_MASTER_CATALOG_PATH`** | Server reads **`relay-catalog.json`** from that **worktree** at startup: synthetic **`relay-master`** row from checkout **`HEAD`**, plus each catalog repo’s **`relayRootCommit`** and **`branch`**. |
 | **Legacy / export** | **`RELAY_AUTHORIZED_REPOS_PATH`** | Server reads YAML (e.g. from **`sync-relay-catalog.sh --write-authorized-repos`**). |
 
 **Never set both** — **`relay-server` exits** at startup if both are present.
 
 **Pin the catalog checkout (recommended):** **`RELAY_MASTER_TRUST_ROOT`** = 40 hex chars, the **trusted root** of your real **`relay-master`** (usually `git rev-list --max-parents=0 main` on a known-good clone). On startup the server checks that this commit is an **ancestor** of **`HEAD`** at **`RELAY_MASTER_CATALOG_PATH`**, so a wrong directory or forked repo fails fast.
 
-**After `git pull` on the catalog checkout:** **`relay-server` does not hot-reload** policy—**restart** the service (or rely on a future SIGHUP) whenever **`.gitmodules`** or **`HEAD`** changes.
+**After `git pull` on the catalog checkout:** **`relay-server` does not hot-reload** policy—**restart** the service (or rely on a future SIGHUP) whenever **`relay-catalog.json`** or **`HEAD`** changes.
 
 **Greenfield nodes:** set **`RELAY_MASTER_CATALOG_GIT_URL`** in **`relay.env`** to your public **`relay-master`** HTTPS URL. **`install.sh`** creates **`/opt/relay/src`** owned by **`relay`**; on first **`relay-server`** start, **`relay-startup-catalog-sync.sh`** clones the catalog there (unless **`RELAY_MASTER_CATALOG_PATH`** already holds a valid worktree), then runs **`sync-relay-catalog.sh`**. You still set **`RELAY_MASTER_TRUST_ROOT`** and mesh secrets in the same **`relay.env`** — no separate SSH step to clone the catalog. The startup script uses a **non-trivial default clone depth** and may **deepen** a shallow catalog so **`RELAY_MASTER_TRUST_ROOT`** remains in history; see **`scripts/relay-startup-catalog-sync.sh`** and **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** § “Greenfield checklist”.
 
@@ -103,11 +103,11 @@ Without (1)+(2), **`relay-server` starts with no allowlist** (dev only).
 ### Security on **`relay-master`**
 
 - **Today:** No required signed commits; protect merge access like any ops repo.
-- **Planned:** Require **signed commits** (or equivalent) so the submodule allowlist cannot change without trusted keys.
+- **Planned:** Require **signed commits** (or equivalent) so the catalog allowlist cannot change without trusted keys.
 
 ### Anti-squat (names on the node)
 
-For every catalog repo name, policy (**YAML or in-memory from **`.gitmodules`**) should record **`anchor_commit` / `relayRootCommit` + `branch` before** `RELAY_REPO_PATH/<name>.git` is trusted, so unrelated history cannot occupy the name first via push/pull. **`relay-server` enforces this on `POST /git-pull`** today; **`git daemon` `receive-pack`** should get the same rule in **`pre-receive`** (planned). Restrict **9418** to trusted peers until then if names are public.
+For every catalog repo name, policy (**YAML or in-memory from **`relay-catalog.json`**) should record **`anchor_commit` / `relayRootCommit` + `branch` before** `RELAY_REPO_PATH/<name>.git` is trusted, so unrelated history cannot occupy the name first via push/pull. **`relay-server` enforces this on `POST /git-pull`** today; **`git daemon` `receive-pack`** should get the same rule in **`pre-receive`** (planned). Restrict **9418** to trusted peers until then if names are public.
 
 ### Example generated file
 
@@ -165,7 +165,7 @@ Then run **`sync-relay-catalog.sh`** as above.
 
 If the node still uses **`RELAY_AUTHORIZED_REPOS_PATH`**, also run **`--write-authorized-repos …`** before **`restart`**. With **`RELAY_MASTER_CATALOG_PATH`**, **`restart`** is enough after **`git pull`** (policy read from the worktree at startup).
 
-After you **push** an updated **`relay-master`** to the forge, run **`git pull` + `sync-relay-catalog.sh`** on the server so new submodules become bare mirrors. **`relay-server` does not auto-pull** the catalog checkout; use this manual step, **`cron`**, or a future **`post-receive`** on **`relay-master.git`** until implemented.
+After you **push** an updated **`relay-master`** to the forge, run **`git pull` + `sync-relay-catalog.sh`** on the server so new catalog repos become bare mirrors. **`relay-server` does not auto-pull** the catalog checkout; use this manual step, **`cron`**, or a future **`post-receive`** on **`relay-master.git`** until implemented.
 
 **Verify a new repo** (example: **`snesology-library`** on **`main`**): after **`sync-relay-catalog.sh`**, the bare may contain only the **public stub** (e.g. README). **`GET /index.json`** (or other app files) succeeds only after a trusted **`git push`** has landed the real tree on the node. With **`Host: snesology-library.atlanta3.relaygateway.net`** (or your wildcard equivalent):
 
@@ -179,8 +179,8 @@ After you **push** an updated **`relay-master`** to the forge, run **`git pull` 
    `git -C relay-master rev-list --max-parents=0 main` (use your default branch if not **`main`**).
 2. **Node:** ensure **`RELAY_MASTER_CATALOG_PATH`** points at a **full worktree** (not only a bare mirror), **`RELAY_SERVER_ID`** is set, and **`sync-relay-catalog.sh`** has populated **`RELAY_REPO_PATH/*.git`**.
 3. **Start check:** `relay-server` must start; if **`RELAY_MASTER_TRUST_ROOT`** is wrong for that checkout, startup **errors** immediately.
-4. **`GET /api/config`:** **`authorized_repos`** lists **`relay-master`** plus each submodule name from **`.gitmodules`**.
-5. **Add a repo:** merge a new submodule (**`url`**, **`relayRootCommit`**, optional **`branch`**), push, on the node **`git pull`** + **`sync-relay-catalog.sh`**, **`systemctl restart relay-server`**, confirm **`authorized_repos`** includes the new name and **`Host: {name}.{node}`** serves a file you expect.
+4. **`GET /api/config`:** **`authorized_repos`** lists **`relay-master`** plus each repo name from **`relay-catalog.json`**.
+5. **Add a repo:** merge an updated **`relay-catalog.json`** (**`url`**, **`relayRootCommit`**, **`branch`**), push, on the node **`git pull`** + **`sync-relay-catalog.sh`**, **`systemctl restart relay-server`**, confirm **`authorized_repos`** includes the new name and **`Host: {name}.{node}`** serves a file you expect.
 
 ---
 
@@ -239,13 +239,13 @@ Stock **`git daemon`** cannot create missing bare paths on first connect. See **
 
 | Piece | Status |
 |-------|--------|
-| **`relay-master`** catalog repo (submodules + **`relayRootCommit`**) | **In tree** — **[`relay-master`](../../relay-master)** |
+| **`relay-master`** catalog repo (**`relay-catalog.json`** + **`relayRootCommit`**) | **In tree** — **[`relay-master`](../../relay-master)** |
 | **`scripts/sync-relay-catalog.sh`** (clone/fetch + root check + YAML emit) | **In tree** |
 | **`RELAY_SERVER_ID` + allowlist** | **Enforced** at startup (**`RELAY_MASTER_CATALOG_PATH`** or **`RELAY_AUTHORIZED_REPOS_PATH`**) |
 | **`RELAY_MASTER_TRUST_ROOT`** | **Optional**; when set, verifies catalog checkout lineage at startup |
 | **Pull allowlist + anchor validation** | **Enforced** on **`POST /git-pull`** |
 | **Bootstrap anchor check** | **Enforced** in **`relay-bootstrap.sh`** (manifest) |
-| **relay-server reads `.gitmodules`** | **Implemented** via **`RELAY_MASTER_CATALOG_PATH`** |
+| **relay-server reads `relay-catalog.json`** | **Implemented** via **`RELAY_MASTER_CATALOG_PATH`** |
 | **`allowedKeys` fingerprint match on push** | Planned (hook handler) |
 | **Anchor enforcement on `git push`** | Planned — **`pre-receive`** |
 | **Signed commits on `relay-master`** | Planned (process + optional hooks) |

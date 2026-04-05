@@ -20,13 +20,15 @@ PIPER_HTTP_PORT="${RELAY_PIPER_HTTP_PORT:-5590}"
 # LibreTranslate: segment HTTP /translate API (optional); venv under RELAY_LIBRETRANSLATE_ROOT.
 LIBRETRANSLATE_PORT="${RELAY_LIBRETRANSLATE_PORT:-5588}"
 LIBRETRANSLATE_ROOT="${RELAY_LIBRETRANSLATE_ROOT:-/opt/libretranslate}"
+# LibreTranslate built-in translation cache TTL (seconds). Upstream default is 7d; we patch site-packages to honor this env.
+LIBRETRANSLATE_CACHE_TTL="${RELAY_LIBRETRANSLATE_CACHE_TTL:-2592000}"
 STATE_DIR="$INSTALL/state"
 FEATURES_JSON="$STATE_DIR/features.json"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION_MARKER="2"
 
 # Semicolon-separated FQDNs; used when RELAY_MASTER_PEER_LIST is unset (non-interactive) or when the operator accepts the interactive default (Enter).
-DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-atlanta3.relaygateway.net;jp-osa.relaygateway.net}"
+DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-atlanta2.relaygateway.net;atlanta3.relaygateway.net;jp-osa.relaygateway.net}"
 
 log() { echo "[relay-install] $*" >&2; }
 die() { echo "[relay-install] ERROR: $*" >&2; exit 1; }
@@ -213,8 +215,8 @@ install_piper_artifacts() {
   local arch url
   arch="$(uname -m)"
   case "$arch" in
-    x86_64) url="https://github.com/rhasspy/piper/releases/download/v1.2.0/piper_linux_x86_64.tar.gz" ;;
-    aarch64|arm64) url="https://github.com/rhasspy/piper/releases/download/v1.2.0/piper_linux_aarch64.tar.gz" ;;
+    x86_64) url="https://github.com/rhasspy/piper/releases/download/v1.2.0/piper_amd64.tar.gz" ;;
+    aarch64|arm64) url="https://github.com/rhasspy/piper/releases/download/v1.2.0/piper_arm64.tar.gz" ;;
     *) die "unsupported arch for Piper: $arch" ;;
   esac
   log "Downloading Piper..."
@@ -223,8 +225,10 @@ install_piper_artifacts() {
   # release layout: piper/piper or flat
   if [[ -f /tmp/piper/piper ]]; then
     cp /tmp/piper/piper "$INSTALL/lib/piper/piper"
-  elif [[ -f /tmp/piper_linux_x86_64/piper ]]; then
-    cp /tmp/piper_linux_x86_64/piper "$INSTALL/lib/piper/piper"
+  elif [[ -f /tmp/piper_amd64/piper ]]; then
+    cp /tmp/piper_amd64/piper "$INSTALL/lib/piper/piper"
+  elif [[ -f /tmp/piper_arm64/piper ]]; then
+    cp /tmp/piper_arm64/piper "$INSTALL/lib/piper/piper"
   else
     P=$(find /tmp -name piper -type f -perm -111 2>/dev/null | head -1)
     [[ -n "$P" ]] || die "could not find piper binary in archive"
@@ -232,7 +236,7 @@ install_piper_artifacts() {
   fi
   chmod +x "$INSTALL/lib/piper/piper"
   chown -R relay:relay "$INSTALL/lib/piper"
-  rm -rf /tmp/piper.tgz /tmp/piper /tmp/piper_linux_* 2>/dev/null || true
+  rm -rf /tmp/piper.tgz /tmp/piper /tmp/piper_amd64 /tmp/piper_arm64 /tmp/piper_linux_* 2>/dev/null || true
 
   local mbase="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium"
   log "Downloading default voice model..."
@@ -261,6 +265,7 @@ User=relay
 Group=relay
 Environment=PIPER_BIN=$INSTALL/lib/piper/piper
 Environment=PIPER_MODEL=$INSTALL/lib/piper/models/en_US-lessac-medium.onnx
+Environment=PIPER_MODELS_DIR=$INSTALL/lib/piper/models
 Environment=PIPER_HTTP_PORT=$PIPER_HTTP_PORT
 ExecStart=/usr/bin/python3 $INSTALL/bin/piper-tts-http.py
 Restart=always
@@ -310,6 +315,9 @@ install_translation_artifacts() {
 
 write_libretranslate_systemd() {
   local load="${1:-en,ru}"
+  local lt_shared_env=""
+  [[ -n "${RELAY_LIBRETRANSLATE_SHARED_STORAGE:-}" ]] && lt_shared_env="Environment=LT_SHARED_STORAGE=${RELAY_LIBRETRANSLATE_SHARED_STORAGE}
+"
   mkdir -p "$LIBRETRANSLATE_ROOT"
   chown relay:relay "$LIBRETRANSLATE_ROOT" 2>/dev/null || true
   cat >/etc/systemd/system/libretranslate.service <<EOF
@@ -322,15 +330,53 @@ Type=simple
 User=relay
 Group=relay
 WorkingDirectory=$LIBRETRANSLATE_ROOT
-ExecStart=$LIBRETRANSLATE_ROOT/venv/bin/libretranslate --host 0.0.0.0 --port $LIBRETRANSLATE_PORT --load-only $load --char-limit -1 --req-limit -1 --hourly-req-limit -1 --daily-req-limit -1 --disable-web-ui --threads 2
+ExecStart=$LIBRETRANSLATE_ROOT/venv/bin/libretranslate --host 0.0.0.0 --port $LIBRETRANSLATE_PORT --load-only $load --char-limit -1 --req-limit -1 --hourly-req-limit -1 --daily-req-limit -1 --disable-web-ui --threads 2 --translation-cache all
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
-
+Environment=LT_TRANSLATION_CACHE_TTL=$LIBRETRANSLATE_CACHE_TTL
+${lt_shared_env}
 [Install]
 WantedBy=multi-user.target
 EOF
+  if [[ -x "$LIBRETRANSLATE_ROOT/venv/bin/python3" ]] || [[ -x "$LIBRETRANSLATE_ROOT/venv/bin/python" ]]; then
+    patch_libretranslate_cache_ttl
+  fi
   systemctl daemon-reload
+}
+
+# Upstream LibreTranslate hardcodes translation cache expiry to 7 days; honor LT_TRANSLATION_CACHE_TTL (systemd sets it).
+patch_libretranslate_cache_ttl() {
+  local py="$LIBRETRANSLATE_ROOT/venv/bin/python3"
+  [[ -x "$py" ]] || py="$LIBRETRANSLATE_ROOT/venv/bin/python"
+  [[ -x "$py" ]] || return 0
+  sudo -u relay env LIBRETRANSLATE_ROOT="$LIBRETRANSLATE_ROOT" "$py" <<'PY'
+import os
+import pathlib
+import re
+
+root = pathlib.Path(os.environ["LIBRETRANSLATE_ROOT"])
+paths = list(root.glob("venv/lib/python*/site-packages/libretranslate/cache.py"))
+if not paths:
+    raise SystemExit(0)
+p = paths[0]
+text = p.read_text(encoding="utf-8")
+if "LT_TRANSLATION_CACHE_TTL" in text:
+    raise SystemExit(0)
+if not re.search(r"^\s*self\.expire\s*=\s*\d+", text, re.M):
+    raise SystemExit(0)
+if "\nimport os\n" not in text:
+    text = text.replace("import gzip\n", "import gzip\nimport os\n", 1)
+text_new, n = re.subn(
+    r"(?m)^(\s*)self\.expire\s*=\s*\d+(\s*#.*)?$",
+    r'\1self.expire = int(os.environ.get("LT_TRANSLATION_CACHE_TTL", "2592000"))',
+    text,
+    count=1,
+)
+if n != 1:
+    raise SystemExit(0)
+p.write_text(text_new, encoding="utf-8")
+PY
 }
 
 install_libretranslate_artifacts() {
@@ -1006,7 +1052,7 @@ case "${1:-install}" in
     echo "  Features env: RELAY_FEAT_PIPER, RELAY_FEAT_NPM_PKGS, RELAY_FEAT_TRANSLATION, RELAY_FEAT_TRANSLATION_PKGS, RELAY_FEAT_LIBRETRANSLATE, RELAY_LIBRETRANSLATE_LOAD_ONLY (see docs/INSTALL_FEATURES.md)"
     echo "  Node env: RELAY_SERVER_ID, RELAY_PUBLIC_HOSTNAME (if RELAY_SKIP_VERCEL_DNS=1), RELAY_MASTER_PEER_LIST (override; default mesh masters: $DEFAULT_RELAY_MASTER_PEER_LIST)"
     echo "  Deploy SSH policy (optional): RELAY_VALIDATE_DEPLOY_SSH_KEY=1, RELAY_DEPLOY_SSH_USER (default ari), RELAY_DEPLOY_SSH_KEY_FINGERPRINT (substring from ssh-keygen -lf -E sha256) — docs/SECRETS_POLICY.md"
-    echo "  Startup catalog sync (optional): RELAY_STARTUP_CATALOG_SYNC=0 to skip ExecStartPre (default 1 when RELAY_MASTER_CATALOG_PATH has .gitmodules + scripts/sync-relay-catalog.sh); Slack: RELAY_NOTIFY_SLACK_WEBHOOK_URL"
+    echo "  Startup catalog sync (optional): RELAY_STARTUP_CATALOG_SYNC=0 to skip ExecStartPre (default 1 when RELAY_MASTER_CATALOG_PATH has relay-catalog.json + scripts/sync-relay-catalog.sh); Slack: RELAY_NOTIFY_SLACK_WEBHOOK_URL"
     echo "  update    — refresh relay-server binaries from this directory; rescan feature inventory"
     echo "  repair    — fix perms, reinstall features from state/features.json (bootstraps minimal state if missing)"
     echo "  reconfigure-features — change Piper/npm/translation (only supported way to add/remove optional features)"

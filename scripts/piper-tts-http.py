@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
-"""Minimal HTTP gateway: POST /tts JSON {"text":"..."} -> audio/wav via Piper CLI."""
+"""
+Piper TTS HTTP gateway: speech synthesis + voice discovery.
+Endpoints:
+  GET  /health  — service status
+  GET  /voices  — available voice models
+  POST /tts     — synthesize text to audio
+"""
+import glob
 import json
 import os
+import re
 import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -9,6 +17,48 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 PIPER = os.environ.get("PIPER_BIN", "/opt/relay/lib/piper/piper")
 MODEL = os.environ.get("PIPER_MODEL", "")
 PORT = int(os.environ.get("PIPER_HTTP_PORT", "5590"))
+MODELS_DIR = os.environ.get("PIPER_MODELS_DIR", "/opt/relay/lib/piper/models")
+
+
+def discover_voices(models_dir=MODELS_DIR):
+    """Scan models directory and return list of available voices."""
+    voices = []
+    if not os.path.isdir(models_dir):
+        return voices
+
+    for onnx_file in sorted(glob.glob(os.path.join(models_dir, "*.onnx"))):
+        filename = os.path.basename(onnx_file)
+        # Parse filename: en_US-lessac-medium.onnx -> language, voice, quality
+        match = re.match(r"^([a-z]{2}_[A-Z]{2})-([a-z_]+)-([a-z]+)\.onnx$", filename)
+        if not match:
+            continue
+
+        lang, voice_name, quality = match.groups()
+        voice_id = f"{lang}-{voice_name}-{quality}"
+
+        # Try to load metadata from .onnx.json
+        metadata_file = onnx_file + ".json"
+        metadata = {}
+        if os.path.isfile(metadata_file):
+            try:
+                with open(metadata_file, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+            except Exception:
+                pass
+
+        voices.append(
+            {
+                "id": voice_id,
+                "language": lang,
+                "voice": voice_name,
+                "quality": quality,
+                "model_file": filename,
+                "espeak_voice": metadata.get("espeak_voice", lang),
+                "sample_rate": metadata.get("sample_rate", 22050),
+            }
+        )
+
+    return voices
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -24,6 +74,23 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(
                 json.dumps(
                     {"ok": ok, "piper": PIPER, "model": MODEL}
+                ).encode()
+            )
+            return
+        elif self.path == "/voices":
+            voices = discover_voices()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "voices": voices,
+                        "defaultVoiceId": os.path.basename(MODEL)
+                        .replace(".onnx", "")
+                        if os.path.isfile(MODEL)
+                        else None,
+                    }
                 ).encode()
             )
             return

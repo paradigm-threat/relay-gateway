@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run before relay-server: sync relay-master catalog bare mirrors from forge (GitLab, etc.),
-# then best-effort git fetch from other master peers over git:// (same repos as catalog submodules).
+# then best-effort git fetch from other master peers over git:// (same repos as relay-catalog.json).
 #
 # Environment (typical: EnvironmentFile=/opt/relay/relay.env + systemd defaults):
 #   RELAY_STARTUP_CATALOG_SYNC   1|yes|true to run (default: 1)
@@ -104,22 +104,23 @@ if [[ -z "$catalog" && -n "$catalog_url" ]]; then
 fi
 
 if [[ -z "$catalog" ]]; then
-  skip_sync_state "no_catalog_path_or_gitmodules_or_clone_url"
+  skip_sync_state "no_catalog_path_or_relay_catalog_json_or_clone_url"
   exit 0
 fi
 
 sync_script="${catalog}/scripts/sync-relay-catalog.sh"
+catalog_json="${catalog}/relay-catalog.json"
 
 # Ensure catalog worktree: clone when RELAY_MASTER_CATALOG_GIT_URL is set and path has no usable checkout.
-if [[ ! -f "$catalog/.gitmodules" || ! -f "$sync_script" ]]; then
+if [[ ! -f "$catalog_json" || ! -f "$sync_script" ]]; then
   if [[ -z "$catalog_url" ]]; then
-    skip_sync_state "no_catalog_path_or_gitmodules_or_clone_url"
+    skip_sync_state "no_catalog_path_or_relay_catalog_json_or_clone_url"
     exit 0
   fi
   if [[ -d "$catalog/.git" ]]; then
-    echo "[relay-startup-catalog-sync] catalog at $catalog is git but missing .gitmodules or sync script" >&2
+    echo "[relay-startup-catalog-sync] catalog at $catalog is git but missing relay-catalog.json or sync script" >&2
     skip_sync_state "catalog_checkout_incomplete"
-    slack ":warning: *Relay startup sync* — \`${node_label:-unknown}\` — catalog dir has \`.git\` but no \`.gitmodules\` / \`scripts/sync-relay-catalog.sh\` (fix checkout or remove dir)"
+    slack ":warning: *Relay startup sync* — \`${node_label:-unknown}\` — catalog dir has \`.git\` but no \`relay-catalog.json\` / \`scripts/sync-relay-catalog.sh\` (fix checkout or remove dir)"
     exit 0
   fi
   if [[ -d "$catalog" ]]; then
@@ -152,14 +153,20 @@ if [[ ! -f "$catalog/.gitmodules" || ! -f "$sync_script" ]]; then
   slack ":white_check_mark: *Relay startup sync* — \`${node_label:-unknown}\` — catalog clone OK → \`$catalog\`"
 fi
 
-if [[ ! -f "$catalog/.gitmodules" || ! -f "$sync_script" ]]; then
-  skip_sync_state "no_catalog_path_or_gitmodules_after_clone"
+if [[ ! -f "$catalog_json" || ! -f "$sync_script" ]]; then
+  skip_sync_state "no_catalog_path_or_relay_catalog_json_after_clone"
   exit 0
 fi
 
-list_catalog_submodule_names() {
-  git config --file "$catalog/.gitmodules" --name-only --get-regexp '^submodule\..*\.path$' 2>/dev/null \
-    | sed -n 's/^submodule\.\(.*\)\.path$/\1/p' | sort -u
+list_catalog_repo_names() {
+  python3 - "$catalog_json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+for name in sorted((data.get("repos") or {}).keys()):
+    print(name)
+PY
 }
 
 peer_fetch_other_masters() {
@@ -205,7 +212,7 @@ peer_fetch_other_masters() {
         ((summary_fail++)) || true
       fi
     done
-  done < <(list_catalog_submodule_names)
+  done < <(list_catalog_repo_names)
 
   if [[ "$summary_fail" -gt 0 ]]; then
     slack ":warning: *Relay startup sync* — \`${node_label:-unknown}\` — peer fetch finished with *${summary_fail}* failed attempt(s), *${summary_ok}* ok (see journalctl -u relay-server)"
@@ -229,7 +236,7 @@ if ! out="$(bash "$sync_script" 2>&1)"; then
   exit 0
 fi
 echo "$out" >&2
-slack ":package: *Relay startup sync* — \`${node_label:-unknown}\` — catalog mirrors updated from forge (submodules + relay-master per sync-relay-catalog)"
+slack ":package: *Relay startup sync* — \`${node_label:-unknown}\` — catalog mirrors updated from forge (relay-catalog.json + relay-master per sync-relay-catalog)"
 
 peer_fetch_other_masters
 

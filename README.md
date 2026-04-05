@@ -46,7 +46,7 @@ Relay repositories use a unified configuration file `.relay.yaml` at the root to
 
 ### Catalog repo (`relay-master`)
 
-**[`relay-master`](../relay-master)** is the **allowlist** for which Git repositories a node may mirror: each **submodule** supplies **`url`** (clone source) and **`relayRootCommit`** (trusted root; **`scripts/sync-relay-catalog.sh`** verifies it is an ancestor of the branch tip). **`relay-server`** loads policy from **`RELAY_MASTER_CATALOG_PATH`** (path to a **`relay-master` checkout** with **`.gitmodules`**) or, alternatively, from **`RELAY_AUTHORIZED_REPOS_PATH`** (YAML, e.g. emitted by **`sync-relay-catalog.sh`**—never set both). Use **`RELAY_MASTER_TRUST_ROOT`** (40 hex) so startup fails if the checkout is the wrong Git history. See **[`docs/RELAY_TRUST_AND_BOOTSTRAP.md`](./docs/RELAY_TRUST_AND_BOOTSTRAP.md)**. Set **`RELAY_DEFAULT_REPO=relay-master`** for the catalog apex. **User-facing clone URLs** like **`git://relaygateway.net/<repo>.git`** are documented there (routing/DNS, not HTTP redirects).
+**[`relay-master`](../relay-master)** is the **allowlist** for which Git repositories a node may mirror: each entry in **`relay-catalog.json`** supplies **`url`** (clone source) and **`relayRootCommit`** (trusted root; **`scripts/sync-relay-catalog.sh`** verifies it is an ancestor of the branch tip). **`relay-server`** loads policy from **`RELAY_MASTER_CATALOG_PATH`** (path to a **`relay-master` checkout** with **`relay-catalog.json`**) or, alternatively, from **`RELAY_AUTHORIZED_REPOS_PATH`** (YAML, e.g. emitted by **`sync-relay-catalog.sh`**—never set both). Use **`RELAY_MASTER_TRUST_ROOT`** (40 hex) so startup fails if the checkout is the wrong Git history. See **[`docs/RELAY_TRUST_AND_BOOTSTRAP.md`](./docs/RELAY_TRUST_AND_BOOTSTRAP.md)**. Set **`RELAY_DEFAULT_REPO=relay-master`** for the catalog apex. **User-facing clone URLs** like **`git://relaygateway.net/<repo>.git`** are documented there (routing/DNS, not HTTP redirects).
 
 ### Git daemon (`git://`, default port **9418**)
 
@@ -70,7 +70,7 @@ The server includes a native `relay-hook-handler` binary that should be symlinke
 
 ## Configuration and secrets
 
-**`relay.env`** on the server (typically **`/opt/relay/relay.env`**, **`EnvironmentFile`** for systemd) holds trust, mesh, and optional webhook values. **Sanitized template:** **[`relay.env.example`](relay.env.example)**. **Ops policy** (manual install per node, full master peer list, coordinated rotation including webhooks, shared deploy SSH key + optional install check): **[`docs/SECRETS_POLICY.md`](docs/SECRETS_POLICY.md)**. **Longer annotated reference:** **[`docs/examples/relay.env`](docs/examples/relay.env)**. **New node with catalog URL:** fill **`relay.env`** per **[`docs/DEPLOY_LINODE.md`](docs/DEPLOY_LINODE.md)** § “Greenfield checklist” so first boot clones the catalog, syncs submodules, and peer-fetches without extra SSH steps.
+**`relay.env`** on the server (typically **`/opt/relay/relay.env`**, **`EnvironmentFile`** for systemd) holds trust, mesh, and optional webhook values. **Sanitized template:** **[`relay.env.example`](relay.env.example)**. **Ops policy** (manual install per node, full master peer list, coordinated rotation including webhooks, shared deploy SSH key + optional install check): **[`docs/SECRETS_POLICY.md`](docs/SECRETS_POLICY.md)**. **Longer annotated reference:** **[`docs/examples/relay.env`](docs/examples/relay.env)**. **New node with catalog URL:** fill **`relay.env`** per **[`docs/DEPLOY_LINODE.md`](docs/DEPLOY_LINODE.md)** § “Greenfield checklist” so first boot clones the catalog, runs **`sync-relay-catalog.sh`**, and peer-fetches without extra SSH steps.
 
 ## Environment Variables
 
@@ -89,7 +89,7 @@ The server includes a native `relay-hook-handler` binary that should be symlinke
 
 ### Repository Management
 - **`RELAY_DEFAULT_REPO`**: Bare repo name (no `.git`) served at the **node apex** when **`Host`** is the node FQDN only — use **`relay-master`** when following the catalog model (**[`docs/RELAY_TRUST_AND_BOOTSTRAP.md`](./docs/RELAY_TRUST_AND_BOOTSTRAP.md)**).
-- **`RELAY_MASTER_CATALOG_PATH`**: Filesystem path to a **`relay-master` worktree** (contains **`.gitmodules`**). Builds the same allowlist **`relay-server`** would read from YAML. **Mutually exclusive** with **`RELAY_AUTHORIZED_REPOS_PATH`**.
+- **`RELAY_MASTER_CATALOG_PATH`**: Filesystem path to a **`relay-master` worktree** (contains **`relay-catalog.json`**). Builds the same allowlist **`relay-server`** would read from YAML. **Mutually exclusive** with **`RELAY_AUTHORIZED_REPOS_PATH`**.
 - **`RELAY_MASTER_TRUST_ROOT`**: Optional but **recommended in production**: 40-character commit id—the **initial (root) commit** of your canonical **`relay-master`** (`git rev-list --max-parents=0 main`). Startup verifies it is an **ancestor** of the checkout **`HEAD`** so a mistaken clone path cannot point at an unrelated repo.
 - **`RELAY_MASTER_BRANCH`**: If the catalog checkout is in **detached HEAD**, set this branch name for the synthetic **`relay-master`** policy row (default **`main`**).
 - **`RELAY_AUTHORIZED_REPOS_PATH`**: YAML allowlist (legacy / CI); do not set together with **`RELAY_MASTER_CATALOG_PATH`**.
@@ -252,7 +252,7 @@ handles:
 3. **DNS Registration**: Registers with Vercel DNS when `VERCEL_API_TOKEN` is provided
 4. **Nginx Proxy Configuration**: Automatically configures nginx to proxy HTTPS to the relay-server
 
-**Bare metal (Linode tarball):** **`install.sh`** runs the same Vercel DNS flow **first** (FQDN + token, or skip with **`RELAY_SKIP_VERCEL_DNS=1`**). See **[`docs/DEPLOY_LINODE.md`](docs/DEPLOY_LINODE.md)** and **[`docs/DEPLOY_SELF_HOSTED.md`](docs/DEPLOY_SELF_HOSTED.md)** (build/publish tarball without cloud CI). Planned **Next.js + CI + multi-site** layout: **[`docs/DEPLOY_WEB_AND_CI.md`](docs/DEPLOY_WEB_AND_CI.md)**.
+**Bare metal (Linode tarball):** **`install.sh`** runs the same Vercel DNS flow **first** (FQDN + token, or skip with **`RELAY_SKIP_VERCEL_DNS=1`**). See **[`docs/DEPLOY_LINODE.md`](docs/DEPLOY_LINODE.md)** and **[`docs/DEPLOY_SELF_HOSTED.md`](docs/DEPLOY_SELF_HOSTED.md)** (build/publish tarball without cloud CI). Planned **static multi-site** layout (no Next/Node runtime on relay; builds off-box): **[`docs/DEPLOY_WEB_AND_CI.md`](docs/DEPLOY_WEB_AND_CI.md)**.
 
 Example container run with SSL:
 

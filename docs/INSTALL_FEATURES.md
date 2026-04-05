@@ -148,6 +148,8 @@ Recommended client behaviour:
 | `RELAY_LIBRETRANSLATE_LOAD_ONLY` | Comma-separated language codes for LibreTranslate (default **`en,ru`**) |
 | `RELAY_LIBRETRANSLATE_PORT` | LibreTranslate listen port (default **5588**) |
 | `RELAY_LIBRETRANSLATE_ROOT` | Install directory (default **`/opt/libretranslate`**) |
+| `RELAY_LIBRETRANSLATE_CACHE_TTL` | Translation result cache TTL in seconds for identical **`POST /translate`** requests (default **`2592000`** ≈ 30 days; upstream LibreTranslate is 7 days without the installer patch) |
+| `RELAY_LIBRETRANSLATE_SHARED_STORAGE` | Optional **`LT_SHARED_STORAGE`** for LibreTranslate (default in-app is **`memory://`**). Use e.g. **`redis://127.0.0.1:6379/0`** if you need the translation cache to survive process restarts (**`repair`** / **`update`** re-applies the site-packages patch after **`pip install`**) |
 
 Combine with **`RELAY_INSTALL_NONINTERACTIVE=1`** for cloud-init / CI (see **DEPLOY_LINODE.md**). **`repair`** / **`update`** restart LibreTranslate when it is enabled in **`features.json`**; **`ufw`** opens **`RELAY_LIBRETRANSLATE_PORT`** when the feature is on.
 
@@ -156,6 +158,8 @@ Combine with **`RELAY_INSTALL_NONINTERACTIVE=1`** for cloud-init / CI (see **DEP
 ## Optional: LibreTranslate HTTP API (installer or manual)
 
 **[LibreTranslate](https://github.com/LibreTranslate/LibreTranslate)** provides a **segment HTTP API** (many **`POST /translate`** calls suit long books). Enable it during **`install`** or **`reconfigure-features`** (TTY prompt), or set **`RELAY_FEAT_LIBRETRANSLATE=1`** non-interactively. The installer records **`features.libretranslate_api`** in **`features.json`**, installs a venv, writes **`libretranslate.service`**, and opens the firewall port.
+
+**Translation cache:** the unit runs LibreTranslate with **`--translation-cache all`** so repeated identical segment requests are served from LibreTranslate’s internal cache. Upstream hardcodes a **7-day** expiry; **`relay-install.sh`** patches **`site-packages/libretranslate/cache.py`** so **`LT_TRANSLATION_CACHE_TTL`** (set in the unit from **`RELAY_LIBRETRANSLATE_CACHE_TTL`**, default ~30 days) controls TTL. Storage is LibreTranslate’s **`LT_SHARED_STORAGE`** (**`memory://`** unless you set **`RELAY_LIBRETRANSLATE_SHARED_STORAGE`**); in-memory entries are lost on service restart unless you point shared storage at **Redis**.
 
 ### Calling it by domain (recommended)
 

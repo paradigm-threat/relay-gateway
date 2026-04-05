@@ -1,10 +1,14 @@
-# Web hosting, Next.js, and self-hosted CI (plan)
+# Static web hosting and deploy pipeline (plan)
 
-Normative **product / ops** notes for serving **relay-server**, **multiple Next.js sites**, and **relay-client-web** builds on **Linode**, with a **simple self-hosted runner** and **no artifact registry or cloud secrets** for the first iteration.
+Normative **product / ops** notes for serving **relay-server** and **multiple static websites** (plain HTML, or **pre-built** Next.js / React / Vite output) on **Linode**, with **no site build toolchain on the relay VM**.
+
+**Decision (relay Linodes):** Do **not** run **Next.js** (`next start`), a **Node.js API server**, or **any `npm run build` / install** for marketing or app sites **on** the relay server. **Goals:** lower CPU, RAM, and disk requirements; predictable load; smaller attack surface. **Sites** are built **elsewhere** (developer machine, GitHub Actions, GitLab CI, Vercel export step, etc.); the relay host only receives **already-compiled** static trees and serves them via **Caddy** / **nginx** `root` / `file_server`, or via **relay-server** git-backed static paths where that model already applies.
 
 **Code status:** This document describes **planned** behavior. Implementations should update the “Implementation status” section at the bottom as pieces land.
 
 **Related:** **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (VM install), **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)** (**`relay.env`**, rotation, shared deploy SSH key), **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** (**`relay-master`** catalog, submodules + **`relayRootCommit`**, emitted **`authorized-repos.yaml`**), **[`LAUNCH_AND_TEST_PLAN.md`](./LAUNCH_AND_TEST_PLAN.md)** (default repo resolution, **`RELAY_DEFAULT_REPO=relay-master`**), **[`SERVER_HOOKS.md`](./SERVER_HOOKS.md)** (per-repo `.relay.yaml`, hooks).
+
+**Note:** **Git hooks** may still invoke **Node.js** for **`pre-receive`** / validation scripts defined **in** repositories — that is separate from hosting a long-lived Next/Node **HTTP** stack for public sites.
 
 ### Git sync to relay nodes (normative)
 
@@ -27,7 +31,7 @@ How **`{something}`** is interpreted is defined in **§8** (repo only → defaul
 
 **Optional alternative:** **per-repo** wildcard `*.somerepo.atlanta1.relaygateway.net` if you prefer two labels (`main.somerepo.atlanta1...`) without folding; not the default scheme.
 
-**Apex marketing domains** (`paradigmthreat.com`, `relaygateway.net` for Next) stay **explicit** A/AAAA (or apex + `www`) as needed; wildcards are mainly for **node + repo** naming under your relay zone.
+**Apex marketing domains** (`paradigmthreat.com`, marketing `relaygateway.net` hosts, etc.) stay **explicit** A/AAAA (or apex + `www`) as needed; wildcards are mainly for **node + repo** naming under your relay zone.
 
 ---
 
@@ -35,59 +39,53 @@ How **`{something}`** is interpreted is defined in **§8** (repo only → defaul
 
 - **TLS terminates on each Linode** (e.g. **Caddy** or **nginx**).
 - Routing (by `Host`):
-  - Domains registered as **CICD / Next.js websites** → local **Next.js** process for that repo/site.
-  - **API** routes: configured per app (e.g. Next rewrites); APIs may live on the same instance as that Next app or elsewhere (e.g. legacy Vercel) until migrated.
-  - **Node apex** (e.g. `atlanta1.relaygateway.net`) → **relay-server** HTTP: **default repo** on the default branch (static file serving from git). *Planned:* if no suitable index exists, optionally fall back to a **relay-client-web** build (same note as in product threads — not implemented until specified).
+  - Domains registered as **static / marketing sites** → **static document root** on disk (Caddy **`file_server`**, nginx **`root`**). Content is **only** what was **uploaded or rsync’d** after an **off-box** build (e.g. Next **`out/`** from `next export` / `output: 'export'`, Vite **`dist/`**, plain **`public/`** trees).
+  - **Dynamic APIs** (Next SSR, Route Handlers, serverless, etc.) **do not** run on the relay VM in this model; keep them on **Vercel**, another host, or redesign behind a separate service — **not** colocated with relay static hosting.
+  - **Node apex** (e.g. `atlanta1.relaygateway.net`) → **relay-server** HTTP: **default repo** on the default branch (static file serving from git). *Planned:* if no suitable index exists, fall back to a **pre-built static** tree (same directory layout as any other static site), **not** a live Node process.
   - **`{label}.{node}`** → **relay-server**: parse **`label`** per **§8** — either **repo only** (**default branch**) or **`repo{DELIM}branchSlug`** (non-default branch).
 
-- **relay-server** remains a **separate systemd service** from any Next.js units so routine site rebuilds do not restart or reconfigure the relay binary.
+- **relay-server** stays a **separate systemd service** from the reverse proxy. **Reloading** Caddy/nginx for a new static tree **must not** restart **`relay-server`**.
 
 ---
 
-## 3. Multiple Next.js apps on one Linode
+## 3. Multiple static sites on one Linode
 
-**Yes — many Next.js instances can run on a single VM.**
+**Yes — many static sites can share one VM** without one Node process per product.
 
 | Approach | Notes |
 |----------|--------|
-| **One Node process per site** | Each repo’s production deploy gets its own **`next start`** (or standalone output) on a **dedicated port** (e.g. 3001, 3002, …). |
-| **systemd** | One unit per site, or a **template unit** (`nextjs@paradigm-threat-site.service`) with instance-specific `EnvironmentFile`. |
-| **Reverse proxy** | Caddy/nginx maps **`Host`** → `127.0.0.1:PORT`. |
+| **One directory per site** | e.g. `/var/www/paradigm-threat-site/current/` → symlink to versioned release dir after promote. |
+| **Reverse proxy** | Caddy/nginx maps **`Host`** → filesystem **`root`**. No backend port unless you intentionally proxy to **relay-server** or another service. |
+| **Optional `systemd`** | Only for **reload** hooks or **oneshot** deploy scripts — **not** for `next start`. |
 
-Separate repos **should** map to **separate processes** when they are separate products (e.g. **paradigm-threat-site** vs **relay-client-web**). Sharing one Next process for unrelated repos is discouraged unless they are intentionally one deployable monorepo.
-
----
-
-## 4. Self-hosted CI (no GitLab CI for these sites)
-
-- **GitLab** remains the **mirror / file browser** for repos; **CI for the marketing Next apps is not GitLab CI** in this plan.
-- Use a **simple self-hosted runner** on Linode that works from a **clean checkout** of the target branch (same machine as deploy target or a build user on that host).
-- **Build command (v1):** only **`npm run build`** is supported. **`package.json`** (and any **`scripts.build`**) live **in the repo**; dependency install uses normal **`npm ci`** or **`npm install`** as a prerequisite step — no `pnpm`/`yarn`/custom build entrypoints in automation for now.
-- **No artifact publishing** and **no cloud secrets** in v1.
-
-### Singleton build queue (all CICD sites, one at a time)
-
-Multiple repos may request a rebuild close together; **only one build should run at a time** on a given host (CPU, disk, Node memory).
-
-- Add a **small coordinator**: either a **root/relay-owned shell script** + **`flock`**/PID file, or a **dedicated Rust binary** (e.g. `relay-cicd-queue`) that:
-  - Accepts **enqueue** requests (stdin, Unix socket, or `relay-deploy-site --queue`).
-  - Runs **`npm ci`/`npm install` → `npm run build` → promote** for **one** site, then drains the next job.
-- **relay-server** and **install hooks** should call this coordinator instead of spawning overlapping builds.
-
-### Promote only after a successful build
-
-1. Clone or fetch the target branch into a **staging directory** (or build workspace).
-2. Run **`npm ci`** or **`npm install`**, then **`npm run build`**.
-3. If any step **fails**, **stop** — do not touch the live symlink/directory.
-4. If the build **succeeds**, **atomically** switch “live” to the new tree (e.g. `rsync` to versioned dir + `ln -sfn`, or replace a `current` symlink). The invariant is **no partial live state**.
+Separate products **should** use **separate roots** and **separate `Host`** blocks. **Next.js** is supported **only** as **static export** artifacts placed in those roots.
 
 ---
 
-## 5. Install / update script vs relay-server (CICD mapping)
+## 4. Builds off the relay; deploy is promote-only
 
-- **`install.sh` / `update` flow** (see **[`INSTALL_FEATURES.md`](./INSTALL_FEATURES.md)**, **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)**) should **prompt** whether any hosted bare repos are **CICD websites** and write **only** installer-managed config (e.g. under `/opt/relay/state/`, root-owned) mapping **repo → domain(s) → branch → systemd/Caddy fragment**.
-- **relay-server** must **not** be able to change which repos are CICD sites; it may only invoke a **fixed** helper (e.g. `relay-deploy-site`) after a **successful** git update on a **watched branch**, which re-runs the same promote path as CI.
-- Optional **post-receive / webhook** path: validate branch → run build script → promote; failures leave live unchanged.
+- **GitLab** remains the **mirror / file browser** for source repos. **HTML/JS/CSS builds** for static sites run **outside** the relay Linode (CI, laptop, or other builder).
+- **Relay VM responsibilities:** accept **artifacts** (tarball, `rsync`, object store pull, etc.), extract into a **staging** directory, verify, then **atomically** point **`current`** at the new tree. **No `npm ci`**, **`npm install`**, or **`npm run build`** on the relay for these sites.
+- **No artifact registry** is required for v1; **scp/rsync** from CI with a deploy key is enough.
+
+### Singleton deploy queue (optional)
+
+If many sites update at once, **serialize promote operations** on a given host (disk I/O, brief nginx reload) — a **lightweight** queue (shell + **`flock`**, or small helper binary). **Not** the same as queuing **compilation**; there is **no** compile step on-box.
+
+### Promote only after a successful off-box build
+
+1. Builder produces a **complete static tree** (e.g. `out/` or `dist/`).
+2. If the **build fails upstream**, **do not** upload / do not promote.
+3. After upload to **staging**, optional checks (hash list, `index.html` exists), then **atomic** switch: `ln -sfn` / versioned dirs / `rsync --delete` to live root per your playbook.
+4. **Invariant:** **no partial live state** visible to visitors.
+
+---
+
+## 5. Install / update script vs relay-server (site mapping)
+
+- **`install.sh` / `update` flow** (see **[`INSTALL_FEATURES.md`](./INSTALL_FEATURES.md)**, **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)**) may **prompt** for hosted **static site** domains and write installer-managed config (e.g. under `/opt/relay/state/`, root-owned) mapping **`Host` → filesystem root** (Caddy/nginx fragment), **not** `systemd` + Node.
+- **relay-server** must **not** change static-site mappings; it may invoke a **fixed** helper (e.g. `relay-deploy-static`) after a **successful** git update on a **watched** branch only if that helper **only** triggers an **off-box** fetch or **pre-staged** artifact promote — **never** `npm run build` on the relay.
+- Optional **post-receive / webhook** path: notify external CI, or pull a **published artifact URL**; failures leave live unchanged.
 
 ---
 
@@ -203,8 +201,8 @@ Remove support in **all** maintained repos so the protocol has a **single** bran
 
 ## 12. Remaining open questions (for implementers)
 
-1. **Trigger mechanism** for enqueueing the singleton queue (GitLab **push webhook**, **relay post-receive**, or **polling**) — any is fine as long as promote rules in §4 hold.
-2. **Coordinator shape:** shell+`flock` vs Rust binary (shared logging, backoff, priority).
+1. **Trigger mechanism** for static deploy (GitLab **push webhook**, **relay post-receive**, **polling**, or **manual** `rsync`) — any is fine as long as promote rules in §4 hold.
+2. **Artifact format:** raw directory, `.tar.zst`, or OCI — v1 can standardize on **tarball + atomic symlink**.
 3. **`QUERY` body schema** for **`branch`** / **`all`** (exact JSON shape).
 
 ---
@@ -218,14 +216,14 @@ Remove support in **all** maintained repos so the protocol has a **single** bran
 | **`POST /api/git/ensure-bare/:repo`** + normative **`git://`** sync docs | **Done** |
 | First **`git push`** creates bare when allowed (gateway / smart HTTP; root-commit identity) | **Planned** (see **`README`**, **`RELAY_TRUST_AND_BOOTSTRAP`**) |
 | **`scripts/relay-linode-redeploy-seed.sh`** + checklist in **`DEPLOY_LINODE.md`** | **Done** |
-| Caddy/nginx + multi-Next + relay split | Planned |
-| **`npm run build`** only (+ `npm ci`/`npm install`) | Planned |
-| Singleton CICD queue (script or Rust binary) | Planned |
-| Installer prompts + state file for CICD repos | Planned |
-| relay-triggered `relay-deploy-site` (no CICD mapping edits) | Planned |
+| Caddy/nginx + **static `root` / `file_server`** + relay split | Planned |
+| **No** Next/Node **HTTP** or **`npm run build`** on relay for marketing sites | **Normative** (this doc) |
+| Optional singleton **deploy** queue (unpack/promote only) | Planned |
+| Installer prompts + state file for **static** site `Host` → root | Planned |
+| relay-triggered static promote helper (no mapping edits) | Planned |
 | 50 MB default-branch working-tree cap (non-authorized only) | Planned |
 | `RELAY_DEFAULT_REPO` in code | See LAUNCH_AND_TEST_PLAN (partial / pending) |
 | Host label `repo` or `repo{DELIM}branchSlug` (§8) | Planned |
 | **No `X-Relay-Branch`**; removal per §11 | Planned |
 | Push-time slug uniqueness (**§9**) | Planned |
-| relay-client-web fallback when no index on node apex | Noted only |
+| Node apex fallback: **static tree** only (no live Node) | Noted |

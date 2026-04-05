@@ -1,7 +1,7 @@
 //! Authorized repo list + anchor commit validation (pull today; push/planned).
 //!
 //! Two sources:
-//! - **`RELAY_MASTER_CATALOG_PATH`**: open a **`relay-master`** worktree (`.gitmodules` + `HEAD`);
+//! - **`RELAY_MASTER_CATALOG_PATH`**: open a **`relay-master`** worktree (`relay-catalog.json` + `HEAD`);
 //!   optional **`RELAY_MASTER_TRUST_ROOT`** pins the catalog to an expected **root** commit so the
 //!   wrong repository cannot be mounted at that path.
 //! - **`RELAY_AUTHORIZED_REPOS_PATH`**: YAML file (e.g. emitted by **`sync-relay-catalog.sh`**).
@@ -9,8 +9,26 @@
 //! See `docs/RELAY_TRUST_AND_BOOTSTRAP.md`.
 use anyhow::Context;
 use serde::Deserialize;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
+
+/// `relay-catalog.json` at the root of **relay-master** (no git submodules).
+#[derive(Debug, Deserialize)]
+struct RelayCatalogFile {
+    #[serde(default)]
+    repos: HashMap<String, RelayCatalogRepo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RelayCatalogRepo {
+    #[serde(default)]
+    #[allow(dead_code)]
+    url: Option<String>,
+    #[serde(rename = "relayRootCommit")]
+    relay_root_commit: String,
+    #[serde(default = "default_branch")]
+    branch: String,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuthorizedReposFile {
@@ -40,7 +58,7 @@ pub fn load_from_path(path: &Path) -> anyhow::Result<AuthorizedReposFile> {
 }
 
 /// Ensures `trust_root` is an ancestor of the catalog checkout `HEAD` (same lineage as
-/// submodule `relayRootCommit` checks). Use the canonical **root** of `relay-master`:
+/// catalog `relayRootCommit` checks). Use the canonical **root** of `relay-master`:
 /// `git rev-list --max-parents=0 main` (pick the policy root if there are several).
 pub fn verify_master_catalog_trust_root(catalog_path: &Path, trust_root_hex: &str) -> anyhow::Result<()> {
     let repo = git2::Repository::open(catalog_path)
@@ -65,28 +83,18 @@ pub fn verify_master_catalog_trust_root(catalog_path: &Path, trust_root_hex: &st
     Ok(())
 }
 
-/// Build allowlist from `relay-master` checkout: `.gitmodules` submodules + synthetic `relay-master` row from `HEAD`.
+/// Build allowlist from `relay-master` checkout: `relay-catalog.json` + synthetic `relay-master` row from `HEAD`.
 pub fn load_from_master_catalog(catalog_path: &Path, relay_server_id: &str) -> anyhow::Result<AuthorizedReposFile> {
-    let gitmodules = catalog_path.join(".gitmodules");
-    if !gitmodules.is_file() {
+    let catalog_json = catalog_path.join("relay-catalog.json");
+    if !catalog_json.is_file() {
         anyhow::bail!(
-            "RELAY_MASTER_CATALOG_PATH {} has no .gitmodules",
+            "RELAY_MASTER_CATALOG_PATH {} has no relay-catalog.json",
             catalog_path.display()
         );
     }
 
-    let mut gmcfg = git2::Config::new()?;
-    gmcfg.add_file(&gitmodules, git2::ConfigLevel::Local, false)?;
-
-    let mut submodule_names = BTreeSet::new();
-    let mut entries = gmcfg.entries(None).context("read .gitmodules")?;
-    while let Some(entry) = entries.next() {
-        let e = entry.context("gitmodules entry")?;
-        let Some(name) = e.name() else { continue };
-        let Some(rest) = name.strip_prefix("submodule.") else { continue };
-        let Some(sub) = rest.strip_suffix(".path") else { continue };
-        submodule_names.insert(sub.to_string());
-    }
+    let s = std::fs::read_to_string(&catalog_json).context("read relay-catalog.json")?;
+    let cat: RelayCatalogFile = serde_json::from_str(&s).context("parse relay-catalog.json")?;
 
     let repo = git2::Repository::open(catalog_path)
         .with_context(|| format!("open catalog {}", catalog_path.display()))?;
@@ -108,40 +116,21 @@ pub fn load_from_master_catalog(catalog_path: &Path, relay_server_id: &str) -> a
         },
     );
 
-    for name in submodule_names {
-        let path_key = format!("submodule.{name}.path");
-        let url_key = format!("submodule.{name}.url");
-        let root_key = format!("submodule.{name}.relayRootCommit");
-        let branch_key = format!("submodule.{name}.branch");
-
-        let _path: String = gmcfg
-            .get_string(&path_key)
-            .with_context(|| format!("{path_key} missing in .gitmodules"))?;
-        let _url: String = gmcfg
-            .get_string(&url_key)
-            .with_context(|| format!("{url_key} missing in .gitmodules"))?;
-        let root: String = gmcfg
-            .get_string(&root_key)
-            .with_context(|| format!("{root_key} missing in .gitmodules (set relayRootCommit)"))?;
-        let root = root.trim().to_string();
+    for (name, entry) in cat.repos {
+        let root = entry.relay_root_commit.trim().to_string();
         if root.len() != 40 || !root.chars().all(|c| c.is_ascii_hexdigit()) {
-            anyhow::bail!("{root_key} must be 40 hex chars");
+            anyhow::bail!(
+                "relay-catalog.json repos.{nm}: relayRootCommit must be 40 hex chars",
+                nm = name
+            );
         }
-        let sub_branch = gmcfg
-            .get_string(&branch_key)
-            .unwrap_or_else(|_| "main".to_string());
-
         repos.insert(
             name,
             RepoAnchor {
                 anchor_commit: root,
-                branch: sub_branch,
+                branch: entry.branch,
             },
         );
-    }
-
-    if repos.len() <= 1 {
-        anyhow::bail!("catalog has no submodules in .gitmodules (only relay-master row)");
     }
 
     Ok(AuthorizedReposFile {
@@ -286,13 +275,17 @@ mod tests {
             .unwrap();
 
         std::fs::write(
-            td.path().join(".gitmodules"),
+            td.path().join("relay-catalog.json"),
             format!(
-                r#"[submodule "child"]
-	path = repos/child
-	url = https://example.com/child.git
-	relayRootCommit = {}
-"#,
+                r#"{{
+  "repos": {{
+    "child": {{
+      "url": "https://example.com/child.git",
+      "relayRootCommit": "{}",
+      "branch": "master"
+    }}
+  }}
+}}"#,
                 good_root
             ),
         )
