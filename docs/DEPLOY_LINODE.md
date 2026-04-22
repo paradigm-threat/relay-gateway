@@ -6,7 +6,7 @@
 
 **`relay.env` permissions:** **`install.sh`** sets **`$INSTALL/relay.env`** to **`root:root`** **`chmod 600`**. Only root (installer, **`install.sh update`**, **`repair`**, or **`relay-bootstrap.sh`** run as root) should edit it; the **`relay`** user gets variables from systemd **`EnvironmentFile`**.
 
-**DNS / IPs:** For the current phase, **public IPs can be set manually**; automated DNS (Vercel API or other) remains optional via **`RELAY_SKIP_VERCEL_DNS=1`** or the existing Vercel flow below.
+**DNS / IPs:** For the current phase, **public IPs can be set manually**; automated DNS (Vercel API or other) remains optional via **`RELAY_SKIP_VERCEL_DNS=1`** or the existing Vercel flow below. **Wildcard** **`*.jp-osa.relaygateway.net`** (repo vhosts) must point at the JP master; the apex **`jp-osa.relaygateway.net`** **A** record must match that host’s **public IPv4** (if the A record is stale, HTTPS to the apex misroutes until Vercel DNS is updated).
 
 ## Recommended plan
 
@@ -76,12 +76,12 @@ After **`install.sh`** (or an equivalent tarball install) has created **`/opt/re
 | **HTTP routing** | **`RELAY_PUBLIC_HOSTNAME`**, **`RELAY_SERVER_ID`** | Wildcard DNS **`*.node`** → server IP for **`{repo}.{node}`** hosts. |
 | **Catalog clone** | **`RELAY_MASTER_CATALOG_GIT_URL`** (HTTPS), **`RELAY_MASTER_TRUST_ROOT`** (40 hex) | **`RELAY_MASTER_CATALOG_PATH`** defaults to **`/opt/relay/src/relay-master`** when the URL is set. Branch: **`RELAY_MASTER_CATALOG_BRANCH`** (default **`main`**). |
 | **Site apex** | **`RELAY_DEFAULT_REPO=relay-master`** | Optional but typical for catalog-as-homepage. |
-| **Masters** | **`RELAY_MASTER_PEER_LIST`** | Semicolon-separated FQDNs of **every** master (installer default includes **`atlanta2`**, **`atlanta3`**). **Listing this host is fine** — startup sync **skips self** for peer fetch. Align list + mesh secrets across masters per **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)**. |
+| **Masters** | **`RELAY_MASTER_PEER_LIST`** | Semicolon-separated FQDNs of **every** master (installer default includes **`atlanta2`**, **`atlanta3`**, **`jp-osa`**). **Listing this host is fine** — startup sync **skips self** for peer fetch. Align list + mesh secrets across masters per **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)**. |
 | **Network** | UFW / cloud firewall | **22**, **8080**, **9418** (and **5590** if Piper). Masters must reach each other on **`RELAY_GIT_PORT`** (**9418**) for peer **`git fetch`**. |
 
 **Verify after first start:** `curl -sS -X POST 'http://127.0.0.1:8080/api/config'` → **`startup_catalog_sync.catalog_forge_sync_ok`** should be **`true`**; **`peer_fetch`** reports **`ok` / `failed`** counts (peer round is best-effort). If **`catalog_forge_sync_ok`** is **`false`**, fix forge/auth, then **`sudo systemctl restart relay-gateway`**.
 
-**Example deployed masters (default installer `RELAY_MASTER_PEER_LIST`):** **`atlanta2.relaygateway.net`** and **`atlanta3.relaygateway.net`**. Use your real FQDNs if you override the list.
+**Example deployed masters (default installer `RELAY_MASTER_PEER_LIST`):** **`atlanta2.relaygateway.net`**, **`atlanta3.relaygateway.net`**, and **`jp-osa.relaygateway.net`**. Use your real FQDNs if you override the list.
 
 **`/api/config`** and **`/api/status`** use **POST** (not GET) so paths like **`/api/status`** are never served as repo files from the **`/*path`** wildcard. Call with **`curl -X POST`**. HTML status: `curl -sS -X POST 'https://atlanta2.relaygateway.net/api/status?format=html'` (pipe to a file or **`less`**; browsers do not send POST from a plain bookmark).
 
@@ -89,10 +89,11 @@ After **`install.sh`** (or an equivalent tarball install) has created **`/opt/re
 |------|--------------------------------------|----------------------|----------------------|
 | **Atlanta2** | `curl -sS -X POST 'https://atlanta2.relaygateway.net/api/status?format=html'` | `curl -sS -X POST 'https://atlanta2.relaygateway.net/api/status'` | `curl -sS -X POST 'https://atlanta2.relaygateway.net/api/config'` |
 | **Atlanta3** | `curl -sS -X POST 'https://atlanta3.relaygateway.net/api/status?format=html'` | `curl -sS -X POST 'https://atlanta3.relaygateway.net/api/status'` | `curl -sS -X POST 'https://atlanta3.relaygateway.net/api/config'` |
+| **JP (Osaka)** | `curl -sS -X POST 'https://jp-osa.relaygateway.net/api/status?format=html'` | `curl -sS -X POST 'https://jp-osa.relaygateway.net/api/status'` | `curl -sS -X POST 'https://jp-osa.relaygateway.net/api/config'` |
 
 **`/api/config`** returns **JSON only** (no HTML). **`POST /api/status`** defaults to JSON; use **`?format=html`** or **`Accept: text/html`** for the operator page body. For load checks, **`?strict=1`** returns HTTP **503** when any configured peer probe fails.
 
-**Redeploy to masters (e.g. atlanta2 / atlanta3):** build **`relay-linode-deploy.tgz`** on a trusted machine (**`./scripts/pack-linode-deploy.sh`**; see **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)**). Copy to each host and run **`sudo ./install.sh update`** from the unpacked bundle (or replace **`/opt/relay/bin/relay-gateway`** and **`relay-hook-handler`**, then **`sudo systemctl restart relay-gateway relay-git-daemon`**). Confirm with **`curl -sS -X POST 'http://127.0.0.1:8080/api/config' | head -c 400`** on the VM.
+**Redeploy to masters (e.g. atlanta2 / atlanta3 / jp-osa):** build **`relay-linode-deploy.tgz`** on a trusted machine (**`./scripts/pack-linode-deploy.sh`**; see **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)**). Copy to each host and run **`sudo ./install.sh update`** from the unpacked bundle (or replace **`/opt/relay/bin/relay-gateway`** and **`relay-hook-handler`**, then **`sudo systemctl restart relay-gateway relay-git-daemon`**). Confirm with **`curl -sS -X POST 'http://127.0.0.1:8080/api/config' | head -c 400`** on the VM.
 
 **`RELAY_MASTER_TRUST_ROOT` vs shallow catalog:** **`relay-gateway`** checks that the trust root is an ancestor of catalog **`HEAD`**. The startup script clones with **`RELAY_MASTER_CATALOG_CLONE_DEPTH`** (default **128** in **`relay-startup-catalog-sync.sh`**) and **deepens** a shallow catalog when needed. If the service still errors on **`merge-base`** / missing object, run **`sudo -u relay git -C /opt/relay/src/relay-master fetch --deepen 2048 origin`** (adjust path/remote if yours differ), then **`sudo systemctl restart relay-gateway`**.
 
@@ -204,7 +205,7 @@ Optional: **`VERCEL_TEAM_ID=...`**, **`RELAY_VERCEL_DOMAIN=relaygateway.net`** (
 
 Skipping DNS (no token on host, or DNS managed manually):
 
-Set **`RELAY_PUBLIC_HOSTNAME`** to this node’s FQDN (required for **`Host: {repo}.{node}`** routing when Vercel did not append it). Set **`RELAY_SERVER_ID`**. **`RELAY_MASTER_PEER_LIST`** defaults in **`install.sh`** to the canonical mesh / **master** FQDNs (**`atlanta2.relaygateway.net;atlanta3.relaygateway.net`**); override only when you need a different set. Roadmap for mesh events, **internal** anti–over-ping (**SHA-first**, optional **`via` / hops**; **Slack-independent**), and subscriptions: **[`RELAY_MESH_NETWORKING_PLAN.md`](./RELAY_MESH_NETWORKING_PLAN.md)**. Optional operator Slack: **[`SLACK_MESH_NOTIFY.md`](./SLACK_MESH_NOTIFY.md)**.
+Set **`RELAY_PUBLIC_HOSTNAME`** to this node’s FQDN (required for **`Host: {repo}.{node}`** routing when Vercel did not append it). Set **`RELAY_SERVER_ID`**. **`RELAY_MASTER_PEER_LIST`** defaults in **`install.sh`** to the canonical mesh / **master** FQDNs (**`atlanta2.relaygateway.net;atlanta3.relaygateway.net;jp-osa.relaygateway.net`**); override only when you need a different set. Roadmap for mesh events, **internal** anti–over-ping (**SHA-first**, optional **`via` / hops**; **Slack-independent**), and subscriptions: **[`RELAY_MESH_NETWORKING_PLAN.md`](./RELAY_MESH_NETWORKING_PLAN.md)**. Optional operator Slack: **[`SLACK_MESH_NOTIFY.md`](./SLACK_MESH_NOTIFY.md)**.
 
 ```bash
 sudo RELAY_INSTALL_NONINTERACTIVE=1 RELAY_SKIP_VERCEL_DNS=1 \

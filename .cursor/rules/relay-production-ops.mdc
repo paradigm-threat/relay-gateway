@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Relay production ops (SSH, autossh, deploy, debug)
 
-Use this when the user asks to deploy, restart, inspect logs, or debug **relay-gateway** on **Linode masters** (e.g. **atlanta2.relaygateway.net**, **atlanta3.relaygateway.net**). Paths below are relative to this crate root (**`relay-gateway/`**).
+Use this when the user asks to deploy, restart, inspect logs, or debug **relay-gateway** on **Linode masters** (e.g. **atlanta2.relaygateway.net**, **atlanta3.relaygateway.net**, **jp-osa.relaygateway.net**). Paths below are relative to this crate root (**`relay-gateway/`**).
 
 ## Identity and access
 
@@ -58,10 +58,11 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
    REMOTE
    ```
 
-3. **Both US masters (no seed):** tarball + `install.sh update` on **atlanta2** and **atlanta3**, strip retired **`jp-osa.relaygateway.net`** from **`/opt/relay/relay.env`** if present, restart **`relay-gateway`**:
+3. **All production masters (no seed):** tarball + `install.sh update` on **atlanta2**, **atlanta3**, and **jp-osa**, restart **`relay-gateway`**. If the apex **`jp-osa.relaygateway.net`** A record is still wrong, set **`RELAY_JP_OSA_SSH_HOST`** to the node’s IPv4 for SSH only:
 
    ```bash
    ./scripts/deploy-all-masters.sh
+   # or: RELAY_JP_OSA_SSH_HOST=203.0.113.50 ./scripts/deploy-all-masters.sh
    ```
 
 4. **Optional script** (upload + `install.sh update` + **POST** health check; **also** runs **`POST /api/git/ensure-bare/$RELAY_SEED_REPO`** unless skipped — avoid on production if that side effect is unwanted):

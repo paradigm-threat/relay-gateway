@@ -34,7 +34,7 @@ PIPER_CACHE_TTL_SECONDS="${RELAY_FEAT_PIPER_CACHE_TTL_SECONDS:-86400}"
 PIPER_CACHE_MAX_FILES="${RELAY_FEAT_PIPER_CACHE_MAX_FILES:-1000}"
 
 # Semicolon-separated FQDNs; used when RELAY_MASTER_PEER_LIST is unset (non-interactive) or when the operator accepts the interactive default (Enter).
-DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-atlanta2.relaygateway.net;atlanta3.relaygateway.net}"
+DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-atlanta2.relaygateway.net;atlanta3.relaygateway.net;jp-osa.relaygateway.net}"
 
 log() { echo "[relay-install] $*" >&2; }
 die() { echo "[relay-install] ERROR: $*" >&2; exit 1; }

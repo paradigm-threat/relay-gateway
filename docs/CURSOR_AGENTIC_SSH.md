@@ -33,6 +33,8 @@ If Remote-SSH hangs on “Installing Cursor Server”, check disk space on the s
 
 Relay nodes should be reached as a **normal UNIX user** with **`sudo`** (e.g. **`ari`**, **`deploy`**, **`ubuntu`**)—**not** **`root`**, especially after **`PermitRootLogin no`** and key-only auth.
 
+**Linode / stock images:** Some images ship **password-only `root`** until you add a key user. A vendor username (e.g. **`protricity`**) may exist but often has **no** deploy key in **`authorized_keys`**—verify with **`ssh -o BatchMode=yes -o ConnectTimeout=15 user@ip 'echo ok'`** before assuming agent access. Prefer **`root` once** (or the image’s documented bootstrap user) to create **`ari`**, install **`~/.ssh/authorized_keys`** for the shared **`id_ed25519_relay_gateway`** key, then **`passwd -l root`** and use **`ari@`** for all further ops.
+
 ### `~/.ssh/config` (operators and automation)
 
 ```sshconfig
