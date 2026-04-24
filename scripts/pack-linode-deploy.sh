@@ -20,5 +20,5 @@ cp "$ROOT/scripts/caddy-ask.py" "$DIST/caddy-ask.py"
 chmod +x "$DIST/install.sh" "$DIST/relay-bootstrap.sh" "$DIST/relay-startup-catalog-sync.sh" "$DIST/relay-reconcile.sh" "$DIST/install-caddy-tls.sh" "$DIST/relay-probe-features.py"
 tar -czvf "$ROOT/target/relay-linode-deploy.tgz" -C "$DIST" .
 echo "Created $ROOT/target/relay-linode-deploy.tgz"
-echo "Deploy (hardened: user ari): RELAY_SSH_USER=ari ./scripts/relay-linode-redeploy-seed.sh YOUR_IP"
+echo "Fleet deploy: ./scripts/relay-fleet.sh --build deploy-all   (or: RELAY_SSH_USER=ari ./scripts/relay-linode-redeploy-seed.sh YOUR_FQDN)"
 echo "  (or first-boot root image: scp … root@IP:/root/ && ssh root@IP 'cd /root && tar xzf relay-linode-deploy.tgz && ./install.sh install')"

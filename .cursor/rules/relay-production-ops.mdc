@@ -32,6 +32,8 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
 
 ## Standard binary deploy (trusted build → masters)
 
+**Preferred:** from **`relay-gateway/`**, **`./scripts/relay-fleet.sh deploy-all --build`** (or **`update`** / **`--only=`**) — see **`docs/RELAY_FLEET_CONSOLE.md`**. Low-level steps below match what **`relay-fleet`** / **`relay-linode-redeploy-seed.sh`** run.
+
 1. **Build tarball (local):**
 
    ```bash
@@ -58,11 +60,12 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
    REMOTE
    ```
 
-3. **All production masters (no seed):** tarball + `install.sh update` on **atlanta2**, **atlanta3**, and **jp-osa**, restart **`relay-gateway`**. If the apex **`jp-osa.relaygateway.net`** A record is still wrong, set **`RELAY_JP_OSA_SSH_HOST`** to the node’s IPv4 for SSH only:
+3. **All production masters (no seed):** **`./scripts/relay-fleet.sh --build deploy-all`** (or **`./scripts/deploy-all-masters.sh`**, which wraps fleet with **`--build`**). Tarball + `install.sh update` on **atlanta2**, **atlanta3**, and **jp-osa**, restart **`relay-gateway`** / **`relay-git-daemon`**. **SSH and deploy scripts should use the hostname** (**`jp-osa.relaygateway.net`**, etc.), not a literal IPv4 from old notes. If apex DNS is still wrong, set **`RELAY_JP_OSA_SSH_HOST`** to the **current** public IPv4 from the Linode (or other) dashboard until DNS is fixed—do not copy IPs from documentation.
 
    ```bash
-   ./scripts/deploy-all-masters.sh
-   # or: RELAY_JP_OSA_SSH_HOST=203.0.113.50 ./scripts/deploy-all-masters.sh
+   ./scripts/relay-fleet.sh --build deploy-all
+   # or: ./scripts/deploy-all-masters.sh
+   # or (temporary JP SSH target): RELAY_JP_OSA_SSH_HOST=<ipv4-from-dashboard> ./scripts/deploy-all-masters.sh
    ```
 
 4. **Optional script** (upload + `install.sh update` + **POST** health check; **also** runs **`POST /api/git/ensure-bare/$RELAY_SEED_REPO`** unless skipped — avoid on production if that side effect is unwanted):
@@ -73,6 +76,14 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
    ```
 
    Override **`RELAY_SSH_USER`**, **`RELAY_SSH_IDENTITY`**, **`RELAY_SEED_REPO`** as needed.
+
+## Fleet status (normative)
+
+- **`./scripts/relay-fleet.sh ssh-check`** — key auth to each master.
+- **`./scripts/relay-fleet.sh status`** — **`POST /api/config`** per host (catalog sync, allowlist).
+- **`./scripts/relay-fleet.sh drift`** — catalog **`HEAD`** across hosts.
+
+See **`docs/RELAY_FLEET_CONSOLE.md`**.
 
 ## HTTP API checks (normative)
 
@@ -105,5 +116,6 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
 
 - **`docs/DEPLOY_LINODE.md`** — full operator flow, env, verification.
 - **`docs/DEPLOY_SELF_HOSTED.md`** — hosting the tarball, `RELAY_DEPLOY_TGZ_URL`, etc.
+- **`docs/OPERATOR_BARE_REPO_RESET.md`** — recloning bare mirrors, catalog sync / DNS failures, `ensure-bare` notes.
 
 When the user asks to “deploy both masters” or “debug atlanta2”, **run the commands** in the integrated terminal (do not only describe them), unless they explicitly forbid remote access.

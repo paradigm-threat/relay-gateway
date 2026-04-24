@@ -8,6 +8,10 @@
 
 **DNS / IPs:** For the current phase, **public IPs can be set manually**; automated DNS (Vercel API or other) remains optional via **`RELAY_SKIP_VERCEL_DNS=1`** or the existing Vercel flow below. **Wildcard** **`*.jp-osa.relaygateway.net`** (repo vhosts) must point at the JP master; the apex **`jp-osa.relaygateway.net`** **A** record must match that host’s **public IPv4** (if the A record is stale, HTTPS to the apex misroutes until Vercel DNS is updated).
 
+**Operator SSH:** connect by **FQDN** (e.g. **`ssh ari@jp-osa.relaygateway.net`**). Do not rely on **literal IPv4** values from old docs, chat, or screenshots—Linode reassignment changes them; **`~/.ssh/config`** should not pin **`HostName`** to a stale IP when the name resolves correctly.
+
+**Fleet operations (canonical):** use **`./scripts/relay-fleet.sh`** from **`relay-gateway/`** for **`ssh-check`**, **`status`**, **`drift`**, **`deploy-all`**, **`repair`**, **`features-set`**, **`reclone-repo`**, etc. See **[`RELAY_FLEET_CONSOLE.md`](./RELAY_FLEET_CONSOLE.md)**.
+
 ## Recommended plan
 
 | Step | What |
@@ -101,7 +105,7 @@ After **`install.sh`** (or an equivalent tarball install) has created **`/opt/re
 
 **Catalog tree copied or repaired without `origin`:** plain **`git pull`** can fail (“no tracking information” / no remote). Repair: **`sudo -u relay git -C /opt/relay/src/relay-master remote add origin <same URL as RELAY_MASTER_CATALOG_GIT_URL>`**, **`git fetch origin`**, **`git branch --set-upstream-to=origin/main main`** (or your branch). Then run sync as in **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** § “Updating a catalog node”.
 
-**Stale bare directories:** Removing a repo from **`relay-catalog.json`** does **not** remove **`/opt/relay/data/<name>.git`**. **`POST /api/config` → `repos`** may list extra names on one node; safe to leave, or remove the bare directory manually after you no longer need it.
+**Stale bare directories:** Removing a repo from **`relay-catalog.json`** does **not** remove **`/opt/relay/data/<name>.git`**. **`POST /api/config` → `repos`** may list extra names on one node; safe to leave, or remove the bare directory manually after you no longer need it. For **forced reclones**, resolver/catalog sync failures, and **`ensure-bare`** scope, see **[`OPERATOR_BARE_REPO_RESET.md`](./OPERATOR_BARE_REPO_RESET.md)**.
 
 ### Secrets (mesh / future)
 

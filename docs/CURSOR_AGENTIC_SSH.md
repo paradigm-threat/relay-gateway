@@ -54,7 +54,7 @@ Prefer explicit user and batch mode so failures are immediate (no password promp
 ssh -o BatchMode=yes -o ConnectTimeout=15 ari@atlanta3.relaygateway.net 'hostname'
 ```
 
-Catalog / **`relay-server`** maintenance still uses **`sudo`** on the server (e.g. **`sudo systemctl restart relay-server`**, **`sudo -u relay …`** for **`/opt/relay/data`**). Do **not** assume **`ssh root@…`** works on hardened hosts. **`scripts/relay-linode-redeploy-seed.sh`** defaults to **`RELAY_SSH_USER=ari`** and **`RELAY_SSH_IDENTITY=~/.ssh/id_ed25519_relay_gateway`** (override with env if needed).
+Catalog / **`relay-server`** maintenance still uses **`sudo`** on the server (e.g. **`sudo systemctl restart relay-server`**, **`sudo -u relay …`** for **`/opt/relay/data`**). Do **not** assume **`ssh root@…`** works on hardened hosts. Prefer **`./scripts/relay-fleet.sh`** for non-interactive fleet SSH — see **[`RELAY_FLEET_CONSOLE.md`](./RELAY_FLEET_CONSOLE.md)**. **`scripts/relay-linode-redeploy-seed.sh`** defaults to **`RELAY_SSH_USER=ari`** and **`RELAY_SSH_IDENTITY=~/.ssh/id_ed25519_relay_gateway`** (override with env if needed).
 
 **Shared deploy key (policy):** use the **same** automation key on **all** Relay servers (e.g. **`id_ed25519_relay_gateway`**) so redeploy and agent SSH stay predictable. **`install.sh`** / **`relay-install.sh`** can verify **`authorized_keys`** contains that key’s fingerprint when **`RELAY_VALIDATE_DEPLOY_SSH_KEY=1`** — see **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)** §3.
 

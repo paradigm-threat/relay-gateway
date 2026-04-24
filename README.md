@@ -18,6 +18,10 @@ Install-time **optional capabilities** (Piper TTS, offline Argos translation, np
 
 **Examples (deployed masters):** `curl -sS -X POST 'https://atlanta2.relaygateway.net/api/status?format=html'` · same for **`atlanta3`**. JSON: **`curl -sS -X POST 'https://atlanta2.relaygateway.net/api/config'`**. Full table: **[`docs/DEPLOY_LINODE.md`](docs/DEPLOY_LINODE.md)** (operator URL table).
 
+## Operations (deployed masters)
+
+**Primary tool:** from **`relay-gateway/`**, **`./scripts/relay-fleet.sh`** — **`deploy-all`**, **`status`**, **`drift`**, **`ssh-check`**, **`repair`**, **`features-set`**, **`reclone-repo`**, **`bootstrap-ssh`**. See **[`docs/RELAY_FLEET_CONSOLE.md`](docs/RELAY_FLEET_CONSOLE.md)**. **`./scripts/deploy-all-masters.sh`** is a thin **`--build`** wrapper around **`relay-fleet deploy-all`**.
+
 ## Fresh Ubuntu server from GitLab tarball
 
 We only test this path on **Ubuntu** 22.04/24.04. **One-line install** (latest successful **`main`** pipeline artifact **`package:linode-tgz`**, non-interactive installer, Vercel DNS skipped—add **`RELAY_PUBLIC_FQDN`** + **`VERCEL_API_TOKEN`** and drop **`RELAY_SKIP_VERCEL_DNS=1`** to register DNS; private GitLab needs **`PRIVATE-TOKEN`** / tokenized URLs on **`curl`**):
