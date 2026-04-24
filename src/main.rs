@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use anyhow::Result;
 use axum::{
     body::Body,
@@ -9,6 +8,7 @@ use axum::{
     Json, Router,
 };
 use clap::Parser;
+use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -89,7 +89,10 @@ async fn main() -> Result<()> {
             &args.collection,
         ) {
             Ok(results) => {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "results": results }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({ "results": results }))?
+                );
                 return Ok(());
             }
             Err(e) => {

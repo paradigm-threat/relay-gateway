@@ -254,7 +254,9 @@ pub fn spawn_publish_validation_failure(ctx: PullValidationPublishCtx, event_typ
         if let Some(ref su) = slack_url {
             let text = slack_text_for_mesh_validation(&payload);
             match notify::post_slack_webhook(&client, su, &text).await {
-                Ok(()) => tracing::info!(event=%payload.event_type, "Slack notify: mesh validation delivered"),
+                Ok(()) => {
+                    tracing::info!(event=%payload.event_type, "Slack notify: mesh validation delivered")
+                }
                 Err(e) => warn!(err=%e, "Slack notify failed"),
             }
         }
@@ -420,7 +422,8 @@ mod tests {
             Some("master-only")
         );
         assert_eq!(
-            outbound_mesh_secret_for_post_url("http://edge.example:8080/hooks/mesh-event").as_deref(),
+            outbound_mesh_secret_for_post_url("http://edge.example:8080/hooks/mesh-event")
+                .as_deref(),
             Some("peer-fallback")
         );
         std::env::remove_var("RELAY_MASTER_MESH_SECRET");

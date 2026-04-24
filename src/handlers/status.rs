@@ -386,10 +386,7 @@ pub async fn post_api_status(
         .clone()
         .or_else(mesh_role::node_fqdn_normalized);
 
-    let client = match reqwest::Client::builder()
-        .timeout(probe_timeout())
-        .build()
-    {
+    let client = match reqwest::Client::builder().timeout(probe_timeout()).build() {
         Ok(c) => c,
         Err(e) => {
             return (

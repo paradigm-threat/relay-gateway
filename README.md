@@ -22,6 +22,8 @@ Install-time **optional capabilities** (Piper TTS, offline Argos translation, np
 
 **Primary tool:** from **`relay-gateway/`**, **`./scripts/relay-fleet.sh`** — **`deploy-all`**, **`status`**, **`drift`**, **`ssh-check`**, **`repair`**, **`features-set`**, **`reclone-repo`**, **`bootstrap-ssh`**. See **[`docs/RELAY_FLEET_CONSOLE.md`](docs/RELAY_FLEET_CONSOLE.md)**. **`./scripts/deploy-all-masters.sh`** is a thin **`--build`** wrapper around **`relay-fleet deploy-all`**.
 
+**Vendored for CI:** **`relay-runtime/`** (CleverScript runtime) and a **Rust-only `src/` + `Cargo.toml` snapshot** of **`themed-styler/`** ship in this repo so **`cargo test --locked`** does not depend on sibling directories. The published **`themed-styler`** crate may lag this snapshot; refresh **`themed-styler/`** from your checkout when APIs diverge, then run **`cargo test --locked`**.
+
 ## Fresh Ubuntu server from GitLab tarball
 
 We only test this path on **Ubuntu** 22.04/24.04. **One-line install** (latest successful **`main`** pipeline artifact **`package:linode-tgz`**, non-interactive installer, Vercel DNS skipped—add **`RELAY_PUBLIC_FQDN`** + **`VERCEL_API_TOKEN`** and drop **`RELAY_SKIP_VERCEL_DNS=1`** to register DNS; private GitLab needs **`PRIVATE-TOKEN`** / tokenized URLs on **`curl`**):

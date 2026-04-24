@@ -78,7 +78,11 @@ fn merge_base_with_default_branch(repo_path: &Path, tip: &str) -> Result<Option<
 ///
 /// When `old_oid` is all zeros (**new ref**), use `merge-base(default_branch, new_oid)..new_oid` so we
 /// do not walk pre-policy history (Policy I for branches created from `main`).
-pub fn rev_list_range(repo_path: &Path, old_oid: &str, new_oid: &str) -> Result<Vec<String>, String> {
+pub fn rev_list_range(
+    repo_path: &Path,
+    old_oid: &str,
+    new_oid: &str,
+) -> Result<Vec<String>, String> {
     if new_oid == ZERO_OID || new_oid.len() < 40 {
         return Ok(vec![]);
     }
@@ -209,7 +213,8 @@ fn git_verify_commit_with_allowed_signers(
     signers_body: &str,
 ) -> Result<(), String> {
     let mut tmp = NamedTempFile::new().map_err(|e| e.to_string())?;
-    tmp.write_all(signers_body.as_bytes()).map_err(|e| e.to_string())?;
+    tmp.write_all(signers_body.as_bytes())
+        .map_err(|e| e.to_string())?;
     tmp.flush().map_err(|e| e.to_string())?;
     let path = tmp.path().to_owned();
     let out = Command::new("git")
@@ -281,14 +286,18 @@ fn enforce_single_commit(repo_path: &Path, commit: &str, branch: &str) -> Result
 
     if let Some(parent) = first_parent(repo_path, commit) {
         if relay_yaml_changed(repo_path, &parent, commit) {
-            let parent_git = read_git_config_from_revision(repo_path, &parent).ok_or_else(|| {
-                format!(
-                    "commit {}: parent {} has no readable .relay.yaml for governance check",
-                    commit, parent
-                )
-            })?;
+            let parent_git =
+                read_git_config_from_revision(repo_path, &parent).ok_or_else(|| {
+                    format!(
+                        "commit {}: parent {} has no readable .relay.yaml for governance check",
+                        commit, parent
+                    )
+                })?;
             let parent_rules = parent_git.branch_rules.ok_or_else(|| {
-                format!("commit {}: parent has no branchRules for governance", commit)
+                format!(
+                    "commit {}: parent has no branchRules for governance",
+                    commit
+                )
             })?;
             let parent_rule = resolve_branch_rule(branch, &parent_rules).ok_or_else(|| {
                 format!(

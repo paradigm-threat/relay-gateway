@@ -27,7 +27,8 @@ repository.git/
 │   │   └── [sha256_hash]/   # Content-addressed storage
 │   └── branches/
 │       └── [branch_hash]/   # Use branch name hash to avoid filesystem issues
-│           ├── index.db     # Branch-specific PoloDB/SQLite
+│           ├── index.db.json   # Written by RelayHost index hook (JSON collections)
+│           ├── index.redb      # Mirrored by relay-gateway (redb) for QUERY reads
 │           └── ephemeral/   # Branch-local cache/temporary data
 ```
 

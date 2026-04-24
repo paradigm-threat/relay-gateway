@@ -153,6 +153,8 @@ sudo -u relay bash -lc 'set -e; cd /opt/relay/src/relay-master && git pull origi
 sudo systemctl restart relay-gateway
 ```
 
+For **forced reclones** (delete **`…/<repo>.git`** then sync), resolver issues (**`catalog_forge_sync_ok: false`**), and **`ensure-bare`** scope, see **[`OPERATOR_BARE_REPO_RESET.md`](./OPERATOR_BARE_REPO_RESET.md)**.
+
 **No `origin` on the catalog checkout** (e.g. tree copied by hand, or incomplete repair): **`git pull`** fails with “could not read from remote repository” or “no tracking information”. Fix once:
 
 ```bash

@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::git::repo::{read_relay_config, read_git_config};
-    use crate::types::{RelayConfig, GitConfig};
+    use crate::git::repo::{read_git_config, read_relay_config};
     use git2::{Repository, Signature};
     use tempfile::tempdir;
 
@@ -26,7 +25,15 @@ git:
         tb.insert(".relay.yaml", blob_oid, 0o100644).unwrap();
         let tree_id = tb.write().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
-        repo.commit(Some("refs/heads/main"), &sig, &sig, "add config", &tree, &[]).unwrap();
+        repo.commit(
+            Some("refs/heads/main"),
+            &sig,
+            &sig,
+            "add config",
+            &tree,
+            &[],
+        )
+        .unwrap();
 
         let config = read_relay_config(&repo, "main").expect("failed to read config");
         assert_eq!(config.name.unwrap(), "Test Repo");
@@ -48,7 +55,8 @@ git:
         let tb = repo.treebuilder(None).unwrap();
         let tree_id = tb.write().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
-        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[]).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
 
         let config = read_relay_config(&repo, "main");
         assert!(config.is_none());
@@ -67,7 +75,15 @@ git:
         tb.insert(".relay.yaml", blob_oid, 0o100644).unwrap();
         let tree_id = tb.write().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
-        repo.commit(Some("refs/heads/main"), &sig, &sig, "add bad config", &tree, &[]).unwrap();
+        repo.commit(
+            Some("refs/heads/main"),
+            &sig,
+            &sig,
+            "add bad config",
+            &tree,
+            &[],
+        )
+        .unwrap();
 
         let config = read_relay_config(&repo, "main");
         assert!(config.is_none());
@@ -92,5 +108,56 @@ git:
             default_branch_from_bare_head(&root, "r").as_deref(),
             Some("master")
         );
+    }
+
+    /// Regression: extended `HookPath` under `server.hooks.index` deserializes (branches + query.fields).
+    #[test]
+    fn test_read_relay_config_index_hook_extended() {
+        let repo_dir = tempdir().unwrap();
+        let repo = Repository::init_bare(repo_dir.path()).unwrap();
+        let sig = Signature::now("test", "test@example.com").unwrap();
+
+        let config_yaml = r#"
+server:
+  hooks:
+    index:
+      path: hooks/server/index.mjs
+      branches: ["main", "dev"]
+      query:
+        collections:
+          index:
+            fields: ["title", "_meta_dir"]
+"#;
+
+        let blob_oid = repo.blob(config_yaml.as_bytes()).unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert(".relay.yaml", blob_oid, 0o100644).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "config", &tree, &[])
+            .unwrap();
+
+        let config = read_relay_config(&repo, "main").expect("config");
+        let hook = config
+            .server
+            .as_ref()
+            .unwrap()
+            .hooks
+            .as_ref()
+            .unwrap()
+            .get("index")
+            .unwrap();
+        assert_eq!(hook.path, "hooks/server/index.mjs");
+        assert_eq!(hook.branches.as_ref().unwrap(), &["main", "dev"]);
+        let fields = hook
+            .query
+            .as_ref()
+            .unwrap()
+            .collections
+            .get("index")
+            .unwrap()
+            .fields
+            .clone();
+        assert_eq!(fields, vec!["title", "_meta_dir"]);
     }
 }

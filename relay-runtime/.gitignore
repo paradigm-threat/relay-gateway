@@ -1,0 +1,8 @@
+/target/
+*.rs.bk
+.DS_Store
+
+# Android
+/build/
+/android-demo/build/
+*.apk

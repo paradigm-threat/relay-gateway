@@ -1,25 +1,94 @@
-use std::path::Path;
-use serde_json::Value;
-use tracing::debug;
-use crate::git::indexing::ensure_indexed;
-use crate::git::hooks::HookContext;
 use crate::git;
+use crate::git::hooks::HookContext;
+use crate::git::index_policy;
+use crate::git::index_store;
+use crate::git::indexing::{branch_index_paths, branch_operation_mutex, ensure_indexed};
+use crate::git::repo::{read_file_from_repo, read_relay_config};
+use relay_runtime::value::{NativeFnClosure, Value as CsValue};
+use serde_json::{Map, Value};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
+fn project_rows(rows: Vec<Value>, fields: Option<&[String]>) -> Vec<Value> {
+    let Some(field_list) = fields.filter(|f| !f.is_empty()) else {
+        return rows;
+    };
+    rows.into_iter()
+        .map(|row| {
+            let mut m = Map::new();
+            if let Some(obj) = row.as_object() {
+                for k in field_list {
+                    if let Some(v) = obj.get(k) {
+                        m.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            Value::Object(m)
+        })
+        .collect()
+}
+
+/// `Relay` global for CleverScript QUERY: `Relay.git.readFile(path)` reads from the bare repo at `branch`.
+fn relay_git_value(repo_root: PathBuf, branch: String) -> CsValue {
+    let read = Rc::new(move |args: &[CsValue]| {
+        let path = args
+            .first()
+            .and_then(|v| match v {
+                CsValue::String(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .ok_or_else(|| "Relay.git.readFile requires a string path".to_string())?;
+        let bytes = read_file_from_repo(&repo_root, &branch, path).map_err(|e| e.to_string())?;
+        Ok(CsValue::String(String::from_utf8_lossy(&bytes).into_owned()))
+    });
+    let mut git = HashMap::new();
+    git.insert(
+        "readFile".to_string(),
+        CsValue::NativeFn(NativeFnClosure(read)),
+    );
+    let mut relay = HashMap::new();
+    relay.insert("git".to_string(), CsValue::Object(git));
+    CsValue::Object(relay)
+}
+
+fn clever_query_result_to_rows(v: &CsValue) -> anyhow::Result<Vec<Value>> {
+    match v {
+        CsValue::Array(a) => Ok(a.iter().map(|x| x.to_json()).collect()),
+        CsValue::Object(o) => {
+            if let Some(CsValue::Array(rows)) = o.get("rows") {
+                Ok(rows.iter().map(|x| x.to_json()).collect())
+            } else {
+                anyhow::bail!("CleverScript QUERY must return {{ rows: [...] }} or a JSON array");
+            }
+        }
+        _ => anyhow::bail!("CleverScript QUERY returned an unsupported type"),
+    }
+}
+
+/// Run JIT index if needed, load collection from redb (synced from hook JSON), filter, project fields from `.relay.yaml`.
+/// When `server.hooks.query.path` ends with `.cs`, run CleverScript instead (optional `Relay.git`; no redb required).
 pub fn execute_query(
     repo_root: &Path,
     repo_name: &str,
     branch: &str,
     query: Option<Value>,
     collection: &str,
-) -> anyhow::Result<Value> {
+) -> anyhow::Result<Vec<Value>> {
     let repo_full_path = repo_root.join(format!("{}.git", repo_name));
-    
-    // Get current HEAD for JIT indexing
     let repo = git2::Repository::open_bare(&repo_full_path)?;
     let head = git::get_branch_commit_info(&repo, branch)
-        .ok_or_else(|| anyhow::anyhow!("Branch {} not found", branch))?.0;
+        .ok_or_else(|| anyhow::anyhow!("Branch {} not found", branch))?
+        .0;
 
-    // Prepare context for indexing
+    let relay_cfg = read_relay_config(&repo, &head).unwrap_or_default();
+
+    if !index_policy::branch_allowed_for_query_request(&relay_cfg, branch) {
+        return Ok(vec![]);
+    }
+
+    let export_fields = index_policy::export_fields_for_collection(&relay_cfg, collection);
+
     let ctx = HookContext {
         repo_path: repo_full_path.clone(),
         old_commit: String::new(),
@@ -30,62 +99,76 @@ pub fn execute_query(
         files: std::collections::HashMap::new(),
     };
 
-    // Run JIT indexing if stale
-    ensure_indexed(&ctx)?;
+    let lock = branch_operation_mutex(ctx.repo_path.clone(), ctx.branch.clone());
+    let _guard = lock.lock().unwrap();
 
-    // Now perform the query against the database
-    let branch_bytes = if branch.is_empty() { "main".as_bytes() } else { branch.as_bytes() };
-    let branch_hash = hex::encode(branch_bytes);
-    let branch_hash_short = if branch_hash.len() > 12 { &branch_hash[..12] } else { &branch_hash };
-    let db_path = repo_full_path.join(".relay_data").join("branches").join(branch_hash_short).join("index.db.json");
-
-    if !db_path.exists() {
-        return Ok(serde_json::json!([]));
+    if let Some(cs_path) = index_policy::clever_query_hook_path(&relay_cfg) {
+        let source_bytes = read_file_from_repo(&repo_full_path, branch, &cs_path)?;
+        let source = String::from_utf8_lossy(&source_bytes).into_owned();
+        let qctx = serde_json::json!({
+            "branch": branch,
+            "collection": collection,
+            "query": query,
+            "repo": repo_name,
+        });
+        let host = relay_runtime::host::MockHost::new();
+        let relay = relay_git_value(repo_full_path.clone(), branch.to_string());
+        let raw = relay_runtime::run_query_script(&source, host, &qctx, Some(relay))
+            .map_err(|e| anyhow::anyhow!("CleverScript QUERY: {}", e))?;
+        let rows = clever_query_result_to_rows(&raw)?;
+        return Ok(project_rows(rows, export_fields.as_deref()));
     }
 
-    let db_content = std::fs::read_to_string(&db_path)?;
-    let db: Value = serde_json::from_str(&db_content)?;
+    if index_policy::has_index_hook(&relay_cfg) {
+        ensure_indexed(&ctx)?;
+    }
 
-    let mut results = db.get("collections")
-        .and_then(|c| c.get(collection))
-        .cloned()
-        .unwrap_or(serde_json::json!([]));
+    let (json_path, redb_path) = branch_index_paths(&repo_full_path, branch);
 
-    // Filtering logic
+    if json_path.exists() {
+        index_store::sync_json_to_redb(&json_path, &redb_path)?;
+    }
+
+    let mut results =
+        index_store::read_collection(&redb_path, collection)?.unwrap_or(Value::Array(vec![]));
+
+    let arr = results
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("collection {} is not an array", collection))?;
+
     if let Some(query_val) = query {
-        if let Some(results_arr) = results.as_array_mut() {
-            if let Some(q_str) = query_val.as_str() {
-                if !q_str.is_empty() {
-                    let q_lower = q_str.to_lowercase();
-                    results_arr.retain(|item| {
-                        if let Some(obj) = item.as_object() {
-                            for value in obj.values() {
-                                if let Some(s) = value.as_str() {
-                                    if s.to_lowercase().contains(&q_lower) {
-                                        return true;
-                                    }
+        if let Some(q_str) = query_val.as_str() {
+            if !q_str.is_empty() {
+                let q_lower = q_str.to_lowercase();
+                arr.retain(|item| {
+                    if let Some(obj) = item.as_object() {
+                        for value in obj.values() {
+                            if let Some(s) = value.as_str() {
+                                if s.to_lowercase().contains(&q_lower) {
+                                    return true;
                                 }
                             }
                         }
-                        false
-                    });
-                }
-            } else if let Some(q_obj) = query_val.as_object() {
-                results_arr.retain(|item| {
-                    if let Some(item_obj) = item.as_object() {
-                        for (k, v) in q_obj {
-                            if item_obj.get(k) != Some(v) {
-                                return false;
-                            }
-                        }
-                        true
-                    } else {
-                        false
                     }
+                    false
                 });
             }
+        } else if let Some(q_obj) = query_val.as_object() {
+            arr.retain(|item| {
+                if let Some(item_obj) = item.as_object() {
+                    for (k, v) in q_obj {
+                        if item_obj.get(k) != Some(v) {
+                            return false;
+                        }
+                    }
+                    true
+                } else {
+                    false
+                }
+            });
         }
     }
 
-    Ok(results)
+    let rows: Vec<Value> = arr.clone();
+    Ok(project_rows(rows, export_fields.as_deref()))
 }

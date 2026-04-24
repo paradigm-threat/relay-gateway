@@ -10,8 +10,8 @@ use base64::Engine;
 use tracing::{error, info, warn};
 
 use crate::{
-    git, helpers, transpiler, AppState, GitResolveResult, HEADER_BRANCH, HEADER_REPO,
-    DEFAULT_IPFS_CACHE_ROOT,
+    git, helpers, transpiler, AppState, GitResolveResult, DEFAULT_IPFS_CACHE_ROOT, HEADER_BRANCH,
+    HEADER_REPO,
 };
 
 /// GET file handler — resolves from Git first, then hooks/get.mjs, then static
@@ -33,9 +33,19 @@ pub async fn handle_get_file(
         if let Some(resp) = try_static(&state, &decoded).await {
             return resp;
         }
-        let hint = state.node_fqdn.as_deref().map(|n| {
-            format!("Use Host: {{repo}}.{} (bare repos under RELAY_REPO_PATH as <repo>.git). ", n)
-        }).unwrap_or_else(|| "Set RELAY_PUBLIC_HOSTNAME to this node's FQDN, then use Host: {repo}.{that-fqdn}. ".to_string());
+        let hint = state
+            .node_fqdn
+            .as_deref()
+            .map(|n| {
+                format!(
+                    "Use Host: {{repo}}.{} (bare repos under RELAY_REPO_PATH as <repo>.git). ",
+                    n
+                )
+            })
+            .unwrap_or_else(|| {
+                "Set RELAY_PUBLIC_HOSTNAME to this node's FQDN, then use Host: {repo}.{that-fqdn}. "
+                    .to_string()
+            });
         let error_msg = format!(
             "Not Found\n\nPath: {}\nBranch: {}\nRepo: (none — {})\nStatic dirs searched: {:?}\n\nNo file found in static directories.",
             decoded, branch, hint, state.static_paths

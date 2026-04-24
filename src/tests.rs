@@ -1,17 +1,16 @@
 #[cfg(test)]
 mod tests {
-    use git2::{Repository, Signature};
-    use std::collections::HashMap;
-    use tempfile::tempdir;
+    use crate::{git, handlers, helpers, peer_hook, types::*};
+    use axum::http::header::{ACCEPT, CONTENT_TYPE, HOST};
     use axum::{
         extract::{Path as AxPath, State},
         http::{HeaderMap, StatusCode},
         response::IntoResponse,
         Json,
     };
-    use crate::{handlers, git, helpers, peer_hook, types::*};
-    use axum::http::header::HOST;
+    use git2::{Repository, Signature};
     use serial_test::serial;
+    use tempfile::tempdir;
 
     fn test_state(repo_path: std::path::PathBuf) -> AppState {
         AppState {
@@ -27,11 +26,72 @@ mod tests {
 
     fn host_header(repo: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
-        h.insert(
-            HOST,
-            format!("{}.test.local", repo).parse().expect("host"),
-        );
+        h.insert(HOST, format!("{}.test.local", repo).parse().expect("host"));
         h
+    }
+
+    /// Bare `repo.git` with `.relay.yaml` + `hooks/server/index.mjs` on `main` (for QUERY regression tests).
+    fn query_text_fixture(config_yaml: &str, index_js: &str) -> (tempfile::TempDir, AppState) {
+        let repo_dir = tempdir().unwrap();
+        let repo_path = repo_dir.path().join("repo.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("relay", "relay@local").unwrap();
+        let config_oid = repo.blob(config_yaml.as_bytes()).unwrap();
+        let index_js_oid = repo.blob(index_js.as_bytes()).unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert(".relay.yaml", config_oid, 0o100644).unwrap();
+        let mut tb_server = repo.treebuilder(None).unwrap();
+        tb_server
+            .insert("index.mjs", index_js_oid, 0o100644)
+            .unwrap();
+        let server_tid = tb_server.write().unwrap();
+        let mut tb_hooks = repo.treebuilder(None).unwrap();
+        tb_hooks.insert("server", server_tid, 0o040000).unwrap();
+        let hooks_tid = tb_hooks.write().unwrap();
+        tb.insert("hooks", hooks_tid, 0o040000).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let state = test_state(repo_dir.path().to_path_buf());
+        (repo_dir, state)
+    }
+
+    const QUERY_DEFAULT_YAML: &str = r#"
+server:
+  hooks:
+    index:
+      path: hooks/server/index.mjs
+"#;
+
+    const INDEX_INSERT_TEST_ITEM: &str =
+        "Relay.db.collection('index').insert({ title: 'Test Item' });";
+
+    /// Bare repo with `server.hooks.query` CleverScript (`.cs`) and no index hook.
+    fn clever_query_fixture(config_yaml: &str, query_cs: &str) -> (tempfile::TempDir, AppState) {
+        let repo_dir = tempdir().unwrap();
+        let repo_path = repo_dir.path().join("repo.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("relay", "relay@local").unwrap();
+        let config_oid = repo.blob(config_yaml.as_bytes()).unwrap();
+        let cs_oid = repo.blob(query_cs.as_bytes()).unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert(".relay.yaml", config_oid, 0o100644).unwrap();
+        let mut tb_server = repo.treebuilder(None).unwrap();
+        tb_server
+            .insert("query.cs", cs_oid, 0o100644)
+            .unwrap();
+        let server_tid = tb_server.write().unwrap();
+        let mut tb_hooks = repo.treebuilder(None).unwrap();
+        tb_hooks.insert("server", server_tid, 0o040000).unwrap();
+        let hooks_tid = tb_hooks.write().unwrap();
+        tb.insert("hooks", hooks_tid, 0o040000).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let state = test_state(repo_dir.path().to_path_buf());
+        (repo_dir, state)
     }
 
     /// Test OPTIONS returns repository list with branches and commit heads
@@ -97,7 +157,9 @@ mod tests {
         let mut headers = host_header("repo");
         headers.insert(HEADER_BRANCH, "main".parse().unwrap());
 
-        let response = handlers::handle_get_file(State(state), headers, AxPath("hello.txt".to_string()), None).await;
+        let response =
+            handlers::handle_get_file(State(state), headers, AxPath("hello.txt".to_string()), None)
+                .await;
         let (parts, body) = response.into_response().into_parts();
 
         assert_eq!(parts.status, StatusCode::OK);
@@ -127,9 +189,13 @@ mod tests {
 
         let state = test_state(repo_dir.path().to_path_buf());
         let headers = host_header("repo");
-        let response =
-            handlers::handle_get_file(State(state), headers, AxPath("index.json".to_string()), None)
-                .await;
+        let response = handlers::handle_get_file(
+            State(state),
+            headers,
+            AxPath("index.json".to_string()),
+            None,
+        )
+        .await;
         let (parts, body) = response.into_response().into_parts();
         assert_eq!(parts.status, StatusCode::OK);
         let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
@@ -183,7 +249,9 @@ mod tests {
         let mut headers = host_header("nonexistent");
         headers.insert(HEADER_BRANCH, "main".parse().unwrap());
 
-        let response = handlers::handle_get_file(State(state), headers, AxPath("file.txt".to_string()), None).await;
+        let response =
+            handlers::handle_get_file(State(state), headers, AxPath("file.txt".to_string()), None)
+                .await;
         let (parts, _body) = response.into_response().into_parts();
 
         assert_eq!(parts.status, StatusCode::NOT_FOUND);
@@ -215,7 +283,8 @@ mod tests {
         let repo_path = repo_dir.path().join("repo.git");
         let _ = Repository::init_bare(&repo_path).unwrap();
         let h = host_header("repo");
-        let selected = helpers::repo_from_host(&repo_dir.path().to_path_buf(), Some("test.local"), &h);
+        let selected =
+            helpers::repo_from_host(&repo_dir.path().to_path_buf(), Some("test.local"), &h);
         assert_eq!(selected, Some("repo".to_string()));
         assert_eq!(
             git::bare_repo_names(&repo_dir.path().to_path_buf()),
@@ -229,7 +298,8 @@ mod tests {
         let repo_dir = tempdir().unwrap();
         let _ = std::fs::create_dir_all(repo_dir.path());
         let h = host_header("repo");
-        let selected = helpers::repo_from_host(&repo_dir.path().to_path_buf(), Some("test.local"), &h);
+        let selected =
+            helpers::repo_from_host(&repo_dir.path().to_path_buf(), Some("test.local"), &h);
         assert_eq!(selected, None);
     }
 
@@ -241,7 +311,8 @@ mod tests {
         let _ = Repository::init_bare(&repo_path).unwrap();
         let mut h = HeaderMap::new();
         h.insert(HOST, "test.local".parse().unwrap());
-        let selected = helpers::repo_from_host(&repo_dir.path().to_path_buf(), Some("test.local"), &h);
+        let selected =
+            helpers::repo_from_host(&repo_dir.path().to_path_buf(), Some("test.local"), &h);
         assert_eq!(selected, None);
     }
 
@@ -315,7 +386,8 @@ mod tests {
         let mut headers = host_header("repo");
         headers.insert(HEADER_BRANCH, "main".parse().unwrap());
 
-        let response = handlers::head_file(State(state), headers, AxPath("hello.txt".to_string()), None).await;
+        let response =
+            handlers::head_file(State(state), headers, AxPath("hello.txt".to_string()), None).await;
         let (parts, body) = response.into_response().into_parts();
 
         assert_eq!(parts.status, StatusCode::OK);
@@ -373,7 +445,8 @@ mod tests {
         let mut headers = host_header("nonexistent");
         headers.insert(HEADER_BRANCH, "main".parse().unwrap());
 
-        let response = handlers::head_file(State(state), headers, AxPath("file.txt".to_string()), None).await;
+        let response =
+            handlers::head_file(State(state), headers, AxPath("file.txt".to_string()), None).await;
         let (parts, _body) = response.into_response().into_parts();
 
         assert_eq!(parts.status, StatusCode::NOT_FOUND);
@@ -382,59 +455,11 @@ mod tests {
     /// Test QUERY method returns results from the mock database
     #[tokio::test]
     async fn test_query_method_success() {
-        let repo_dir = tempdir().unwrap();
-        let repo_path = repo_dir.path().join("repo.git");
-        let repo = Repository::init_bare(&repo_path).unwrap();
-
-        // Create initial commit with .relay.yaml
-        let sig = Signature::now("relay", "relay@local").unwrap();
-        let config_content = r#"
-server:
-  hooks:
-    index: 
-      path: hooks/server/index.mjs
-"#;
-        let config_oid = repo.blob(config_content.as_bytes()).unwrap();
-        
-        // Also create a dummy index.mjs so it exists during extraction
-        let index_js_content = "process.exit(0);";
-        let index_js_oid = repo.blob(index_js_content.as_bytes()).unwrap();
-
-        let mut tb_hooks = repo.treebuilder(None).unwrap();
-        let mut tb_server = repo.treebuilder(None).unwrap();
-        let mut tb_root = repo.treebuilder(None).unwrap();
-
-        tb_server.insert("index.mjs", index_js_oid, 0o100644).unwrap();
-        let server_tree_id = tb_server.write().unwrap();
-
-        tb_hooks.insert("server", server_tree_id, 0o040000).unwrap();
-        let hooks_tree_id = tb_hooks.insert("server", server_tree_id, 0o040000).unwrap(); // Wait, treebuilder is different?
-        // Let's use a simpler way
-        
-        let mut tb = repo.treebuilder(None).unwrap();
-        tb.insert(".relay.yaml", config_oid, 0o100644).unwrap();
-        // tb.insert("hooks/server/index.mjs", index_js_oid, 0o100644).unwrap(); // This failed because of /
-        
-        // Proper way with git2 treebuilder
-        let mut tb_server = repo.treebuilder(None).unwrap();
-        tb_server.insert("index.mjs", index_js_oid, 0o100644).unwrap();
-        let server_tid = tb_server.write().unwrap();
-        
-        let mut tb_hooks = repo.treebuilder(None).unwrap();
-        tb_hooks.insert("server", server_tid, 0o040000).unwrap();
-        let hooks_tid = tb_hooks.write().unwrap();
-        
-        tb.insert("hooks", hooks_tid, 0o040000).unwrap();
-        let tree_id = tb.write().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let _commit_oid = repo
-            .commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
-            .unwrap();
-
-        let state = test_state(repo_dir.path().to_path_buf());
+        let (_tmp, state) = query_text_fixture(QUERY_DEFAULT_YAML, INDEX_INSERT_TEST_ITEM);
 
         let mut headers = host_header("repo");
         headers.insert(HEADER_BRANCH, "main".parse().unwrap());
+        headers.insert(ACCEPT, "application/json".parse().unwrap());
 
         let query_body = serde_json::json!({
             "collection": "index",
@@ -446,15 +471,19 @@ server:
             headers,
             AxPath("query".to_string()),
             None,
-            Some(Json(query_body))
-        ).await;
+            Some(Json(query_body)),
+        )
+        .await;
 
         let (parts, body) = response.into_response().into_parts();
         assert_eq!(parts.status, StatusCode::OK);
 
-        let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec();
+        let body_bytes = axum::body::to_bytes(body, usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
         let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-        
+
         let results = json["results"].as_array().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["title"], "Test Item");
@@ -462,53 +491,11 @@ server:
 
     #[tokio::test]
     async fn test_query_method_path_success() {
-        let repo_dir = tempdir().unwrap();
-        let repo_path = repo_dir.path().join("repo.git");
-        let repo = Repository::init_bare(&repo_path).unwrap();
-
-        // Create initial commit with some data in the db
-        // For this test, index.mjs just returns search term as results for simplicity
-        let sig = Signature::now("relay", "relay@local").unwrap();
-        let config_content = r#"
-server:
-  hooks:
-    index: 
-      path: hooks/server/index.mjs
-"#;
-        let config_oid = repo.blob(config_content.as_bytes()).unwrap();
-        
-        let index_js_content = r#"
-const fs = require('fs');
-const ctx = JSON.parse(fs.readFileSync(0, 'utf8'));
-// Just echo the search query back as a result
-const query = ctx.query;
-const results = [{ title: typeof query === 'string' ? query : query.title }];
-console.log(JSON.stringify(results));
-process.exit(0);
-"#;
-        let index_js_oid = repo.blob(index_js_content.as_bytes()).unwrap();
-
-        let mut tb_server = repo.treebuilder(None).unwrap();
-        tb_server.insert("index.mjs", index_js_oid, 0o100644).unwrap();
-        let server_tid = tb_server.write().unwrap();
-        
-        let mut tb_hooks = repo.treebuilder(None).unwrap();
-        tb_hooks.insert("server", server_tid, 0o040000).unwrap();
-        let hooks_tid = tb_hooks.write().unwrap();
-        
-        let mut tb = repo.treebuilder(None).unwrap();
-        tb.insert(".relay.yaml", config_oid, 0o100644).unwrap();
-        tb.insert("hooks", hooks_tid, 0o040000).unwrap();
-        let tree_id = tb.write().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let _commit_oid = repo
-            .commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
-            .unwrap();
-
-        let state = test_state(repo_dir.path().to_path_buf());
+        let (_tmp, state) = query_text_fixture(QUERY_DEFAULT_YAML, INDEX_INSERT_TEST_ITEM);
 
         let mut headers = host_header("repo");
         headers.insert(HEADER_BRANCH, "main".parse().unwrap());
+        headers.insert(ACCEPT, "application/json".parse().unwrap());
 
         // Call with path "Test" instead of "query"
         let response = handlers::handle_query(
@@ -516,18 +503,175 @@ process.exit(0);
             headers,
             AxPath("Test".to_string()),
             None,
-            None
-        ).await;
+            None,
+        )
+        .await;
 
         let (parts, body) = response.into_response().into_parts();
         assert_eq!(parts.status, StatusCode::OK);
 
-        let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec();
+        let body_bytes = axum::body::to_bytes(body, usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
         let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-        
+
         let results = json["results"].as_array().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["title"], "Test Item");
+    }
+
+    /// Regression: missing `Accept` uses `text/csv` (not JSON).
+    #[tokio::test]
+    async fn test_query_default_accept_is_csv() {
+        let (_tmp, state) = query_text_fixture(QUERY_DEFAULT_YAML, INDEX_INSERT_TEST_ITEM);
+
+        let mut headers = host_header("repo");
+        headers.insert(HEADER_BRANCH, "main".parse().unwrap());
+
+        let response = handlers::handle_query(
+            State(state),
+            headers,
+            AxPath("query".to_string()),
+            None,
+            None,
+        )
+        .await;
+
+        let (parts, body) = response.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let ct = parts
+            .headers
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            ct.contains("text/csv"),
+            "expected text/csv Content-Type, got {ct:?}"
+        );
+
+        let text = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(
+            text.contains("Test Item"),
+            "CSV body should contain cell value: {text:?}"
+        );
+        assert!(text.contains('\n'), "expected header + row lines");
+    }
+
+    /// Regression: `Accept: application/xml` returns XML document.
+    #[tokio::test]
+    async fn test_query_accept_xml() {
+        let (_tmp, state) = query_text_fixture(QUERY_DEFAULT_YAML, INDEX_INSERT_TEST_ITEM);
+
+        let mut headers = host_header("repo");
+        headers.insert(HEADER_BRANCH, "main".parse().unwrap());
+        headers.insert(ACCEPT, "application/xml".parse().unwrap());
+
+        let response = handlers::handle_query(
+            State(state),
+            headers,
+            AxPath("query".to_string()),
+            None,
+            None,
+        )
+        .await;
+
+        let (parts, body) = response.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let xml = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(xml.starts_with("<?xml "));
+        assert!(xml.contains("<results>"));
+        assert!(xml.contains("Test Item"));
+    }
+
+    /// CleverScript `server.hooks.query` returns rows without redb / index hook.
+    #[tokio::test]
+    async fn test_query_cleverscript_returns_rows() {
+        let yaml = r#"
+server:
+  hooks:
+    query:
+      path: hooks/server/query.cs
+"#;
+        let cs = r#"
+export default function run(ctx) {
+  return { rows: [{ title: "FromClever", k: 42 }] };
+}
+"#;
+        let (_tmp, state) = clever_query_fixture(yaml, cs);
+
+        let mut headers = host_header("repo");
+        headers.insert(HEADER_BRANCH, "main".parse().unwrap());
+        headers.insert(ACCEPT, "application/json".parse().unwrap());
+
+        let query_body = serde_json::json!({
+            "collection": "articles",
+            "query": null
+        });
+
+        let response = handlers::handle_query(
+            State(state),
+            headers,
+            AxPath("query".to_string()),
+            None,
+            Some(Json(query_body)),
+        )
+        .await;
+
+        let (parts, body) = response.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let json: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(body, usize::MAX).await.unwrap()).unwrap();
+        let results = json["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["title"], "FromClever");
+        assert_eq!(results[0]["k"].as_f64(), Some(42.0));
+    }
+
+    /// Regression: `server.hooks.index.branches` excludes current branch → empty results (no JIT).
+    #[tokio::test]
+    async fn test_query_branch_allowlist_excludes_current_branch() {
+        let yaml = r#"
+server:
+  hooks:
+    index:
+      path: hooks/server/index.mjs
+      branches:
+        - dev
+"#;
+        let (_tmp, state) = query_text_fixture(yaml, "process.exit(0);");
+
+        let mut headers = host_header("repo");
+        headers.insert(HEADER_BRANCH, "main".parse().unwrap());
+        headers.insert(ACCEPT, "application/json".parse().unwrap());
+
+        let response = handlers::handle_query(
+            State(state),
+            headers,
+            AxPath("query".to_string()),
+            None,
+            None,
+        )
+        .await;
+
+        let (parts, body) = response.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let json: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(body, usize::MAX).await.unwrap()).unwrap();
+        let results = json["results"].as_array().unwrap();
+        assert!(results.is_empty());
     }
 
     #[tokio::test]
@@ -535,11 +679,8 @@ process.exit(0);
         let repo_dir = tempdir().unwrap();
         std::fs::create_dir_all(repo_dir.path()).unwrap();
         let state = test_state(repo_dir.path().to_path_buf());
-        let r1 = handlers::post_ensure_bare(
-            State(state.clone()),
-            AxPath("new-repo".to_string()),
-        )
-        .await;
+        let r1 =
+            handlers::post_ensure_bare(State(state.clone()), AxPath("new-repo".to_string())).await;
         let (parts, body) = r1.into_response().into_parts();
         assert_eq!(parts.status, StatusCode::CREATED);
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
@@ -556,7 +697,11 @@ process.exit(0);
         assert_eq!(v2["created"], false);
 
         let bare = git2::Repository::open_bare(repo_dir.path().join("new-repo.git")).unwrap();
-        let deny = bare.config().unwrap().get_string("receive.denyNonFastForwards").unwrap();
+        let deny = bare
+            .config()
+            .unwrap()
+            .get_string("receive.denyNonFastForwards")
+            .unwrap();
         assert_eq!(deny, "true");
     }
 

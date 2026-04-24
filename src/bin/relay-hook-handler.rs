@@ -1,13 +1,13 @@
+use relay_server::git::{execute_repo_hook, HookContext};
 use std::io::{self, Read};
 use std::path::PathBuf;
-use relay_server::git::{execute_repo_hook, HookContext};
-use tracing::{info, error, debug, Level};
+use tracing::{debug, error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 fn main() -> anyhow::Result<()> {
     // Force write to stderr so we see it in git daemon logs
     eprintln!("[relay-hook-handler] Hook started");
-    
+
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .finish();
@@ -16,11 +16,13 @@ fn main() -> anyhow::Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
     let hook_path = args.get(0).map(PathBuf::from).unwrap_or_default();
-    let hook_name = hook_path.file_name()
+    let hook_name = hook_path
+        .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
 
-    let git_dir = std::env::var("GIT_DIR").map(PathBuf::from)
+    let git_dir = std::env::var("GIT_DIR")
+        .map(PathBuf::from)
         .or_else(|_| std::env::current_dir())?;
 
     // Git hooks like pre-receive and post-receive get input from stdin
@@ -34,7 +36,8 @@ fn main() -> anyhow::Result<()> {
         std::env::current_dir()?.join(&git_dir)
     };
 
-    let _repo_name = absolute_git_dir.file_name()
+    let _repo_name = absolute_git_dir
+        .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown.git");
 
@@ -47,7 +50,10 @@ fn main() -> anyhow::Result<()> {
         let old_commit = parts[0].to_string();
         let new_commit = parts[1].to_string();
         let refname = parts[2].to_string();
-        let branch = refname.strip_prefix("refs/heads/").unwrap_or(&refname).to_string();
+        let branch = refname
+            .strip_prefix("refs/heads/")
+            .unwrap_or(&refname)
+            .to_string();
 
         let mut ctx = HookContext {
             repo_path: absolute_git_dir.clone(),
@@ -144,7 +150,10 @@ fn enforce_branch_rules(ctx: &HookContext) -> anyhow::Result<()> {
 fn handle_auto_push(ctx: &HookContext) -> anyhow::Result<()> {
     // Avoid infinite loops if we are already in a sync operation
     if std::env::var("RELAY_SYNC_IN_PROGRESS").is_ok() {
-        debug!("Sync already in progress, skipping auto-push for {}", ctx.branch);
+        debug!(
+            "Sync already in progress, skipping auto-push for {}",
+            ctx.branch
+        );
         return Ok(());
     }
 
@@ -168,9 +177,15 @@ fn handle_auto_push(ctx: &HookContext) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    info!("Starting auto-push for branch {} to {} peers", ctx.branch, auto_push.origin_list.len());
+    info!(
+        "Starting auto-push for branch {} to {} peers",
+        ctx.branch,
+        auto_push.origin_list.len()
+    );
 
-    let repo_name = ctx.repo_path.file_name()
+    let repo_name = ctx
+        .repo_path
+        .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown.git");
 
@@ -183,15 +198,19 @@ fn handle_auto_push(ctx: &HookContext) -> anyhow::Result<()> {
         };
 
         info!("Pushing {} to {}", ctx.branch, push_url);
-        eprintln!("[relay-hook-handler] Pushing {} to {}", ctx.branch, push_url);
-        
+        eprintln!(
+            "[relay-hook-handler] Pushing {} to {}",
+            ctx.branch, push_url
+        );
+
         // Construct git push command
         let mut cmd = std::process::Command::new("git");
-        cmd.arg("-C").arg(&ctx.repo_path)
-           .arg("push")
-           .arg(&push_url)
-           .arg(format!("{}:{}", ctx.branch, ctx.branch))
-           .env("RELAY_SYNC_IN_PROGRESS", "1");
+        cmd.arg("-C")
+            .arg(&ctx.repo_path)
+            .arg("push")
+            .arg(&push_url)
+            .arg(format!("{}:{}", ctx.branch, ctx.branch))
+            .env("RELAY_SYNC_IN_PROGRESS", "1");
 
         match cmd.output() {
             Ok(output) => {
@@ -218,12 +237,17 @@ fn handle_auto_push(ctx: &HookContext) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn extract_changed_files(repo_path: &std::path::Path, old_rev: &str, new_rev: &str) -> anyhow::Result<std::collections::HashMap<String, String>> {
+fn extract_changed_files(
+    repo_path: &std::path::Path,
+    old_rev: &str,
+    new_rev: &str,
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
     let mut files = std::collections::HashMap::new();
-    
+
     // Get list of changed files
     let output = std::process::Command::new("git")
-        .arg("-C").arg(repo_path)
+        .arg("-C")
+        .arg(repo_path)
         .arg("diff-tree")
         .arg("-r")
         .arg("--no-commit-id")
@@ -231,24 +255,25 @@ fn extract_changed_files(repo_path: &std::path::Path, old_rev: &str, new_rev: &s
         .arg(old_rev)
         .arg(new_rev)
         .output()?;
-        
+
     if !output.status.success() {
         return Ok(files);
     }
-    
+
     let paths = String::from_utf8_lossy(&output.stdout);
     for path in paths.lines().filter(|l| !l.is_empty()) {
         // Extract content for each path
         let content_out = std::process::Command::new("git")
-            .arg("-C").arg(repo_path)
+            .arg("-C")
+            .arg(repo_path)
             .arg("show")
             .arg(format!("{}:{}", new_rev, path))
             .output()?;
-            
+
         if content_out.status.success() {
             files.insert(path.to_string(), base64::encode(&content_out.stdout));
         }
     }
-    
+
     Ok(files)
 }

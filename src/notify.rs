@@ -183,7 +183,11 @@ fn format_commit_update_text(
     let mut lines: Vec<String> = Vec::new();
     lines.push("[Relay] commit_update".into());
     lines.push(format!("source: {}", source));
-    lines.push(format!("repo: {}  branch: {}", normalize_repo_slug(repo), branch));
+    lines.push(format!(
+        "repo: {}  branch: {}",
+        normalize_repo_slug(repo),
+        branch
+    ));
     if let Some(id) = relay_server_id.filter(|s| !s.is_empty()) {
         lines.push(format!("relay_server_id: {}", id));
     }
@@ -195,7 +199,11 @@ fn format_commit_update_text(
     lines.join("\n")
 }
 
-pub async fn post_slack_webhook(client: &reqwest::Client, url: &str, text: &str) -> Result<(), String> {
+pub async fn post_slack_webhook(
+    client: &reqwest::Client,
+    url: &str,
+    text: &str,
+) -> Result<(), String> {
     let body = serde_json::json!({ "text": text });
     let resp = client
         .post(url)
@@ -218,7 +226,11 @@ pub fn post_slack_webhook_blocking(url: &str, text: &str) -> Result<(), String> 
         .build()
         .map_err(|e| e.to_string())?;
     let body = serde_json::json!({ "text": text });
-    let resp = client.post(url).json(&body).send().map_err(|e| e.to_string())?;
+    let resp = client
+        .post(url)
+        .json(&body)
+        .send()
+        .map_err(|e| e.to_string())?;
     if resp.status().is_success() {
         Ok(())
     } else {
@@ -329,14 +341,7 @@ pub fn commit_update_notify_blocking(
         debug!(repo, sha, "Slack commit_update skipped (dedup)");
         return;
     }
-    let text = format_commit_update_text(
-        source,
-        repo,
-        branch,
-        sha,
-        relay_server_id,
-        node_fqdn,
-    );
+    let text = format_commit_update_text(source, repo, branch, sha, relay_server_id, node_fqdn);
     if post_slack_webhook_blocking(&url, &text).is_ok() {
         mark_commit_update_seen(repo, sha);
     }
@@ -358,10 +363,7 @@ pub fn notify_server_started(node_fqdn: Option<&str>, relay_server_id: Option<&s
 
 pub fn notify_hook_error(context: &str, message: &str) {
     let msg: String = message.chars().take(1500).collect();
-    let text = format!(
-        "[Relay] hook_error\ncontext: {}\n{}",
-        context, msg
-    );
+    let text = format!("[Relay] hook_error\ncontext: {}\n{}", context, msg);
     spawn_slack_text_blocking(text);
 }
 
@@ -384,10 +386,7 @@ pub fn notify_pre_receive_rejection(
 
 pub fn notify_auto_push_error(origin: &str, detail: &str) {
     let d: String = detail.chars().take(1200).collect();
-    let text = format!(
-        "[Relay] auto_push_failed\norigin: {}\n{}",
-        origin, d
-    );
+    let text = format!("[Relay] auto_push_failed\norigin: {}\n{}", origin, d);
     spawn_slack_text_blocking(text);
 }
 

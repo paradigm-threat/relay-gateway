@@ -42,3 +42,10 @@ server:
       path: hooks/server/pre-receive.mjs
     index:
       path: hooks/server/index.mjs
+      # Optional: only these branches get JIT index + QUERY (omit = all branches)
+      # branches: [ "main" ]
+      # Optional: QUERY row projection / column order (CSV, JSON, XML)
+      # query:
+      #   collections:
+      #     index:
+      #       fields: [ "title", "_meta_dir", "_branch" ]

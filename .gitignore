@@ -41,6 +41,23 @@ yarn-error.log*
 dist/linux-amd64/
 dist/linux-arm64/
 
+# Local / dev logs (nested names may not match *.log)
+logs/
+
+# Python (scripts helpers)
+**/__pycache__/
+
+# Vendored crates: keep only Rust sources in git (avoid JNI .so, wasm, Gradle)
+relay-runtime/android/
+relay-runtime/gradle/
+relay-runtime/.gradle/
+relay-runtime/examples/
+relay-runtime/js/
+relay-runtime/*.gradle
+relay-runtime/gradlew
+relay-runtime/settings.gradle
+relay-runtime/gradle.properties
+
 # Misc caches
 **/.cache/
 .parcel-cache/

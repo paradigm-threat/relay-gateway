@@ -117,9 +117,10 @@ pub fn validate_peer_host(raw: &str) -> Result<String, &'static str> {
     if s.contains("://") || s.contains('/') || s.contains('@') || s.contains(':') {
         return Err("peer must be a hostname only (no scheme, port, path, or user)");
     }
-    if !s.chars().all(|c| {
-        c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_'
-    }) {
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+    {
         return Err("peer host contains invalid characters");
     }
     if s.starts_with('.') || s.ends_with('.') || s.contains("..") {
@@ -193,10 +194,7 @@ pub fn fetch_from_peer_url(
         .map_err(|e| PeerFetchError::Other(format!("open bare repo: {}", e)))?;
 
     let refname = format!("refs/heads/{}", branch);
-    let before = repo
-        .refname_to_id(&refname)
-        .ok()
-        .map(|o| o.to_string());
+    let before = repo.refname_to_id(&refname).ok().map(|o| o.to_string());
 
     let mut remote = repo
         .remote_anonymous(remote_url)
@@ -208,10 +206,7 @@ pub fn fetch_from_peer_url(
         .fetch(&[refspec.as_str()], None, None)
         .map_err(|e| PeerFetchError::Other(format!("fetch: {}", e)))?;
 
-    let after = repo
-        .refname_to_id(&refname)
-        .ok()
-        .map(|o| o.to_string());
+    let after = repo.refname_to_id(&refname).ok().map(|o| o.to_string());
 
     if let Some(ref c) = cfg {
         if let Err(msg) = authorized_repos::validate_anchor(&repo, repo_name, c) {
@@ -232,7 +227,10 @@ pub fn fetch_from_peer_url(
             .unwrap_or("0000000000000000000000000000000000000000");
         if let Err(msg) = crate::git::enforce_push_range(bare_path, old_sid, a, branch) {
             authorized_repos::rollback_branch(&repo, branch, before.as_deref());
-            return Err(PeerFetchError::Other(format!("peer fetch signing policy: {}", msg)));
+            return Err(PeerFetchError::Other(format!(
+                "peer fetch signing policy: {}",
+                msg
+            )));
         }
     }
 
@@ -295,7 +293,8 @@ pub fn run_peer_fetch(
 
     if let Some(ref sha_raw) = body.new_sha {
         let want = normalize_new_sha(sha_raw).map_err(|e| PeerFetchError::Other(e.to_string()))?;
-        let repo = Repository::open_bare(&bare_path).map_err(|e| PeerFetchError::Other(e.to_string()))?;
+        let repo =
+            Repository::open_bare(&bare_path).map_err(|e| PeerFetchError::Other(e.to_string()))?;
         let refname = format!("refs/heads/{}", branch);
         if let Ok(oid) = repo.refname_to_id(&refname) {
             if oid.to_string().to_ascii_lowercase() == want {
@@ -452,11 +451,7 @@ pub async fn post_peer_hook(
 
     match inner {
         Ok(r) => {
-            if r.ok
-                && !r.skipped
-                && r.after.is_some()
-                && r.before.as_ref() != r.after.as_ref()
-            {
+            if r.ok && !r.skipped && r.after.is_some() && r.before.as_ref() != r.after.as_ref() {
                 if let Some(ref sha) = r.after {
                     notify::spawn_commit_update_notify(
                         "peer_fetch",
@@ -477,16 +472,18 @@ pub async fn post_peer_hook(
             after_tip,
             trigger_peer,
         }) => {
-            mesh_events::spawn_publish_pull_validation_failure(mesh_events::PullValidationPublishCtx {
-                source: "peer_hook".into(),
-                repo: repo.clone(),
-                branch: branch.clone(),
-                error: message.clone(),
-                relay_server_id: state.relay_server_id.clone(),
-                node_fqdn: state.node_fqdn.clone(),
-                after_tip,
-                trigger_peer,
-            });
+            mesh_events::spawn_publish_pull_validation_failure(
+                mesh_events::PullValidationPublishCtx {
+                    source: "peer_hook".into(),
+                    repo: repo.clone(),
+                    branch: branch.clone(),
+                    error: message.clone(),
+                    relay_server_id: state.relay_server_id.clone(),
+                    node_fqdn: state.node_fqdn.clone(),
+                    after_tip,
+                    trigger_peer,
+                },
+            );
             (
                 StatusCode::FORBIDDEN,
                 Json(PeerHookResponse {
@@ -503,16 +500,18 @@ pub async fn post_peer_hook(
                 .into_response()
         }
         Err(PeerFetchError::Other(msg)) if msg.contains("peer fetch signing policy") => {
-            mesh_events::spawn_publish_peer_signing_policy_failure(mesh_events::PullValidationPublishCtx {
-                source: "peer_hook".into(),
-                repo: repo_err.clone(),
-                branch: branch_err.clone(),
-                error: msg.clone(),
-                relay_server_id: state.relay_server_id.clone(),
-                node_fqdn: state.node_fqdn.clone(),
-                after_tip: None,
-                trigger_peer: Some(peer_err.clone()),
-            });
+            mesh_events::spawn_publish_peer_signing_policy_failure(
+                mesh_events::PullValidationPublishCtx {
+                    source: "peer_hook".into(),
+                    repo: repo_err.clone(),
+                    branch: branch_err.clone(),
+                    error: msg.clone(),
+                    relay_server_id: state.relay_server_id.clone(),
+                    node_fqdn: state.node_fqdn.clone(),
+                    after_tip: None,
+                    trigger_peer: Some(peer_err.clone()),
+                },
+            );
             (
                 StatusCode::FORBIDDEN,
                 Json(PeerHookResponse {
@@ -633,14 +632,7 @@ mod tests {
             },
         );
 
-        let r = fetch_from_peer_url(
-            &downstream,
-            &url,
-            "downstream",
-            "main",
-            Some(&cfg),
-        )
-        .unwrap();
+        let r = fetch_from_peer_url(&downstream, &url, "downstream", "main", Some(&cfg)).unwrap();
         assert!(r.ok);
         assert!(!r.skipped);
         assert!(r.after.is_some());

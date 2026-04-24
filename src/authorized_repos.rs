@@ -60,7 +60,10 @@ pub fn load_from_path(path: &Path) -> anyhow::Result<AuthorizedReposFile> {
 /// Ensures `trust_root` is an ancestor of the catalog checkout `HEAD` (same lineage as
 /// catalog `relayRootCommit` checks). Use the canonical **root** of `relay-master`:
 /// `git rev-list --max-parents=0 main` (pick the policy root if there are several).
-pub fn verify_master_catalog_trust_root(catalog_path: &Path, trust_root_hex: &str) -> anyhow::Result<()> {
+pub fn verify_master_catalog_trust_root(
+    catalog_path: &Path,
+    trust_root_hex: &str,
+) -> anyhow::Result<()> {
     let repo = git2::Repository::open(catalog_path)
         .with_context(|| format!("open RELAY_MASTER_CATALOG_PATH {}", catalog_path.display()))?;
     let trust = git2::Oid::from_str(trust_root_hex.trim()).context("RELAY_MASTER_TRUST_ROOT")?;
@@ -70,9 +73,12 @@ pub fn verify_master_catalog_trust_root(catalog_path: &Path, trust_root_hex: &st
         .peel_to_commit()
         .context("catalog HEAD peel")?
         .id();
-    let base = repo
-        .merge_base(trust, head_oid)
-        .with_context(|| format!("merge-base(trust_root, HEAD) for {}", catalog_path.display()))?;
+    let base = repo.merge_base(trust, head_oid).with_context(|| {
+        format!(
+            "merge-base(trust_root, HEAD) for {}",
+            catalog_path.display()
+        )
+    })?;
     if base != trust {
         anyhow::bail!(
             "RELAY_MASTER_TRUST_ROOT {} is not an ancestor of catalog HEAD {} — wrong relay-master checkout?",
@@ -84,7 +90,10 @@ pub fn verify_master_catalog_trust_root(catalog_path: &Path, trust_root_hex: &st
 }
 
 /// Build allowlist from `relay-master` checkout: `relay-catalog.json` + synthetic `relay-master` row from `HEAD`.
-pub fn load_from_master_catalog(catalog_path: &Path, relay_server_id: &str) -> anyhow::Result<AuthorizedReposFile> {
+pub fn load_from_master_catalog(
+    catalog_path: &Path,
+    relay_server_id: &str,
+) -> anyhow::Result<AuthorizedReposFile> {
     let catalog_json = catalog_path.join("relay-catalog.json");
     if !catalog_json.is_file() {
         anyhow::bail!(
@@ -99,7 +108,11 @@ pub fn load_from_master_catalog(catalog_path: &Path, relay_server_id: &str) -> a
     let repo = git2::Repository::open(catalog_path)
         .with_context(|| format!("open catalog {}", catalog_path.display()))?;
     let head_ref = repo.head().context("catalog HEAD")?;
-    let tip = head_ref.peel_to_commit().context("catalog HEAD commit")?.id().to_string();
+    let tip = head_ref
+        .peel_to_commit()
+        .context("catalog HEAD commit")?
+        .id()
+        .to_string();
     let branch = head_ref
         .symbolic_target()
         .map(|t| t.strip_prefix("refs/heads/").unwrap_or(t).to_string())
@@ -140,7 +153,11 @@ pub fn load_from_master_catalog(catalog_path: &Path, relay_server_id: &str) -> a
 }
 
 /// When allowlist is active: repo must be listed (server id checked at startup).
-pub fn ensure_pull_allowed(cfg: &AuthorizedReposFile, _relay_server_id: Option<&str>, repo_name: &str) -> Result<(), String> {
+pub fn ensure_pull_allowed(
+    cfg: &AuthorizedReposFile,
+    _relay_server_id: Option<&str>,
+    repo_name: &str,
+) -> Result<(), String> {
     if cfg.repos.is_empty() {
         return Err(
             "authorized-repos file has no repos — configure at least one repo entry".into(),
@@ -153,13 +170,17 @@ pub fn ensure_pull_allowed(cfg: &AuthorizedReposFile, _relay_server_id: Option<&
 }
 
 /// After fetch: branch tip must contain anchor_commit in its history.
-pub fn validate_anchor(repo: &git2::Repository, repo_name: &str, cfg: &AuthorizedReposFile) -> Result<(), String> {
+pub fn validate_anchor(
+    repo: &git2::Repository,
+    repo_name: &str,
+    cfg: &AuthorizedReposFile,
+) -> Result<(), String> {
     let anchor = cfg
         .repos
         .get(repo_name)
         .ok_or_else(|| format!("repo '{}' missing from allowlist", repo_name))?;
-    let anchor_oid =
-        git2::Oid::from_str(anchor.anchor_commit.trim()).map_err(|e| format!("bad anchor_commit: {}", e))?;
+    let anchor_oid = git2::Oid::from_str(anchor.anchor_commit.trim())
+        .map_err(|e| format!("bad anchor_commit: {}", e))?;
     let refname = format!("refs/heads/{}", anchor.branch);
     let head_oid = repo
         .refname_to_id(&refname)
@@ -223,14 +244,7 @@ mod tests {
         let t2 = tb2.write().unwrap();
         let tree2 = repo.find_tree(t2).unwrap();
         let c2 = repo
-            .commit(
-                Some("refs/heads/main"),
-                &sig,
-                &sig,
-                "2",
-                &tree2,
-                &[&p1],
-            )
+            .commit(Some("refs/heads/main"), &sig, &sig, "2", &tree2, &[&p1])
             .unwrap();
 
         let mut cfg = AuthorizedReposFile {
@@ -254,9 +268,7 @@ mod tests {
         tb3.insert("y", orphan, 0o100644).unwrap();
         let t3 = tb3.write().unwrap();
         let tree3 = repo.find_tree(t3).unwrap();
-        let evil = repo
-            .commit(None, &sig, &sig, "evil", &tree3, &[])
-            .unwrap();
+        let evil = repo.commit(None, &sig, &sig, "evil", &tree3, &[]).unwrap();
         repo.reference("refs/heads/main", evil, true, "m").unwrap();
         cfg.repos.get_mut("r").unwrap().anchor_commit = c1.to_string();
         assert!(validate_anchor(&repo, "r", &cfg).is_err());

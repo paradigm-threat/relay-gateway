@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::process::Command;
-use tracing::{error, debug};
+use tracing::{debug, error};
 
 pub struct HookContext {
     pub repo_path: PathBuf,
@@ -13,13 +13,11 @@ pub struct HookContext {
     pub files: std::collections::HashMap<String, String>,
 }
 
-pub fn execute_repo_hook(
-    ctx: &HookContext,
-    hook_name: &str,
-) -> anyhow::Result<bool> {
+pub fn execute_repo_hook(ctx: &HookContext, hook_name: &str) -> anyhow::Result<bool> {
     // Read .relay.yaml from the NEW_COMMIT using git CLI (quarantine-aware)
     let config_output = Command::new("git")
-        .arg("-C").arg(&ctx.repo_path)
+        .arg("-C")
+        .arg(&ctx.repo_path)
         .arg("show")
         .arg(format!("{}:.relay.yaml", ctx.new_commit))
         .output()?;
@@ -28,39 +26,62 @@ pub fn execute_repo_hook(
         let content = String::from_utf8_lossy(&config_output.stdout);
         serde_yaml::from_str(&content)?
     } else {
-        debug!("No .relay.yaml found in commit {}, skipping hooks", ctx.new_commit);
+        debug!(
+            "No .relay.yaml found in commit {}, skipping hooks",
+            ctx.new_commit
+        );
         return Ok(true);
     };
 
     // Find the hook path in config
-    let hook_path = match hook_name {
-        "pre-commit" | "pre-receive" | "post-receive" | "index" => {
-            config.server.as_ref()
-                .and_then(|s| s.hooks.as_ref())
-                .and_then(|h| h.get(hook_name))
-                .map(|p| p.path.as_str())
-        },
+    let hook_entry = match hook_name {
+        "pre-commit" | "pre-receive" | "post-receive" | "index" => config
+            .server
+            .as_ref()
+            .and_then(|s| s.hooks.as_ref())
+            .and_then(|h| h.get(hook_name)),
         _ => None,
     };
 
-    let hook_path = match hook_path {
-        Some(p) => p,
+    if hook_name == "index" {
+        if let Some(hp) = hook_entry {
+            if let Some(ref br) = hp.branches {
+                if !br.iter().any(|b| b == &ctx.branch) {
+                    debug!(
+                        "index hook skipped: branch {:?} not in configured list {:?}",
+                        ctx.branch, br
+                    );
+                    return Ok(true);
+                }
+            }
+        }
+    }
+
+    let hook_path = match hook_entry {
+        Some(p) => p.path.as_str(),
         None => {
             debug!("Hook '{}' not configured in .relay.yaml", hook_name);
-            return Ok(true); 
+            return Ok(true);
         }
     };
 
     // Create a temporary directory for the whole hook environment
     let tmp_dir = tempfile::Builder::new()
-        .prefix(&format!("relay-hook-env-{}-{}-", hook_name, &ctx.new_commit[..8]))
+        .prefix(&format!(
+            "relay-hook-env-{}-{}-",
+            hook_name,
+            &ctx.new_commit[..8]
+        ))
         .tempdir()?;
     let tmp_dir_path = tmp_dir.path().to_path_buf();
 
     // Extract the hook's directory from the tree using git archive (quarantine-aware)
-    let hook_dir_path = std::path::Path::new(hook_path).parent().unwrap_or(std::path::Path::new(""));
+    let hook_dir_path = std::path::Path::new(hook_path)
+        .parent()
+        .unwrap_or(std::path::Path::new(""));
     let archive_output = Command::new("git")
-        .arg("-C").arg(&ctx.repo_path)
+        .arg("-C")
+        .arg(&ctx.repo_path)
         .arg("archive")
         .arg("--format=tar")
         .arg(&ctx.new_commit)
@@ -70,10 +91,11 @@ pub fn execute_repo_hook(
     if archive_output.status.success() {
         let mut child = Command::new("tar")
             .arg("-x")
-            .arg("-C").arg(&tmp_dir_path)
+            .arg("-C")
+            .arg(&tmp_dir_path)
             .stdin(std::process::Stdio::piped())
             .spawn()?;
-        
+
         if let Some(mut stdin) = child.stdin.take() {
             use std::io::Write;
             stdin.write_all(&archive_output.stdout)?;
@@ -86,7 +108,10 @@ pub fn execute_repo_hook(
     // So the script will be at tmp_dir/hook_path
     let tmp_script_path = tmp_dir_path.join(hook_path);
     if !tmp_script_path.exists() {
-        error!("Hook script '{}' not found in commit after extraction", hook_path);
+        error!(
+            "Hook script '{}' not found in commit after extraction",
+            hook_path
+        );
         return Ok(true);
     }
 

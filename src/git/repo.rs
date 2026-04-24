@@ -76,7 +76,10 @@ pub fn read_git_config(repo: &Repository, rev: &str) -> Option<crate::types::Git
 ///
 /// During **`pre-receive`**, new objects live in a quarantine directory (`GIT_OBJECT_DIRECTORY` /
 /// alternates). **libgit2** often cannot resolve those commits; the Git CLI can.
-pub fn read_git_config_from_revision(repo_path: &Path, rev: &str) -> Option<crate::types::GitConfig> {
+pub fn read_git_config_from_revision(
+    repo_path: &Path,
+    rev: &str,
+) -> Option<crate::types::GitConfig> {
     let spec = format!("{}:.relay.yaml", rev);
     let out = Command::new("git")
         .arg("-C")

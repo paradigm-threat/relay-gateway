@@ -10,7 +10,11 @@ fn normalize_fqdn(s: &str) -> String {
 
 /// Extract repo slug from `Host` when it matches `{repo}.{node_fqdn}`.
 /// `repo` must be a single DNS label (no dots). Returns `None` if `host == node_fqdn` (no repo prefix).
-pub fn repo_slug_from_host(host_header: &str, node_fqdn: &str, bare_names: &[String]) -> Option<String> {
+pub fn repo_slug_from_host(
+    host_header: &str,
+    node_fqdn: &str,
+    bare_names: &[String],
+) -> Option<String> {
     let host = normalize_fqdn(host_header.split(':').next().unwrap_or(host_header));
     let node = normalize_fqdn(node_fqdn);
     if node.is_empty() {
@@ -81,7 +85,10 @@ pub fn repo_from_host_or_default(
 /// Resolve the branch name from `X-Relay-Branch` header only, defaults to **main**.
 /// For HTTP handlers that know the repo, prefer [`branch_for_request`] so the bare repo's `HEAD` is used.
 pub fn branch_from(headers: &HeaderMap) -> String {
-    if let Some(h) = headers.get(crate::types::HEADER_BRANCH).and_then(|v| v.to_str().ok()) {
+    if let Some(h) = headers
+        .get(crate::types::HEADER_BRANCH)
+        .and_then(|v| v.to_str().ok())
+    {
         if !h.is_empty() {
             return h.to_string();
         }
@@ -91,8 +98,15 @@ pub fn branch_from(headers: &HeaderMap) -> String {
 
 /// Branch for a request: optional `X-Relay-Branch`, else bare repo `HEAD` target, else **`main`**.
 /// Lets `GET http://repo.node/file` work when the default branch is **`master`** (no extra headers).
-pub fn branch_for_request(headers: &HeaderMap, repo_root: &PathBuf, repo_name: Option<&str>) -> String {
-    if let Some(h) = headers.get(crate::types::HEADER_BRANCH).and_then(|v| v.to_str().ok()) {
+pub fn branch_for_request(
+    headers: &HeaderMap,
+    repo_root: &PathBuf,
+    repo_name: Option<&str>,
+) -> String {
+    if let Some(h) = headers
+        .get(crate::types::HEADER_BRANCH)
+        .and_then(|v| v.to_str().ok())
+    {
         if !h.is_empty() {
             return h.to_string();
         }

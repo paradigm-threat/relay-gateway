@@ -59,8 +59,13 @@ pub async fn get_swagger_ui() -> impl IntoResponse {
     (StatusCode::OK, [("Content-Type", "text/html")], html)
 }
 
-pub(crate) fn read_startup_catalog_sync_status(repo_path: &std::path::Path) -> Option<serde_json::Value> {
-    let state_file = repo_path.parent()?.join("state").join("startup_catalog_sync.json");
+pub(crate) fn read_startup_catalog_sync_status(
+    repo_path: &std::path::Path,
+) -> Option<serde_json::Value> {
+    let state_file = repo_path
+        .parent()?
+        .join("state")
+        .join("startup_catalog_sync.json");
     let s = std::fs::read_to_string(&state_file).ok()?;
     serde_json::from_str(&s).ok()
 }
@@ -173,10 +178,7 @@ pub(crate) fn summarize_features(m: &std::sync::Arc<serde_json::Value>) -> serde
 /// POST /git-pull — fetch from `origin` into a **bare** repo.
 /// Target resolution: **`Host: {repo}.{node_fqdn}`** (same as HTTP file serving). No `?repo=` or `X-Relay-Repo`.
 /// Legacy: if `RELAY_REPO_PATH` is itself a bare `*.git` directory and no per-repo dirs exist, that repo is used.
-pub async fn post_git_pull(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+pub async fn post_git_pull(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     #[derive(Serialize)]
     struct GitPullResponse {
         success: bool,
@@ -226,9 +228,11 @@ pub async fn post_git_pull(
     };
 
     if let Some(ref cfg) = state.authorized_repos {
-        if let Err(msg) =
-            authorized_repos::ensure_pull_allowed(cfg, state.relay_server_id.as_deref(), &repo_label)
-        {
+        if let Err(msg) = authorized_repos::ensure_pull_allowed(
+            cfg,
+            state.relay_server_id.as_deref(),
+            &repo_label,
+        ) {
             tracing::warn!("git-pull denied: {}", msg);
             return (
                 StatusCode::FORBIDDEN,
@@ -528,13 +532,23 @@ pub async fn post_github_hook(
 
     let full_repo_path = state.repo_path.join(format!("{}.git", repo_name));
     if !full_repo_path.exists() {
-        return (StatusCode::NOT_FOUND, format!("Repository {}.git not found", repo_name)).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            format!("Repository {}.git not found", repo_name),
+        )
+            .into_response();
     }
 
     // Identify if GitHub hooks are enabled in .relay.yaml
     let repo = match git2::Repository::open_bare(&full_repo_path) {
         Ok(r) => r,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to open repo: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to open repo: {}", e),
+            )
+                .into_response()
+        }
     };
 
     let relay_config = match git::read_relay_config(&repo, "main") {
@@ -544,22 +558,40 @@ pub async fn post_github_hook(
 
     let gh_config = match relay_config.git.and_then(|g| g.github) {
         Some(gh) if gh.enabled => gh,
-        _ => return (StatusCode::FORBIDDEN, "GitHub hooks not enabled in .relay.yaml").into_response(),
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                "GitHub hooks not enabled in .relay.yaml",
+            )
+                .into_response()
+        }
     };
 
-    tracing::info!("GitHub hook received for repo: {}, path: {}", repo_name, gh_config.path);
+    tracing::info!(
+        "GitHub hook received for repo: {}, path: {}",
+        repo_name,
+        gh_config.path
+    );
 
     // Trigger git pull (fetch + merge/reset)
     // For bare repos, we just fetch
     let res = match repo.find_remote("origin") {
         Ok(mut remote) => {
             if let Err(e) = remote.fetch(&["main"], None, None) {
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("Fetch failed: {}", e)).into_response()
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Fetch failed: {}", e),
+                )
+                    .into_response()
             } else {
                 (StatusCode::OK, "GitHub hook processed, repository fetched").into_response()
             }
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Remote 'origin' not found: {}", e)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Remote 'origin' not found: {}", e),
+        )
+            .into_response(),
     };
     res
 }
@@ -588,9 +620,7 @@ pub async fn post_ensure_bare(
                 created: false,
                 repo: repo.clone(),
                 path: String::new(),
-                error: Some(
-                    "RELAY_GIT_ENSURE_BARE_ENABLED is disabled for this node".to_string(),
-                ),
+                error: Some("RELAY_GIT_ENSURE_BARE_ENABLED is disabled for this node".to_string()),
             }),
         )
             .into_response();

@@ -1,23 +1,58 @@
-use std::path::PathBuf;
-use tracing::{info, debug};
 use crate::git::hooks::{execute_repo_hook, HookContext};
-use std::sync::{Mutex, OnceLock};
-use std::collections::HashSet;
+use crate::git::index_store;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use tracing::{debug, info};
 
-static ONGOING_INDEXING: OnceLock<Mutex<HashSet<(PathBuf, String)>>> = OnceLock::new();
+type RepoBranchLocks = Mutex<HashMap<(PathBuf, String), Arc<Mutex<()>>>>;
 
-fn get_indexing_lock() -> &'static Mutex<HashSet<(PathBuf, String)>> {
-    ONGOING_INDEXING.get_or_init(|| Mutex::new(HashSet::new()))
+static BRANCH_LOCKS: OnceLock<RepoBranchLocks> = OnceLock::new();
+
+/// Serialize QUERY / JIT indexing on the same `(bare repo path, branch)` to avoid torn reads.
+pub fn branch_operation_mutex(repo: PathBuf, branch: String) -> Arc<Mutex<()>> {
+    let mut map = BRANCH_LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    map.entry((repo, branch))
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
 }
 
-pub fn ensure_indexed(ctx: &HookContext) -> anyhow::Result<()> {
-    let branch_bytes = if ctx.branch.is_empty() { "main".as_bytes() } else { ctx.branch.as_bytes() };
+/// Hex prefix used under `.relay_data/branches/<hex>/`.
+pub fn branch_hash_short(branch: &str) -> String {
+    let branch_bytes = if branch.is_empty() {
+        "main".as_bytes()
+    } else {
+        branch.as_bytes()
+    };
     let branch_hash = hex::encode(branch_bytes);
-    let branch_hash_short = if branch_hash.len() > 12 { &branch_hash[..12] } else { &branch_hash };
-    
-    let relay_data_path = ctx.repo_path.join(".relay_data");
-    let db_path = relay_data_path.join("branches").join(branch_hash_short).join("index.db.json");
-    
+    if branch_hash.len() > 12 {
+        branch_hash[..12].to_string()
+    } else {
+        branch_hash
+    }
+}
+
+/// `.relay_data/branches/<hash>/` for this branch.
+pub fn branch_data_dir(repo_path: &Path, branch: &str) -> PathBuf {
+    repo_path
+        .join(".relay_data")
+        .join("branches")
+        .join(branch_hash_short(branch))
+}
+
+pub fn branch_index_paths(repo_path: &Path, branch: &str) -> (PathBuf, PathBuf) {
+    let d = branch_data_dir(repo_path, branch);
+    (d.join("index.db.json"), d.join("index.redb"))
+}
+
+/// Run index hook if `indexed_head` in JSON lags `HEAD`; then sync JSON → redb.
+/// Caller should hold [`branch_operation_mutex`] for this repo/branch when serving QUERY.
+pub fn ensure_indexed(ctx: &HookContext) -> anyhow::Result<()> {
+    let (db_path, redb_path) = branch_index_paths(&ctx.repo_path, &ctx.branch);
+
     let mut indexed_head = String::new();
     if db_path.exists() {
         if let Ok(content) = std::fs::read_to_string(&db_path) {
@@ -30,40 +65,26 @@ pub fn ensure_indexed(ctx: &HookContext) -> anyhow::Result<()> {
             }
         }
     }
-    
+
     if indexed_head != ctx.new_commit {
-        let lock_key = (ctx.repo_path.clone(), ctx.branch.clone());
-        
-        {
-            let mut ongoing = get_indexing_lock().lock().unwrap();
-            if ongoing.contains(&lock_key) {
-                debug!("JIT indexing already in progress for branch {} in repo {:?}", ctx.branch, ctx.repo_path);
-                // Drop lock and wait a bit or just return?
-                // Ideally we wait for the other one to finish, but for simplicity we can just return 
-                // and the query caller will try to read a potentially partially written file or wait.
-                // But better to wait here.
-            } else {
-                ongoing.insert(lock_key.clone());
-            }
-        }
-        
-        // If we want to wait, we need a better primitive than HashSet.
-        // But for "hardening", preventing the parallel execution is the first step.
-        
-        info!("Branch {} is stale ({} != {}). Running JIT indexing...", ctx.branch, indexed_head, ctx.new_commit);
-        
+        info!(
+            "Branch {} is stale ({} != {}). Running JIT indexing...",
+            ctx.branch, indexed_head, ctx.new_commit
+        );
+
         let result = execute_repo_hook(ctx, "index");
-        
-        {
-            let mut ongoing = get_indexing_lock().lock().unwrap();
-            ongoing.remove(&lock_key);
-        }
-        
         result?;
         debug!("JIT indexing completed for branch {}", ctx.branch);
     } else {
-        debug!("Branch {} is up to date (head: {})", ctx.branch, ctx.new_commit);
+        debug!(
+            "Branch {} is up to date (head: {})",
+            ctx.branch, ctx.new_commit
+        );
     }
-    
+
+    if db_path.exists() {
+        index_store::sync_json_to_redb(&db_path, &redb_path)?;
+    }
+
     Ok(())
 }

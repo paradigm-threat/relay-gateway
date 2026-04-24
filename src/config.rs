@@ -1,12 +1,12 @@
-use std::path::{Path, PathBuf};
-use std::net::SocketAddr;
-use std::str::FromStr;
-use std::sync::Arc;
-use crate::types::AppState;
 use crate::authorized_repos;
 use crate::cli::{Cli, Commands};
-use axum_server::tls_rustls::RustlsConfig;
+use crate::types::AppState;
 use anyhow::Result;
+use axum_server::tls_rustls::RustlsConfig;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::sync::Arc;
 
 pub struct Config {
     pub state: AppState,
@@ -43,26 +43,30 @@ impl Config {
             }
         }
 
-        let http_addr: SocketAddr = if let Some(bind) = bind_cli.or_else(|| std::env::var("RELAY_BIND").ok()) {
-            SocketAddr::from_str(&bind)?
-        } else {
-            let port = std::env::var("RELAY_HTTP_PORT").ok().and_then(|s| s.parse::<u16>().ok()).unwrap_or(80);
-            SocketAddr::from_str(&format!("0.0.0.0:{}", port))?
-        };
+        let http_addr: SocketAddr =
+            if let Some(bind) = bind_cli.or_else(|| std::env::var("RELAY_BIND").ok()) {
+                SocketAddr::from_str(&bind)?
+            } else {
+                let port = std::env::var("RELAY_HTTP_PORT")
+                    .ok()
+                    .and_then(|s| s.parse::<u16>().ok())
+                    .unwrap_or(80);
+                SocketAddr::from_str(&format!("0.0.0.0:{}", port))?
+            };
 
-        let https_port = std::env::var("RELAY_HTTPS_PORT").ok().and_then(|s| s.parse::<u16>().ok()).unwrap_or(443);
+        let https_port = std::env::var("RELAY_HTTPS_PORT")
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(443);
         let tls_cert = std::env::var("RELAY_TLS_CERT").ok();
         let tls_key = std::env::var("RELAY_TLS_KEY").ok();
-        let acme_dir = std::env::var("RELAY_ACME_DIR").unwrap_or_else(|_| "/var/www/certbot".to_string());
+        let acme_dir =
+            std::env::var("RELAY_ACME_DIR").unwrap_or_else(|_| "/var/www/certbot".to_string());
 
         let node_fqdn = std::env::var("RELAY_PUBLIC_HOSTNAME")
             .or_else(|_| std::env::var("RELAY_NODE_FQDN"))
             .ok()
-            .map(|s| {
-                s.trim()
-                    .trim_end_matches('.')
-                    .to_ascii_lowercase()
-            })
+            .map(|s| s.trim().trim_end_matches('.').to_ascii_lowercase())
             .filter(|s| !s.is_empty());
 
         let relay_server_id = std::env::var("RELAY_SERVER_ID")
@@ -80,7 +84,10 @@ impl Config {
             .filter(|s| !s.trim().is_empty())
             .map(|s| PathBuf::from(s.trim()));
 
-        let authorized_repos: Option<authorized_repos::AuthorizedReposFile> = match (&catalog_path, &yaml_path) {
+        let authorized_repos: Option<authorized_repos::AuthorizedReposFile> = match (
+            &catalog_path,
+            &yaml_path,
+        ) {
             (Some(_), Some(_)) => {
                 anyhow::bail!(
                     "set only one of RELAY_MASTER_CATALOG_PATH or RELAY_AUTHORIZED_REPOS_PATH, not both"
@@ -110,11 +117,15 @@ impl Config {
             );
         }
         if let Some(ref ar) = authorized_repos {
-            let fid = ar.relay_server_id.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| {
-                anyhow::anyhow!(
+            let fid = ar
+                .relay_server_id
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
                     "authorized-repos: relay_server_id missing (YAML file or internal catalog load)"
                 )
-            })?;
+                })?;
             if relay_server_id.as_deref() != Some(fid) {
                 anyhow::bail!(
                     "RELAY_SERVER_ID '{}' must match relay_server_id in policy ('{}')",
@@ -131,7 +142,8 @@ impl Config {
             .filter(|s| !s.trim().is_empty())
             .map(PathBuf::from)
             .or_else(|| {
-                let root = std::env::var("RELAY_INSTALL_ROOT").unwrap_or_else(|_| "/opt/relay".into());
+                let root =
+                    std::env::var("RELAY_INSTALL_ROOT").unwrap_or_else(|_| "/opt/relay".into());
                 let p = Path::new(&root).join("state/features.json");
                 p.exists().then_some(p)
             });
@@ -140,10 +152,7 @@ impl Config {
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .map(Arc::new);
 
-        let git_ensure_bare_enabled = env_truthy_or_default(
-            "RELAY_GIT_ENSURE_BARE_ENABLED",
-            true,
-        );
+        let git_ensure_bare_enabled = env_truthy_or_default("RELAY_GIT_ENSURE_BARE_ENABLED", true);
 
         Ok(Config {
             state: AppState {

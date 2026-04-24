@@ -1,11 +1,11 @@
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use std::sync::Arc;
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Legacy response header (informational only; **not** used for repo selection).
 pub const HEADER_REPO: &str = "X-Relay-Repo";
@@ -131,9 +131,28 @@ pub struct HooksConfig {
     pub query: Option<HookPath>,
 }
 
-#[derive(Deserialize, Debug, Serialize)]
+/// Hook script path and optional metadata (used by `index` for branch allowlist and QUERY export fields).
+#[derive(Deserialize, Debug, Default, Serialize, Clone)]
 pub struct HookPath {
     pub path: String,
+    /// When set on the `index` hook, only these branch names are indexed and queryable (omit = all branches).
+    #[serde(default)]
+    pub branches: Option<Vec<String>>,
+    /// Per-collection field order for QUERY JSON/XML/CSV projection (see README).
+    #[serde(default)]
+    pub query: Option<IndexQueryExportConfig>,
+}
+
+/// Under `server.hooks.index.query` in `.relay.yaml`.
+#[derive(Deserialize, Debug, Default, Serialize, Clone)]
+pub struct IndexQueryExportConfig {
+    #[serde(default)]
+    pub collections: std::collections::HashMap<String, CollectionExportFields>,
+}
+
+#[derive(Deserialize, Debug, Default, Serialize, Clone)]
+pub struct CollectionExportFields {
+    pub fields: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
