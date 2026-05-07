@@ -425,6 +425,42 @@ pub async fn serve_acme_challenge(base_dir: &str, subpath: &str) -> impl IntoRes
     }
 }
 
+/// When `.relay.yaml` omits `client.hooks.get.path` (or there is no config), OPTIONS still
+/// advertises the universal default so the web client can fetch `hooks/client/get.jsx`.
+pub(crate) fn ensure_default_client_get_hook(body: &mut serde_json::Value) {
+    const DEFAULT_GET: &str = "hooks/client/get.jsx";
+    let Some(root) = body.as_object_mut() else {
+        return;
+    };
+    let client_entry = root
+        .entry("client")
+        .or_insert_with(|| serde_json::json!({}));
+    if !client_entry.is_object() {
+        *client_entry = serde_json::json!({});
+    }
+    let client = client_entry.as_object_mut().unwrap();
+    let hooks_entry = client
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}));
+    if !hooks_entry.is_object() {
+        *hooks_entry = serde_json::json!({});
+    }
+    let hooks = hooks_entry.as_object_mut().unwrap();
+    let get_entry = hooks.entry("get").or_insert_with(|| serde_json::json!({}));
+    if !get_entry.is_object() {
+        *get_entry = serde_json::json!({});
+    }
+    let get = get_entry.as_object_mut().unwrap();
+    let missing_or_empty = get
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true);
+    if missing_or_empty {
+        get.insert("path".to_string(), serde_json::json!(DEFAULT_GET));
+    }
+}
+
 /// OPTIONS handler — discovery: capabilities, branches, repos, current selections, client hooks
 pub async fn options_capabilities(
     State(state): State<AppState>,
@@ -483,6 +519,8 @@ pub async fn options_capabilities(
         }
     }
 
+    ensure_default_client_get_hook(&mut body);
+
     (
         StatusCode::OK,
         [
@@ -513,6 +551,7 @@ pub async fn get_root(
             &branch,
             &repo_name,
             "index.html",
+            None,
         ) {
             return resp;
         }

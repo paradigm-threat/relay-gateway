@@ -30,19 +30,30 @@ mod tests {
         h
     }
 
-    /// Bare `repo.git` with `.relay.yaml` + `hooks/server/index.mjs` on `main` (for QUERY regression tests).
-    fn query_text_fixture(config_yaml: &str, index_js: &str) -> (tempfile::TempDir, AppState) {
+    const INDEX_STUB_CS: &str = "export default function run(ctx) {\n  return null;\n}\n";
+    const META_YAML: &str = "title: Test Item\n";
+
+    /// Bare `repo.git` with `.relay.yaml`, `data/t/meta.yaml`, and `hooks/server/index.cs` on `main` (QUERY / JIT tests).
+    fn query_text_fixture(config_yaml: &str) -> (tempfile::TempDir, AppState) {
         let repo_dir = tempdir().unwrap();
         let repo_path = repo_dir.path().join("repo.git");
         let repo = Repository::init_bare(&repo_path).unwrap();
         let sig = Signature::now("relay", "relay@local").unwrap();
         let config_oid = repo.blob(config_yaml.as_bytes()).unwrap();
-        let index_js_oid = repo.blob(index_js.as_bytes()).unwrap();
+        let meta_oid = repo.blob(META_YAML.as_bytes()).unwrap();
+        let index_cs_oid = repo.blob(INDEX_STUB_CS.as_bytes()).unwrap();
+        let mut tb_t = repo.treebuilder(None).unwrap();
+        tb_t.insert("meta.yaml", meta_oid, 0o100644).unwrap();
+        let t_tid = tb_t.write().unwrap();
+        let mut tb_data = repo.treebuilder(None).unwrap();
+        tb_data.insert("t", t_tid, 0o040000).unwrap();
+        let data_tid = tb_data.write().unwrap();
         let mut tb = repo.treebuilder(None).unwrap();
         tb.insert(".relay.yaml", config_oid, 0o100644).unwrap();
+        tb.insert("data", data_tid, 0o040000).unwrap();
         let mut tb_server = repo.treebuilder(None).unwrap();
         tb_server
-            .insert("index.mjs", index_js_oid, 0o100644)
+            .insert("index.cs", index_cs_oid, 0o100644)
             .unwrap();
         let server_tid = tb_server.write().unwrap();
         let mut tb_hooks = repo.treebuilder(None).unwrap();
@@ -61,11 +72,8 @@ mod tests {
 server:
   hooks:
     index:
-      path: hooks/server/index.mjs
+      path: hooks/server/index.cs
 "#;
-
-    const INDEX_INSERT_TEST_ITEM: &str =
-        "Relay.db.collection('index').insert({ title: 'Test Item' });";
 
     /// Bare repo with `server.hooks.query` CleverScript (`.cs`) and no index hook.
     fn clever_query_fixture(config_yaml: &str, query_cs: &str) -> (tempfile::TempDir, AppState) {
@@ -129,6 +137,32 @@ server:
 
         assert_eq!(json["ok"], true);
         assert!(json["capabilities"]["supports"].is_array());
+        assert_eq!(
+            json["client"]["hooks"]["get"]["path"],
+            "hooks/client/get.jsx"
+        );
+    }
+
+    #[test]
+    fn ensure_default_client_get_hook_fills_missing_path() {
+        let mut body = serde_json::json!({"ok": true});
+        handlers::general::ensure_default_client_get_hook(&mut body);
+        assert_eq!(
+            body["client"]["hooks"]["get"]["path"],
+            "hooks/client/get.jsx"
+        );
+    }
+
+    #[test]
+    fn ensure_default_client_get_hook_preserves_explicit_path() {
+        let mut body = serde_json::json!({
+            "client": {"hooks": {"get": {"path": "hooks/client/custom.jsx"}}}
+        });
+        handlers::general::ensure_default_client_get_hook(&mut body);
+        assert_eq!(
+            body["client"]["hooks"]["get"]["path"],
+            "hooks/client/custom.jsx"
+        );
     }
 
     /// Test GET returns 200 when repo exists with a file
@@ -455,7 +489,7 @@ server:
     /// Test QUERY method returns results from the mock database
     #[tokio::test]
     async fn test_query_method_success() {
-        let (_tmp, state) = query_text_fixture(QUERY_DEFAULT_YAML, INDEX_INSERT_TEST_ITEM);
+        let (_tmp, state) = query_text_fixture(QUERY_DEFAULT_YAML);
 
         let mut headers = host_header("repo");
         headers.insert(HEADER_BRANCH, "main".parse().unwrap());
@@ -491,7 +525,7 @@ server:
 
     #[tokio::test]
     async fn test_query_method_path_success() {
-        let (_tmp, state) = query_text_fixture(QUERY_DEFAULT_YAML, INDEX_INSERT_TEST_ITEM);
+        let (_tmp, state) = query_text_fixture(QUERY_DEFAULT_YAML);
 
         let mut headers = host_header("repo");
         headers.insert(HEADER_BRANCH, "main".parse().unwrap());
@@ -524,7 +558,7 @@ server:
     /// Regression: missing `Accept` uses `text/csv` (not JSON).
     #[tokio::test]
     async fn test_query_default_accept_is_csv() {
-        let (_tmp, state) = query_text_fixture(QUERY_DEFAULT_YAML, INDEX_INSERT_TEST_ITEM);
+        let (_tmp, state) = query_text_fixture(QUERY_DEFAULT_YAML);
 
         let mut headers = host_header("repo");
         headers.insert(HEADER_BRANCH, "main".parse().unwrap());
@@ -567,7 +601,7 @@ server:
     /// Regression: `Accept: application/xml` returns XML document.
     #[tokio::test]
     async fn test_query_accept_xml() {
-        let (_tmp, state) = query_text_fixture(QUERY_DEFAULT_YAML, INDEX_INSERT_TEST_ITEM);
+        let (_tmp, state) = query_text_fixture(QUERY_DEFAULT_YAML);
 
         let mut headers = host_header("repo");
         headers.insert(HEADER_BRANCH, "main".parse().unwrap());
@@ -647,11 +681,11 @@ export default function run(ctx) {
 server:
   hooks:
     index:
-      path: hooks/server/index.mjs
+      path: hooks/server/index.cs
       branches:
         - dev
 "#;
-        let (_tmp, state) = query_text_fixture(yaml, "process.exit(0);");
+        let (_tmp, state) = query_text_fixture(yaml);
 
         let mut headers = host_header("repo");
         headers.insert(HEADER_BRANCH, "main".parse().unwrap());

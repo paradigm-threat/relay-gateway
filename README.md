@@ -80,7 +80,7 @@ The bundled **`git daemon`** enables **`receive-pack`**: there is **no git trans
 ### Git Hooks (`relay-hook-handler`)
 The server includes a native `relay-hook-handler` binary that should be symlinked to `hooks/pre-receive` and `hooks/post-receive` in your bare repositories.
 - **Branch Protection**: Enforces GPG/SSH signature requirements natively in Rust.
-- **Custom Validation**: Dispatches to Node.js scripts (`pre-receive`) with full commit context.
+- **Custom validation**: Runs CleverScript (`.cs`) hooks from `.relay.yaml` with full commit context when configured.
 - **Auto-Push**: Synchronizes successful pushes to a list of peer servers with **fast-forward** `git push` (no `--force`).
 
 **Mesh (shipped pieces):** **`RELAY_MASTER_PEER_LIST`** (semicolon-separated FQDNs) is exposed in **`POST /api/config` → `peers`**. **`RELAY_NODE_ROLE`** (`master` \| `edge`) or inference from **`RELAY_PUBLIC_HOSTNAME`** in that list selects behavior: **only masters** fan out **`POST /hooks/mesh-event`** HTTP to peers (**edges** still get Slack if configured). **`RELAY_MASTER_MESH_SECRET`** (masters only): inter-master **`x-relay-mesh-secret`** / **`X-Relay-Peer-Secret`** when set; **`POST /hooks/peer`** on a master with this set accepts **only** that secret (not **`RELAY_PEER_SECRET`**). **`POST /hooks/peer`** on **edges** uses **`RELAY_PEER_SECRET`** (masters poke edges with the same value). See **[`docs/RELAY_MESH_NETWORKING_PLAN.md`](docs/RELAY_MESH_NETWORKING_PLAN.md)**. **mTLS** between masters is a **reverse-proxy** concern, not yet in-process. **Internal** anti–over-ping remains **Slack-independent**; optional Slack: **[`docs/SLACK_MESH_NOTIFY.md`](docs/SLACK_MESH_NOTIFY.md)**.
@@ -133,20 +133,19 @@ The server includes a native `relay-hook-handler` binary that should be symlinke
 
 ## Env
 
-- Repository rules and validation are defined in `.relay.yaml` and implemented via Node.js scripts.
+- Repository rules and validation are defined in `.relay.yaml`; server hooks are **CleverScript** (`.cs`) executed in-process (no Node).
 - See [SERVER_HOOKS.md](docs/SERVER_HOOKS.md) for detailed documentation on configuration and hook execution.
 - `relay_index.json` is maintained by pre-commit/pre-receive scripts to track metadata changes and build queryable
   indexes.
 - Rules are enforced for new commits by the respective hook scripts. Repositories can customize validation by
   implementing these scripts.
 
-Repository Scripts
+Server hook scripts (paths from `.relay.yaml` under `server.hooks.*`)
 
-- `.relay/pre-commit.mjs` — executed by the server during PUT operations to validate file changes before committing.
-- `.relay/pre-receive.mjs` — executed during git push operations (if using git-based workflows) to validate commits.
-- `.relay/validation.mjs` — optional custom validation logic that can be invoked by pre-commit/pre-receive scripts in a
-  sandboxed environment.
-- `.relay/lib/*.mjs` — shared utility modules for common validation and index management tasks.
+- `hooks/server/pre-commit.cs` — optional; runs on HTTP `PUT` before the ref advances.
+- `hooks/server/pre-receive.cs` — optional; runs on `git push` after native branch rules.
+- `hooks/server/index.cs` — optional; runs after Rust syncs `data/**/meta.yaml` into `index.db.json`.
+- `hooks/server/get.cs` — optional; dynamic GET when the path is missing from the tree (see `server.hooks.get` in **[`docs/SERVER_HOOKS.md`](docs/SERVER_HOOKS.md)**): Express-style **`run(ctx, next)`**, Rust **`optimizeRasterFromGetContext`** for rasters, **`next()`** for plain files and 404 JSON, uncaught hook errors → HTTP 500 JSON with full technical detail.
 
 ## CLI & Run
 
@@ -212,11 +211,11 @@ When a file is not found, the server returns a detailed 404 error showing:
 ```
 Not Found
 
-Path: hooks/client/get-client.jsx
+Path: hooks/client/get.jsx
 Branch: main
 Repo: relay-template
 
-File not found in git repository. No hooks/get.mjs found to handle dynamic routing.
+No `server.hooks.get` CleverScript (.cs) configured in .relay.yaml for dynamic GET.
 ```
 
 This helps developers debug:
@@ -250,6 +249,8 @@ docker run -p 80:80 -p 443:443 \
 The server will be accessible at `https://node-dfw1.relaynet.online` with automatic HTTP to HTTPS redirection.
 
 ## Developing and deploying a UI for repositories
+
+**Universal client (relay-runtime + md2jsx):** see **[`docs/RELAY_UNIVERSAL_CLIENT_AND_PARADIGM_SITE.md`](docs/RELAY_UNIVERSAL_CLIENT_AND_PARADIGM_SITE.md)**, **[`docs/RELAY_MD2JSX_PLACEMENT.md`](docs/RELAY_MD2JSX_PLACEMENT.md)**, and **`../relay-client-web`** (`npm run build:wasm` then `npm run build`).
 
 A. Build/export all HTML/JS/asset files of your UI (e.g., into `template-ui/dist`).
 B. Test locally: run **`relay-gateway`** and pass **`--static`** (repeatable) for your UI folder.
