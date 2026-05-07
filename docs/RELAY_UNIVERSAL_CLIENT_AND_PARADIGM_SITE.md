@@ -102,3 +102,4 @@ This is explicitly **multi-phase**; do not assume a single cutover.
 - [`relay-runtime/README.md`](../relay-runtime/README.md) (links to CLEVERSCRIPT / WASM docs when present in checkout)
 - [`CLIENT_HOOK_LANGUAGE.md`](CLIENT_HOOK_LANGUAGE.md)
 - [`SERVER_HOOKS.md`](SERVER_HOOKS.md)
+- [`RELAY_EMBED_CLIENT_GET_INTERCEPT.md`](RELAY_EMBED_CLIENT_GET_INTERCEPT.md) — server GET intercept returning **HTML** that loads a **minimal** embed client + full-screen repo hook (parallel to raster `?w=` optimizer)
