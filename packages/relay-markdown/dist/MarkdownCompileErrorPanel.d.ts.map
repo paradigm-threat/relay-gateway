@@ -1,0 +1,1 @@
+{"version":3,"file":"MarkdownCompileErrorPanel.d.ts","sourceRoot":"","sources":["../src/MarkdownCompileErrorPanel.tsx"],"names":[],"mappings":"AAGA,OAAO,KAAK,EAAE,0BAA0B,EAAE,MAAM,kBAAkB,CAAA;AAElE,MAAM,WAAW,8BAA8B;IAC7C,WAAW,EAAE,0BAA0B,CAAA;IACvC,kDAAkD;IAClD,UAAU,CAAC,EAAE,MAAM,CAAA;CACpB;AAYD,wBAAgB,yBAAyB,CAAE,EACzC,WAAW,EACX,UAAU,GACX,EAAE,8BAA8B,2CAgEhC"}

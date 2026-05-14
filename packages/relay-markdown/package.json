@@ -1,0 +1,41 @@
+{
+  "name": "@clevertree/relay-markdown",
+  "version": "0.2.0",
+  "description": "React MarkdownRenderer powered by md2ast WASM",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "wasm",
+    "scripts"
+  ],
+  "scripts": {
+    "build:wasm": "bash scripts/build-wasm.sh",
+    "build:ts": "tsc -p tsconfig.json",
+    "build": "npm run build:wasm && npm run build:ts && node --test tests/diagnostics.test.mjs",
+    "test:e2e": "playwright test",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "dependencies": {
+    "@babel/code-frame": "^7.29.0",
+    "@clevertree/md2ast": "file:../../../../md2ast"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1",
+    "@types/babel__code-frame": "^7.0.6",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "~5.9.3"
+  }
+}

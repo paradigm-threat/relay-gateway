@@ -1,0 +1,1 @@
+{"version":3,"file":"wasmLoader.d.ts","sourceRoot":"","sources":["../src/wasmLoader.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,MAAM,EAAE,MAAM,YAAY,CAAA;AAYxC,uFAAuF;AACvF,wBAAgB,0BAA0B,CAAE,OAAO,EAAE,MAAM,GAAG,IAAI,CAEjE;AAgBD,wBAAsB,qBAAqB,CACzC,QAAQ,EAAE,MAAM,EAChB,WAAW,EAAE,MAAM,EAAE,GACpB,OAAO,CAAC,MAAM,EAAE,CAAC,CAInB"}

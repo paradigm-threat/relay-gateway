@@ -1,0 +1,6 @@
+# Whitelist published artifacts (wasm/ is gitignored but must ship on npm).
+*
+!package.json
+!dist/**
+!scripts/**
+!wasm/**
