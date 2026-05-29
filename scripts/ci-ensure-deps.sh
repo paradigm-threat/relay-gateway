@@ -1,12 +1,28 @@
 #!/usr/bin/env bash
-# Clone path deps for CI/local Docker; fall back to crates.io in CI when clones fail.
+# Resolve relay-gateway dependencies for CI/local builds.
 set -euo pipefail
 
 GW_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$GW_DIR"
 
+use_registry() {
+  echo "[ci-ensure-deps] using crates.io (relay-runtime 0.1.1, md2ast 1.0.2)"
+  sed -i 's|^relay-runtime = .*|relay-runtime = "0.1.1"|' Cargo.toml
+  sed -i 's|^md2ast = .*|md2ast = "1.0.2"|' Cargo.toml
+  touch .ci-registry-deps
+  export PATH="${PATH:-/usr/local/cargo/bin}:$HOME/.cargo/bin"
+  cargo update -q -p relay-runtime -p md2ast 2>/dev/null || cargo update -q
+}
+
+# CI test/package jobs: registry deps only (no private clone required).
+if [[ -n "${CI:-}" && "${RELAY_CI_PATH_DEPS:-}" != "1" ]]; then
+  use_registry
+  exit 0
+fi
+
+# Docker / local / explicit path-dep mode.
 if ! ./scripts/ci-clone-path-deps.sh; then
-  echo "[ci-ensure-deps] clone script failed" >&2
+  echo "[ci-ensure-deps] clone script reported errors" >&2
 fi
 
 PARENT="$(cd "$GW_DIR/.." && pwd)"
@@ -29,23 +45,13 @@ if $have_runtime && $have_md2ast; then
   exit 0
 fi
 
-if [[ -z "${CI:-}" ]]; then
-  echo "[ci-ensure-deps] missing path deps (relay-runtime=$have_runtime md2ast=$have_md2ast)" >&2
+if [[ -n "${CI:-}" ]]; then
+  echo "[ci-ensure-deps] path deps missing (relay-runtime=$have_runtime md2ast=$have_md2ast)" >&2
+  echo "[ci-ensure-deps] For Docker builds set GitLab CI variable RELAY_RUNTIME_GIT_URL to a deploy-token URL, e.g.:" >&2
+  echo "  https://gitlab+deploy-token-NNN:TOKEN@gitlab.com/clevertree/relay-runtime.git" >&2
+  echo "  Or: relay-runtime → Settings → CI/CD → Job token permissions → allow clevertree/relay-server" >&2
   exit 1
 fi
 
-echo "[ci-ensure-deps] WARNING: using crates.io for missing path deps (relay-runtime=$have_runtime md2ast=$have_md2ast)"
-if ! $have_runtime; then
-  sed -i 's|^relay-runtime = .*|relay-runtime = "0.1.1"|' Cargo.toml
-fi
-if ! $have_md2ast; then
-  sed -i 's|^md2ast = .*|md2ast = "1.0.2"|' Cargo.toml
-fi
-touch .ci-registry-deps
-export PATH="${PATH:-/usr/local/cargo/bin}:$HOME/.cargo/bin"
-cargo update -q -p relay-runtime -p md2ast 2>/dev/null || cargo update -q
-echo "[ci-ensure-deps] updated lockfile for registry deps"
-if ! $have_runtime; then
-  echo "[ci-ensure-deps] relay-runtime clone missing — registry fallback for tests; Docker job needs clone" >&2
-  echo "[ci-ensure-deps] GitLab: clevertree/relay-runtime → Settings → CI/CD → Job token permissions → add relay-server" >&2
-fi
+echo "[ci-ensure-deps] missing path deps (relay-runtime=$have_runtime md2ast=$have_md2ast)" >&2
+exit 1
