@@ -8,11 +8,6 @@ provider "spot" {
   token = local.spot_token
 }
 
-provider "kubernetes" {
-  # Use a module-local kubeconfig path for cross-platform compatibility
-  config_path = abspath("${path.module}/kubeconfig")
-}
-
 // Data source to list available server classes and their metadata (used for debugging)
 data "spot_serverclasses" "all" {}
 
@@ -21,7 +16,7 @@ resource "spot_cloudspace" "cs" {
   region            = var.region
   hacontrol_plane   = false
   wait_until_ready  = true
-  kubernetes_version = "1.31.1"
+  kubernetes_version = "1.30.10"
   cni               = "calico"
 }
 

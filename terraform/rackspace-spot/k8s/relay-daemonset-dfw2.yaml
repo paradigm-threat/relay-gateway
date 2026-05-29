@@ -26,7 +26,11 @@ spec:
           imagePullPolicy: Always
           env:
             - name: RELAY_SSL_MODE
-              value: "certbot-required"
+              value: "none"
+            - name: RELAY_SKIP_DEFAULT_REPOS
+              value: "1"
+            - name: RELAY_MASTER_REPO_LIST
+              value: "https://gitlab.com/clevertree/relay-master.git"
             - name: RELAY_DNS_SUBDOMAIN
               value: "node-dfw2"
             - name: RELAY_DNS_DOMAIN

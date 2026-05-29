@@ -9,7 +9,7 @@ log() {
 # Support both DEFAULT_REPOS and RELAY_MASTER_REPO_LIST.
 # RELAY_SKIP_DEFAULT_REPOS=1: do not fall back to relay-template (local dev / pre-seeded data).
 if [[ "${RELAY_SKIP_DEFAULT_REPOS:-0}" == "1" ]]; then
-  REPOS_STR="${RELAY_MASTER_REPO_LIST:-${DEFAULT_REPOS:-}}"
+  REPOS_STR="${RELAY_MASTER_REPO_LIST:-}"
 else
   REPOS_STR="${RELAY_MASTER_REPO_LIST:-${DEFAULT_REPOS:-https://gitlab.com/clevertree/relay-template.git}}"
 fi
@@ -68,6 +68,15 @@ for repo in $REPOS; do
   name=$(basename -s .git "${repo}")
   copy_static_if_present "$DATA_ROOT/${name}.git" || true
 done
+
+# Catalog sync (relay-master worktree + bare mirrors) before git daemon
+if [[ -x "${RELAY_INSTALL_ROOT:-/srv/relay}/bin/relay-startup-catalog-sync.sh" ]]; then
+  RELAY_INSTALL_ROOT="${RELAY_INSTALL_ROOT:-/srv/relay}" \
+    "${RELAY_INSTALL_ROOT}/bin/relay-startup-catalog-sync.sh" || log "WARN: startup catalog sync failed"
+elif [[ -f /relay-gateway/scripts/relay-startup-catalog-sync.sh ]]; then
+  RELAY_INSTALL_ROOT="${RELAY_INSTALL_ROOT:-/srv/relay}" \
+    /relay-gateway/scripts/relay-startup-catalog-sync.sh || log "WARN: startup catalog sync failed"
+fi
 
 # Background hourly pull + rebuild if present
 (
@@ -137,14 +146,31 @@ vercel_dns_upsert() {
   return 1
 }
 
+upsert_dns_fqdn() {
+  local fqdn="$1" ip="$2"
+  [[ -n "$fqdn" && -n "$ip" ]] || return 1
+  local domain="${fqdn#*.}"
+  local sub="${fqdn%%.*}"
+  [[ "$domain" != "$fqdn" ]] || return 1
+  if vercel_dns_upsert "$domain" "$sub" "$ip"; then
+    log "DNS upsert successful: ${fqdn} -> ${ip}"
+    return 0
+  fi
+  log "WARN: DNS upsert failed for ${fqdn}"
+  return 1
+}
+
 if [[ -n "$VERCEL_API_TOKEN_ENV" ]]; then
   log "Attempting DNS upsert for ${FQDN}"
   PUB_IP=$(get_public_ip || true)
   if [[ -n "$PUB_IP" ]]; then
-    if vercel_dns_upsert "$VERCEL_DOMAIN" "$VERCEL_SUBDOMAIN" "$PUB_IP"; then
-      log "DNS upsert successful: ${FQDN} -> ${PUB_IP}"
-    else
-      log "WARN: DNS upsert failed"
+    upsert_dns_fqdn "$FQDN" "$PUB_IP" || true
+    if [[ -n "${RELAY_EXTRA_DNS_FQDNS:-}" ]]; then
+      IFS=',' read -ra _extra_fqdns <<< "${RELAY_EXTRA_DNS_FQDNS}"
+      for _extra in "${_extra_fqdns[@]}"; do
+        _extra=$(echo "$_extra" | xargs)
+        [[ -n "$_extra" ]] && upsert_dns_fqdn "$_extra" "$PUB_IP" || true
+      done
     fi
   fi
 fi

@@ -2,29 +2,34 @@
 #
 # Build from a staged flat context (see scripts/stage-docker-context.sh):
 #   ./scripts/docker-build-production.sh
+#
+# Note: cargo-chef was removed — it produced stub relay-gateway binaries (~444KB, main() = ret).
 
-FROM lukemathwalker/cargo-chef:latest-rust-1.91.1-slim-bookworm AS chef
+FROM rust:1.91.1-bookworm AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev build-essential \
+    pkg-config libssl-dev build-essential curl \
     && rm -rf /var/lib/apt/lists/*
 
-FROM chef AS planner
 COPY relay-gateway/ .
 COPY relay-runtime /relay-runtime
 COPY md2ast /md2ast
 COPY relay/relay-gateway/themed-styler /relay/relay-gateway/themed-styler
-RUN cargo chef prepare --recipe-path recipe.json
 
-FROM chef AS builder
-COPY --from=planner /app/recipe.json recipe.json
-COPY relay-gateway/ .
-COPY relay-runtime /relay-runtime
-COPY md2ast /md2ast
-COPY relay/relay-gateway/themed-styler /relay/relay-gateway/themed-styler
-RUN cargo chef cook --release --recipe-path recipe.json
-RUN cargo build --release --bin relay-gateway \
-    && cargo build --release --bin relay-hook-handler
+RUN cargo build --release --locked --bin relay-gateway --bin relay-hook-handler
+
+# Fail the image build if cargo-chef-style stub binaries slip in (main must listen on HTTP).
+RUN test "$(stat -c%s target/release/relay-gateway)" -gt 5000000
+RUN test "$(stat -c%s target/release/relay-hook-handler)" -gt 1000000
+RUN set -eux; \
+    RELAY_BIND=127.0.0.1:8080 RELAY_REPO_PATH=/tmp/data ./target/release/relay-gateway serve & \
+    pid=$!; \
+    for i in 1 2 3 4 5 6 7 8 9 10; do \
+      curl -sfX POST "http://127.0.0.1:8080/api/config" >/dev/null && break; \
+      sleep 0.5; \
+    done; \
+    curl -sfX POST "http://127.0.0.1:8080/api/config" | grep -q '"repos"'; \
+    kill "$pid"; wait "$pid" 2>/dev/null || true
 
 FROM ubuntu:24.04
 ARG DEFAULT_REPOS="https://gitlab.com/clevertree/relay-template.git"
@@ -64,7 +69,7 @@ ENV RELAY_REPO_PATH=/srv/relay/data \
 EXPOSE 8080 9418
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=5 \
-    CMD curl -sf "http://localhost:${RELAY_HTTP_PORT}/api/config" || exit 1
+    CMD curl -sfX POST "http://localhost:${RELAY_HTTP_PORT}/api/config" || exit 1
 
 USER relay
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

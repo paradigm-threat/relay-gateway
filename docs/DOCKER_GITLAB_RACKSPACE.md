@@ -63,10 +63,26 @@ Optional overrides:
 
 Manifests: `terraform/rackspace-spot/k8s/`.
 
+**Full deploy** (terraform + DaemonSet + atlanta3 DNS when spot nodes get an IP):
+
+```bash
+./terraform/rackspace-spot/scripts/rackspace-deploy.sh
+```
+
+Roll image only (kubeconfig must exist):
+
+```bash
+SKIP_TERRAFORM=1 ./terraform/rackspace-spot/scripts/rackspace-deploy.sh
+```
+
+When spot bids win, the dfw1 relay pod upserts **`atlanta3.relaygateway.net`** (via `RELAY_EXTRA_DNS_FQDNS` after the next image publish) and the deploy script calls `vercel-dns-upsert.sh` as a belt-and-suspenders step. Set `VERCEL_API_TOKEN` + `VERCEL_TEAM_ID` or log in with the Vercel CLI.
+
+Legacy one-liner (registry pull + apply only):
+
 ```bash
 export REGISTRY=registry.gitlab.com/clevertree/relay-server
 export RELAY_IMAGE_TAG=main
-./terraform/rackspace-spot/scripts/build-push-deploy.sh
+./terraform/rackspace-spot/scripts/deploy-from-registry.sh
 ```
 
 DaemonSet image (after deploy):

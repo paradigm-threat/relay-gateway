@@ -27,13 +27,15 @@ fi
 export KUBECONFIG
 
 echo "Deploying image $IMAGE"
-for manifest in relay-daemonset.yaml relay-daemonset-dfw2.yaml; do
+for manifest in relay-configmap.yaml relay-boot-configmap.yaml relay-daemonset.yaml relay-daemonset-dfw2.yaml; do
   path="$SCRIPT_DIR/../k8s/$manifest"
   if [[ -f "$path" ]]; then
     sed -i.bak "s|image: registry.gitlab.com/clevertree/relay-server/relay-gateway:.*|image: ${IMAGE}|" "$path"
   fi
 done
 
+"$KUBECTL" apply -f "$SCRIPT_DIR/../k8s/relay-configmap.yaml"
+"$KUBECTL" apply -f "$SCRIPT_DIR/../k8s/relay-boot-configmap.yaml"
 "$KUBECTL" apply -f "$SCRIPT_DIR/../k8s/relay-daemonset.yaml"
 if [[ -f "$SCRIPT_DIR/../k8s/relay-daemonset-dfw2.yaml" ]]; then
   "$KUBECTL" apply -f "$SCRIPT_DIR/../k8s/relay-daemonset-dfw2.yaml"

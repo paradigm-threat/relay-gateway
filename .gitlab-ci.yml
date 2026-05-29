@@ -108,6 +108,8 @@ docker:publish:
       /kaniko/executor \
         --context "${CI_PROJECT_DIR}/docker-ctx" \
         --dockerfile "${CI_PROJECT_DIR}/${DOCKERFILE}" \
+        --cache=true \
+        --cache-repo "${CI_REGISTRY_IMAGE}/cache" \
         $TAGS
 
 publish:crate:

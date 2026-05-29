@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: relay-config
+data:
+  RELAY_INSTALL_ROOT: "/srv/relay"
+  RELAY_REPO_PATH: "/srv/relay/data"
+  RELAY_STATIC_DIR: "/srv/relay/www"
+  RELAY_MASTER_CATALOG_PATH: "/srv/relay/src/relay-master"
+  RELAY_MASTER_CATALOG_GIT_URL: "https://gitlab.com/clevertree/relay-master.git"
+  RELAY_MASTER_CATALOG_BRANCH: "main"
+  RELAY_MASTER_TRUST_ROOT: "14f88ca11ce88f580c1a3cab1dfa5493eace34e2"
+  RELAY_DEFAULT_REPO: "relay-master"
+  RELAY_SERVER_ID: "relay-atlanta3"
+  RELAY_PUBLIC_HOSTNAME: "atlanta3.relaygateway.net"
+  RELAY_BIND: "0.0.0.0:8080"
+  RELAY_HTTP_PORT: "8080"
+  RELAY_GIT_PORT: "9418"
+  RELAY_GIT_ENSURE_BARE_ENABLED: "1"
+  RELAY_STARTUP_CATALOG_SYNC: "1"
+  RELAY_SSL_MODE: "none"
+  RELAY_SKIP_DEFAULT_REPOS: "1"
+  RELAY_DNS_SUBDOMAIN: "node-dfw1"
+  RELAY_DNS_DOMAIN: "relaynet.online"
+  RELAY_EXTRA_DNS_FQDNS: "atlanta3.relaygateway.net"
+  RELAY_MASTER_PEER_LIST: "atlanta2.relaygateway.net;atlanta3.relaygateway.net;jp-osa.relaygateway.net"
