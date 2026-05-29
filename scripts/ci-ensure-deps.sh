@@ -41,10 +41,11 @@ fi
 if ! $have_md2ast; then
   sed -i 's|^md2ast = .*|md2ast = "1.0.2"|' Cargo.toml
 fi
-
-# Docker context staging still needs source trees; create minimal stubs only for cargo test fallback.
+touch .ci-registry-deps
+export PATH="${PATH:-/usr/local/cargo/bin}:$HOME/.cargo/bin"
+cargo update -q -p relay-runtime -p md2ast 2>/dev/null || cargo update -q
+echo "[ci-ensure-deps] updated lockfile for registry deps"
 if ! $have_runtime; then
-  echo "[ci-ensure-deps] relay-runtime clone missing — registry fallback cannot build Docker image" >&2
-  echo "[ci-ensure-deps] GitLab: push clevertree/relay-runtime and allow CI job token from clevertree/relay-server" >&2
-  echo "  relay-runtime → Settings → CI/CD → Job token permissions → add relay-server" >&2
+  echo "[ci-ensure-deps] relay-runtime clone missing — registry fallback for tests; Docker job needs clone" >&2
+  echo "[ci-ensure-deps] GitLab: clevertree/relay-runtime → Settings → CI/CD → Job token permissions → add relay-server" >&2
 fi

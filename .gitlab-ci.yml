@@ -38,8 +38,11 @@ test:verify:
   image: rust:${RUST_VERSION}-bookworm
   extends: .rust_before
   script:
-    - cargo test --locked
-    - cargo build --release --locked
+    - |
+      LOCK_FLAG="--locked"
+      if [[ -f .ci-registry-deps ]]; then LOCK_FLAG=""; fi
+      cargo test $LOCK_FLAG
+      cargo build --release $LOCK_FLAG
     - mkdir -p ci-data
     - |
       RELAY_REPO_PATH="$CI_PROJECT_DIR/ci-data" RELAY_BIND=127.0.0.1:18080 ./target/release/relay-gateway &
