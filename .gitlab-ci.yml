@@ -66,15 +66,13 @@ docker:prepare-context:
   image: rust:${RUST_VERSION}-bookworm
   timeout: 30m
   variables:
-    RELAY_CI_PATH_DEPS: "1"
+    RELAY_DOCKER_REGISTRY_DEPS: "1"
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   before_script:
     - export PATH="/usr/local/cargo/bin:$PATH"
     - apt-get update -qq && apt-get install -y -qq git rsync
-    - chmod +x ./scripts/ci-ensure-deps.sh
-    - ./scripts/ci-ensure-deps.sh
   script:
     - ./scripts/stage-docker-context.sh "$CI_PROJECT_DIR/docker-ctx"
   artifacts:

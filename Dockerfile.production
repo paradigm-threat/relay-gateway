@@ -12,11 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY relay-gateway/ .
-COPY relay-runtime /relay-runtime
-COPY md2ast /md2ast
 COPY relay/relay-gateway/themed-styler /relay/relay-gateway/themed-styler
 
-RUN cargo build --release --locked --bin relay-gateway --bin relay-hook-handler
+# Docker build uses crates.io (path deps are for local/CI test checkout layout).
+RUN sed -i 's|^relay-runtime = .*|relay-runtime = "0.1.1"|' Cargo.toml && \
+    sed -i 's|^md2ast = .*|md2ast = "1.0.2"|' Cargo.toml
+
+RUN cargo build --release --bin relay-gateway --bin relay-hook-handler
 
 # Fail the image build if cargo-chef-style stub binaries slip in (main must listen on HTTP).
 RUN test "$(stat -c%s target/release/relay-gateway)" -gt 5000000

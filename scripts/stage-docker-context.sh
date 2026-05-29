@@ -11,7 +11,11 @@ else
 fi
 OUT="${1:?output directory}"
 
-"$SCRIPT_DIR/ci-clone-path-deps.sh"
+if [[ "${RELAY_DOCKER_REGISTRY_DEPS:-0}" == "1" ]]; then
+  echo "[stage-docker-context] registry deps mode (no path-dep clones)"
+else
+  "$SCRIPT_DIR/ci-clone-path-deps.sh"
+fi
 
 rm -rf "$OUT"
 mkdir -p "$OUT/relay-gateway" "$OUT/relay/relay-gateway"
@@ -26,8 +30,10 @@ rsync -a --delete \
   --exclude terraform \
   --exclude 'strace*.txt' \
   "$GW_DIR/" "$OUT/relay-gateway/"
-rsync -a --exclude .git --exclude target "$DEPS_ROOT/relay-runtime/" "$OUT/relay-runtime/"
-rsync -a --exclude .git --exclude target "$DEPS_ROOT/md2ast/" "$OUT/md2ast/"
+if [[ "${RELAY_DOCKER_REGISTRY_DEPS:-0}" != "1" ]]; then
+  rsync -a --exclude .git --exclude target "$DEPS_ROOT/relay-runtime/" "$OUT/relay-runtime/"
+  rsync -a --exclude .git --exclude target "$DEPS_ROOT/md2ast/" "$OUT/md2ast/"
+fi
 rsync -a --exclude .git --exclude target "$GW_DIR/themed-styler/" "$OUT/relay/relay-gateway/themed-styler/"
 
 echo "[stage-docker-context] $OUT"
