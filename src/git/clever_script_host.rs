@@ -1,0 +1,993 @@
+//! Server CleverScript host: virtual modules `@relay/git` and `@relay/image` only (no global `Relay`).
+
+use crate::git::image_cache::{cache_key_digest, ImageDiskCache};
+use crate::git::ipfs::{
+    self, resolve_ipfs_pointer, resolve_pointer_blob, AssetResolveError,
+    IpfsPointer, IpfsResolveOptions, IpfsResolveSource, ASSET_ERROR_HEADER,
+};
+use crate::git::repo::read_file_from_repo;
+use axum::http::HeaderMap;
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
+use relay_runtime::host::{Host, HostHandle, MockHost};
+use relay_runtime::value::{NativeFnClosure, Value as CsValue};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::Arc;
+
+pub const RELAY_GIT_MODULE: &str = "@relay/git";
+pub const RELAY_IMAGE_MODULE: &str = "@relay/image";
+pub const RELAY_IPFS_MODULE: &str = "@relay/ipfs";
+pub const RELAY_MD_MODULE: &str = "@relay/md";
+
+fn git_exports(repo_root: PathBuf, branch: String) -> CsValue {
+    let read = {
+        let repo_root = repo_root.clone();
+        let branch = branch.clone();
+        Rc::new(move |args: &[CsValue]| {
+            let path = args
+                .first()
+                .and_then(|v| match v {
+                    CsValue::String(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .ok_or_else(|| "@relay/git readFile requires a string path".to_string())?;
+            let bytes =
+                read_file_from_repo(&repo_root, &branch, path).map_err(|e| e.to_string())?;
+            Ok(CsValue::String(String::from_utf8_lossy(&bytes).into_owned()))
+        })
+    };
+    let read_b64 = {
+        let repo_root = repo_root.clone();
+        let branch = branch.clone();
+        Rc::new(move |args: &[CsValue]| {
+            let path = args
+                .first()
+                .and_then(|v| match v {
+                    CsValue::String(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .ok_or_else(|| "@relay/git readFileBase64 requires a string path".to_string())?;
+            let bytes =
+                read_file_from_repo(&repo_root, &branch, path).map_err(|e| e.to_string())?;
+            Ok(CsValue::String(B64.encode(bytes)))
+        })
+    };
+    let mut git = HashMap::new();
+    git.insert(
+        "readFile".to_string(),
+        CsValue::NativeFn(NativeFnClosure(read)),
+    );
+    git.insert(
+        "readFileBase64".to_string(),
+        CsValue::NativeFn(NativeFnClosure(read_b64)),
+    );
+    CsValue::Object(git)
+}
+
+fn cs_obj_str<'a>(m: &'a HashMap<String, CsValue>, key: &str) -> Option<&'a str> {
+    m.get(key).and_then(|v| match v {
+        CsValue::String(s) => Some(s.as_str()),
+        _ => None,
+    })
+}
+
+const DEFAULT_WIDTH_QUERY_KEYS: &[&str] = &["w", "width", "maxWidth"];
+
+fn parse_width_number(n: f64) -> Option<u32> {
+    let w = n as u64;
+    if (1..=8192).contains(&w) {
+        Some(w as u32)
+    } else {
+        None
+    }
+}
+
+fn parse_width_from_value(v: &CsValue) -> Option<u32> {
+    match v {
+        CsValue::Number(n) => parse_width_number(*n),
+        CsValue::String(s) => {
+            let w: u32 = s.trim().parse().ok()?;
+            if (1..=8192).contains(&w) {
+                Some(w)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn parse_width_from_opts(props: &HashMap<String, CsValue>) -> Option<u32> {
+    props.get("width").and_then(parse_width_from_value)
+}
+
+fn width_keys_from_opts(args: &[CsValue]) -> Vec<String> {
+    let Some(CsValue::Object(props)) = args.get(1) else {
+        return DEFAULT_WIDTH_QUERY_KEYS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+    };
+    let Some(CsValue::Array(arr)) = props.get("keys") else {
+        return DEFAULT_WIDTH_QUERY_KEYS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+    };
+    let keys: Vec<String> = arr
+        .iter()
+        .filter_map(|v| match v {
+            CsValue::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+            _ => None,
+        })
+        .collect();
+    if keys.is_empty() {
+        DEFAULT_WIDTH_QUERY_KEYS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    } else {
+        keys
+    }
+}
+
+fn query_width_from_ctx(m: &HashMap<String, CsValue>, keys: &[String]) -> Option<u32> {
+    let q = m.get("query").and_then(|v| match v {
+        CsValue::Object(inner) => Some(inner),
+        _ => None,
+    })?;
+    for k in keys {
+        if let Some(v) = q.get(k.as_str()) {
+            if let Some(w) = parse_width_from_value(v) {
+                return Some(w);
+            }
+        }
+    }
+    None
+}
+
+fn is_raster_content_type(ct: &str) -> bool {
+    let ct = ct.to_ascii_lowercase();
+    ct.starts_with("image/jpeg")
+        || ct.starts_with("image/jpg")
+        || ct.starts_with("image/png")
+        || ct.starts_with("image/gif")
+        || ct.starts_with("image/webp")
+}
+
+fn inferred_content_type(ctx: &HashMap<String, CsValue>) -> String {
+    let from_ctx = cs_obj_str(ctx, "contentType").unwrap_or("").trim();
+    if !from_ctx.is_empty() {
+        return from_ctx.to_string();
+    }
+    if let Some(rel) = cs_obj_str(ctx, "relPath") {
+        return content_type_for_rel_path(rel);
+    }
+    String::new()
+}
+
+fn content_type_for_rel_path(rel: &str) -> String {
+    mime_guess::from_path(rel)
+        .first_or_octet_stream()
+        .essence_str()
+        .to_string()
+}
+
+fn pointer_content_type(pointer: &IpfsPointer, rel: &str) -> String {
+    pointer
+        .content_type
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| content_type_for_rel_path(rel))
+}
+
+/// Body from hook context when present; does not error if the path is absent from Git.
+fn optional_body_bytes_from_ctx(
+    m: &HashMap<String, CsValue>,
+    repo_root: &PathBuf,
+    branch: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    if let Some(b64) = cs_obj_str(m, "bodyBase64").filter(|s| !s.is_empty()) {
+        return B64.decode(b64.as_bytes())
+            .map(Some)
+            .map_err(|e| format!("invalid bodyBase64: {e}"));
+    }
+    if let Some(path) = cs_obj_str(m, "relPath").filter(|s| !s.is_empty()) {
+        return Ok(read_file_from_repo(repo_root, branch, path).ok());
+    }
+    Ok(None)
+}
+
+fn parse_ipfs_source_name(s: &str) -> Option<IpfsResolveSource> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "centraldir" | "central_dir" | "central-dir" => Some(IpfsResolveSource::CentralDir),
+        "inline" => Some(IpfsResolveSource::Inline),
+        "manifest" => Some(IpfsResolveSource::Manifest),
+        _ => None,
+    }
+}
+
+fn parse_ipfs_resolve_options(args: &[CsValue]) -> IpfsResolveOptions {
+    let Some(CsValue::Object(props)) = args.get(1) else {
+        return IpfsResolveOptions::default();
+    };
+    let mut opts = IpfsResolveOptions::default();
+    if let Some(CsValue::Array(arr)) = props.get("sources") {
+        let mut sources = Vec::new();
+        for v in arr {
+            if let CsValue::String(s) = v {
+                if let Some(src) = parse_ipfs_source_name(s) {
+                    sources.push(src);
+                }
+            }
+        }
+        if !sources.is_empty() {
+            opts.sources = sources;
+        }
+    }
+    if let Some(CsValue::String(s)) = props.get("assetsDir") {
+        if !s.trim().is_empty() {
+            opts.assets_dir = s.trim().to_string();
+        }
+    }
+    if let Some(CsValue::String(s)) = props.get("ipfsSuffix") {
+        if !s.is_empty() {
+            opts.ipfs_suffix = s.to_string();
+        }
+    }
+    if let Some(CsValue::String(s)) = props.get("manifestPath") {
+        if !s.trim().is_empty() {
+            opts.manifest_path = s.trim().to_string();
+        }
+    }
+    opts
+}
+
+fn resolve_pointer_with_options(
+    opts: &IpfsResolveOptions,
+    repo_root: &PathBuf,
+    branch: &str,
+    rel: &str,
+    inline_bytes: Option<&[u8]>,
+) -> Option<IpfsPointer> {
+    let repo_root = repo_root.clone();
+    let branch = branch.to_string();
+    resolve_ipfs_pointer(opts, &|path| read_file_from_repo(&repo_root, &branch, path).ok(), rel, inline_bytes)
+}
+
+struct FetchedIpfsBytes {
+    bytes: Vec<u8>,
+    content_type: String,
+    cache_key: String,
+}
+
+fn ipfs_bytes_to_cs_object(fetched: &FetchedIpfsBytes) -> CsValue {
+    let mut o = HashMap::new();
+    o.insert(
+        "bodyBase64".to_string(),
+        CsValue::String(B64.encode(&fetched.bytes)),
+    );
+    o.insert(
+        "contentType".to_string(),
+        CsValue::String(fetched.content_type.clone()),
+    );
+    o.insert(
+        "cacheKey".to_string(),
+        CsValue::String(fetched.cache_key.clone()),
+    );
+    CsValue::Object(o)
+}
+
+fn fetched_bytes_from_cs_object(o: &HashMap<String, CsValue>) -> Result<FetchedIpfsBytes, String> {
+    let b64 = cs_obj_str(o, "bodyBase64")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "bytes object missing bodyBase64".to_string())?;
+    let bytes = B64
+        .decode(b64.as_bytes())
+        .map_err(|e| format!("invalid bodyBase64: {e}"))?;
+    let content_type = cs_obj_str(o, "contentType")
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let cache_key = cs_obj_str(o, "cacheKey")
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| hex::encode(Sha256::digest(bytes.as_slice())));
+    Ok(FetchedIpfsBytes {
+        bytes,
+        content_type,
+        cache_key,
+    })
+}
+
+enum FetchIpfsOutcome {
+    Miss,
+    Ok(FetchedIpfsBytes),
+    AssetErr(AssetResolveError),
+}
+
+fn fetch_ipfs_bytes_inner(
+    m: &HashMap<String, CsValue>,
+    repo_root: &PathBuf,
+    branch: &str,
+    opts: &IpfsResolveOptions,
+) -> Result<FetchIpfsOutcome, String> {
+    let rel = cs_obj_str(m, "relPath").unwrap_or("").trim_start_matches('/');
+    if rel.is_empty() {
+        return Ok(FetchIpfsOutcome::Miss);
+    }
+    let inline = optional_body_bytes_from_ctx(m, repo_root, branch)?;
+    let wait_secs = parse_wait_from_ctx(m);
+    let Some(pointer) =
+        resolve_pointer_with_options(opts, repo_root, branch, rel, inline.as_deref())
+    else {
+        return Ok(FetchIpfsOutcome::Miss);
+    };
+    match resolve_pointer_blob(&pointer, wait_secs) {
+        Ok((bytes, ct)) => {
+            let content_type = if ct.trim().is_empty() {
+                pointer_content_type(&pointer, rel)
+            } else {
+                ct
+            };
+            Ok(FetchIpfsOutcome::Ok(FetchedIpfsBytes {
+                bytes,
+                content_type,
+                cache_key: format!("ipfs:{}", pointer.cid),
+            }))
+        }
+        Err(e) => Ok(FetchIpfsOutcome::AssetErr(e)),
+    }
+}
+
+fn parse_optimize_raster_args(
+    args: &[CsValue],
+) -> (Option<&HashMap<String, CsValue>>, Option<u32>) {
+    let mut bytes_obj = None;
+    let mut width = None;
+    for arg in args.iter().skip(1) {
+        let CsValue::Object(o) = arg else { continue };
+        if o.contains_key("bodyBase64") {
+            bytes_obj = Some(o);
+        }
+        if o.contains_key("width") {
+            width = parse_width_from_opts(o).or(width);
+        }
+    }
+    (bytes_obj, width)
+}
+
+fn hook_file_object_webp(webp_bytes: &[u8]) -> CsValue {
+    let mut headers = HashMap::new();
+    headers.insert(
+        "Cache-Control".to_string(),
+        CsValue::String("public, max-age=604800".into()),
+    );
+    let mut file = HashMap::new();
+    file.insert("kind".to_string(), CsValue::String("file".into()));
+    file.insert(
+        "contentType".to_string(),
+        CsValue::String("image/webp".into()),
+    );
+    file.insert(
+        "bodyBase64".to_string(),
+        CsValue::String(B64.encode(webp_bytes)),
+    );
+    file.insert("headers".to_string(), CsValue::Object(headers));
+    CsValue::Object(file)
+}
+
+fn hook_file_object_bytes(bytes: &[u8], content_type: &str, cache_control: &str) -> CsValue {
+    let mut headers = HashMap::new();
+    headers.insert(
+        "Cache-Control".to_string(),
+        CsValue::String(cache_control.into()),
+    );
+    let mut file = HashMap::new();
+    file.insert("kind".to_string(), CsValue::String("file".into()));
+    file.insert(
+        "contentType".to_string(),
+        CsValue::String(content_type.to_string()),
+    );
+    let is_text = content_type.to_ascii_lowercase().starts_with("text/")
+        || content_type.contains("json")
+        || content_type.contains("javascript");
+    if is_text && std::str::from_utf8(bytes).is_ok() {
+        file.insert(
+            "bodyUtf8".to_string(),
+            CsValue::String(String::from_utf8_lossy(bytes).into_owned()),
+        );
+    } else {
+        file.insert(
+            "bodyBase64".to_string(),
+            CsValue::String(B64.encode(bytes)),
+        );
+    }
+    file.insert("headers".to_string(), CsValue::Object(headers));
+    CsValue::Object(file)
+}
+
+fn hook_file_object_asset_error(err: &AssetResolveError) -> CsValue {
+    let body = serde_json::json!({
+        "error": err.code.as_str(),
+        "message": err.message,
+        "cid": err.cid,
+        "retryable": err.code.retryable(),
+    })
+    .to_string();
+    let mut headers = HashMap::new();
+    headers.insert(
+        ASSET_ERROR_HEADER.to_string(),
+        CsValue::String(err.code.as_str().into()),
+    );
+    headers.insert(
+        "Cache-Control".to_string(),
+        CsValue::String("public, max-age=60".into()),
+    );
+    if let Some(ra) = err.retry_after_secs {
+        headers.insert(
+            "Retry-After".to_string(),
+            CsValue::String(ra.to_string()),
+        );
+    }
+    let mut file = HashMap::new();
+    file.insert("kind".to_string(), CsValue::String("file".into()));
+    file.insert(
+        "status".to_string(),
+        CsValue::Number(err.code.status().as_u16() as f64),
+    );
+    file.insert(
+        "contentType".to_string(),
+        CsValue::String("application/json; charset=utf-8".into()),
+    );
+    file.insert("bodyUtf8".to_string(), CsValue::String(body));
+    file.insert("headers".to_string(), CsValue::Object(headers));
+    CsValue::Object(file)
+}
+
+fn hook_file_object_html(html: &str) -> CsValue {
+    let mut headers = HashMap::new();
+    headers.insert(
+        "Cache-Control".to_string(),
+        CsValue::String("public, max-age=3600".into()),
+    );
+    headers.insert("Vary".to_string(), CsValue::String("Accept".into()));
+    let mut file = HashMap::new();
+    file.insert("kind".to_string(), CsValue::String("file".into()));
+    file.insert(
+        "contentType".to_string(),
+        CsValue::String("text/html; charset=utf-8".into()),
+    );
+    file.insert("bodyUtf8".to_string(), CsValue::String(html.to_string()));
+    file.insert("headers".to_string(), CsValue::Object(headers));
+    CsValue::Object(file)
+}
+
+fn ctx_flag_true(m: &HashMap<String, CsValue>, key: &str) -> bool {
+    match m.get(key) {
+        Some(CsValue::Bool(b)) => *b,
+        Some(CsValue::String(s)) => {
+            let s = s.to_ascii_lowercase();
+            s == "1" || s == "true" || s == "yes" || s == "on"
+        }
+        _ => false,
+    }
+}
+
+fn markdown_body_from_ctx(
+    m: &HashMap<String, CsValue>,
+    repo_root: &PathBuf,
+    branch: &str,
+) -> Result<Vec<u8>, String> {
+    if let Some(b64) = cs_obj_str(m, "bodyBase64").filter(|s| !s.is_empty()) {
+        return B64.decode(b64.as_bytes())
+            .map_err(|e| format!("markdownHtmlFromGetContext: invalid bodyBase64: {e}"));
+    }
+    if let Some(rel) = cs_obj_str(m, "relPath").filter(|s| !s.is_empty()) {
+        return read_file_from_repo(repo_root, branch, rel).map_err(|e| e.to_string());
+    }
+    Err("markdownHtmlFromGetContext: missing bodyBase64 and relPath".into())
+}
+
+/// Markdown + `markdownHtmlRequest` ⇒ static HTML via md2ast. Returns **`null`** if not eligible.
+fn markdown_html_from_get_context_native(
+    repo_root: PathBuf,
+    branch: String,
+    args: &[CsValue],
+) -> Result<CsValue, String> {
+    let ctx_obj = args.first().ok_or_else(|| {
+        "markdownHtmlFromGetContext requires hook context object".to_string()
+    })?;
+    let CsValue::Object(m) = ctx_obj else {
+        return Err(
+            "@relay/md markdownHtmlFromGetContext: first arg must be an object".into(),
+        );
+    };
+    if !ctx_flag_true(m, "markdownHtmlRequest") {
+        return Ok(CsValue::Null);
+    }
+    let ct = inferred_content_type(m);
+    let rel = cs_obj_str(m, "relPath").unwrap_or("");
+    if !crate::git::markdown_html::is_markdown_content_type(&ct)
+        && !crate::git::markdown_html::is_markdown_path(rel)
+    {
+        return Ok(CsValue::Null);
+    }
+    let bytes = markdown_body_from_ctx(m, &repo_root, &branch)?;
+    let md = String::from_utf8_lossy(&bytes);
+    let html = crate::git::markdown_html::markdown_to_html_fragment(&md)?;
+    Ok(hook_file_object_html(&html))
+}
+
+fn md_exports(repo_root: PathBuf, branch: String) -> CsValue {
+    let from_ctx = {
+        let repo_root = repo_root.clone();
+        let branch = branch.clone();
+        Rc::new(move |args: &[CsValue]| {
+            markdown_html_from_get_context_native(repo_root.clone(), branch.clone(), args)
+        })
+    };
+    let mut md = HashMap::new();
+    md.insert(
+        "markdownHtmlFromGetContext".to_string(),
+        CsValue::NativeFn(NativeFnClosure(from_ctx)),
+    );
+    CsValue::Object(md)
+}
+
+/// Raster resize/WebP (+ disk cache). Requires **`opts.width`**; optional **`bytes`** from `fetchIpfsBytes`.
+fn optimize_raster_from_get_context_native(
+    repo_root: PathBuf,
+    branch: String,
+    repo_slug: String,
+    cache: Arc<ImageDiskCache>,
+    args: &[CsValue],
+) -> Result<CsValue, String> {
+    let ctx_obj = args.first().ok_or_else(|| {
+        "optimizeRasterFromGetContext requires hook context object".to_string()
+    })?;
+    let CsValue::Object(m) = ctx_obj else {
+        return Err(
+            "@relay/image optimizeRasterFromGetContext: first arg must be an object".into(),
+        );
+    };
+    let (bytes_arg, max_w) = parse_optimize_raster_args(args);
+    let Some(max_w) = max_w else {
+        return Ok(CsValue::Null);
+    };
+
+    let (raw, cache_seg) = if let Some(o) = bytes_arg {
+        let fetched = fetched_bytes_from_cs_object(o)?;
+        if !is_raster_content_type(&fetched.content_type) {
+            return Ok(CsValue::Null);
+        }
+        (fetched.bytes, fetched.cache_key)
+    } else {
+        let ct = inferred_content_type(m);
+        if !is_raster_content_type(&ct) {
+            return Ok(CsValue::Null);
+        }
+        let git_bytes = optional_body_bytes_from_ctx(m, &repo_root, &branch)?
+            .unwrap_or_default();
+        if git_bytes.is_empty() {
+            return Ok(CsValue::Null);
+        }
+        let blob_explicit = cs_obj_str(m, "blobOid").unwrap_or("");
+        let blob_seg = if blob_explicit.is_empty() {
+            hex::encode(Sha256::digest(git_bytes.as_slice()))
+        } else {
+            blob_explicit.to_string()
+        };
+        (git_bytes, blob_seg)
+    };
+
+    let commit = cs_obj_str(m, "commitSha").unwrap_or("");
+    let key = cache_key_digest(&repo_slug, &branch, commit, &cache_seg, max_w);
+
+    if let Ok(Some(cached)) = cache.read_cached(&key) {
+        return Ok(hook_file_object_webp(&cached));
+    }
+
+    let webp =
+        crate::git::image_transform::resize_to_webp(&raw, max_w).map_err(|e| e.to_string())?;
+
+    let _ = cache.write_and_evict(&key, &webp);
+
+    Ok(hook_file_object_webp(&webp))
+}
+
+fn query_width_from_get_context_native(args: &[CsValue]) -> Result<CsValue, String> {
+    let ctx_obj = args
+        .first()
+        .ok_or_else(|| "queryWidth requires hook context object".to_string())?;
+    let CsValue::Object(m) = ctx_obj else {
+        return Err("@relay/image queryWidth: first arg must be an object".into());
+    };
+    let keys = width_keys_from_opts(args);
+    Ok(query_width_from_ctx(m, &keys)
+        .map(|w| CsValue::Number(w as f64))
+        .unwrap_or(CsValue::Null))
+}
+
+fn parse_wait_from_ctx(m: &HashMap<String, CsValue>) -> u64 {
+    if let Some(CsValue::Number(n)) = m.get("ipfsWait") {
+        return (*n as u64).min(ipfs::wait_max_from_env());
+    }
+    let q = m.get("query").and_then(|v| match v {
+        CsValue::Object(inner) => Some(inner),
+        _ => None,
+    });
+    let from_q = q
+        .and_then(|q| q.get("wait"))
+        .and_then(|v| match v {
+            CsValue::String(s) => s.parse::<u64>().ok(),
+            CsValue::Number(n) => Some(*n as u64),
+            _ => None,
+        })
+        .unwrap_or(0);
+    from_q.min(ipfs::wait_max_from_env())
+}
+
+fn fetch_ipfs_bytes_from_get_context_native(
+    repo_root: PathBuf,
+    branch: String,
+    args: &[CsValue],
+) -> Result<CsValue, String> {
+    let ctx_obj = args.first().ok_or_else(|| {
+        "fetchIpfsBytesFromGetContext requires hook context object".to_string()
+    })?;
+    let CsValue::Object(m) = ctx_obj else {
+        return Err(
+            "@relay/ipfs fetchIpfsBytesFromGetContext: first arg must be an object".into(),
+        );
+    };
+    let opts = parse_ipfs_resolve_options(args);
+    match fetch_ipfs_bytes_inner(m, &repo_root, &branch, &opts)? {
+        FetchIpfsOutcome::Ok(fetched) => Ok(ipfs_bytes_to_cs_object(&fetched)),
+        FetchIpfsOutcome::Miss => Ok(CsValue::Null),
+        FetchIpfsOutcome::AssetErr(e) => Ok(hook_file_object_asset_error(&e)),
+    }
+}
+
+/// IPFS pointer or manifest-backed path ⇒ fetch CID (disk cache, then gateway). Returns **`null`** if not eligible.
+fn resolve_ipfs_from_get_context_native(
+    repo_root: PathBuf,
+    branch: String,
+    args: &[CsValue],
+) -> Result<CsValue, String> {
+    let ctx_obj = args.first().ok_or_else(|| {
+        "resolveIpfsFromGetContext requires hook context object".to_string()
+    })?;
+    let CsValue::Object(m) = ctx_obj else {
+        return Err(
+            "@relay/ipfs resolveIpfsFromGetContext: first arg must be an object".into(),
+        );
+    };
+    let opts = parse_ipfs_resolve_options(args);
+    match fetch_ipfs_bytes_inner(m, &repo_root, &branch, &opts)? {
+        FetchIpfsOutcome::Ok(fetched) => Ok(hook_file_object_bytes(
+            &fetched.bytes,
+            &fetched.content_type,
+            "public, max-age=604800",
+        )),
+        FetchIpfsOutcome::Miss => Ok(CsValue::Null),
+        FetchIpfsOutcome::AssetErr(e) => Ok(hook_file_object_asset_error(&e)),
+    }
+}
+
+fn ipfs_exports(repo_root: PathBuf, branch: String) -> CsValue {
+    let repo_fetch = repo_root.clone();
+    let branch_fetch = branch.clone();
+    let fetch_bytes = Rc::new(move |args: &[CsValue]| {
+        fetch_ipfs_bytes_from_get_context_native(repo_fetch.clone(), branch_fetch.clone(), args)
+    });
+    let repo_resolve = repo_root.clone();
+    let branch_resolve = branch.clone();
+    let resolve = Rc::new(move |args: &[CsValue]| {
+        resolve_ipfs_from_get_context_native(repo_resolve.clone(), branch_resolve.clone(), args)
+    });
+    let mut ipfs_mod = HashMap::new();
+    ipfs_mod.insert(
+        "fetchIpfsBytesFromGetContext".to_string(),
+        CsValue::NativeFn(NativeFnClosure(fetch_bytes)),
+    );
+    ipfs_mod.insert(
+        "resolveIpfsFromGetContext".to_string(),
+        CsValue::NativeFn(NativeFnClosure(resolve)),
+    );
+    CsValue::Object(ipfs_mod)
+}
+
+fn image_exports(
+    repo_root: PathBuf,
+    branch: String,
+    repo_slug: String,
+    disk_cache: Arc<ImageDiskCache>,
+) -> CsValue {
+    let cache = disk_cache.clone();
+    let to_webp = Rc::new(move |args: &[CsValue]| {
+        let b64 = args
+            .first()
+            .and_then(|v| match v {
+                CsValue::String(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .ok_or_else(|| "@relay/image toWebp requires base64 string".to_string())?;
+        let max_w = args
+            .get(1)
+            .and_then(|v| match v {
+                CsValue::Number(n) => Some(*n as u32),
+                _ => None,
+            })
+            .unwrap_or(800);
+        let raw = B64
+            .decode(b64.as_bytes())
+            .map_err(|e| format!("base64: {}", e))?;
+        let out =
+            crate::git::image_transform::resize_to_webp(&raw, max_w).map_err(|e| e.to_string())?;
+        Ok(CsValue::String(B64.encode(out)))
+    });
+    let from_ctx = {
+        let repo_root = repo_root.clone();
+        let branch = branch.clone();
+        let repo_slug = repo_slug.clone();
+        let cache = cache.clone();
+        Rc::new(move |args: &[CsValue]| {
+            optimize_raster_from_get_context_native(
+                repo_root.clone(),
+                branch.clone(),
+                repo_slug.clone(),
+                cache.clone(),
+                args,
+            )
+        })
+    };
+    let mut image = HashMap::new();
+    image.insert(
+        "toWebp".to_string(),
+        CsValue::NativeFn(NativeFnClosure(to_webp)),
+    );
+    let query_w = Rc::new(move |args: &[CsValue]| query_width_from_get_context_native(args));
+    image.insert(
+        "queryWidth".to_string(),
+        CsValue::NativeFn(NativeFnClosure(query_w)),
+    );
+    image.insert(
+        "optimizeRasterFromGetContext".to_string(),
+        CsValue::NativeFn(NativeFnClosure(from_ctx)),
+    );
+    CsValue::Object(image)
+}
+
+/// Host for server hooks: delegates browser stubs to [`MockHost`]; resolves `@relay/git` and, when
+/// enabled, `@relay/image`, `@relay/ipfs`, and `@relay/md` from [`load_module`](Host::load_module).
+pub struct CleverScriptServerHost {
+    inner: Rc<RefCell<MockHost>>,
+    git_exports: CsValue,
+    image_exports: Option<CsValue>,
+    ipfs_exports: Option<CsValue>,
+    md_exports: Option<CsValue>,
+    #[allow(dead_code)]
+    image_disk_cache: Option<Arc<ImageDiskCache>>,
+}
+
+impl CleverScriptServerHost {
+    pub fn new(repo_root: PathBuf, branch: String, include_image: bool) -> Self {
+        let repo_slug = repo_root
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("repo")
+            .to_string();
+        let git_exports = git_exports(repo_root.clone(), branch.clone());
+        let (image_exports, image_disk_cache) = if include_image {
+            let dc = Arc::new(ImageDiskCache::from_env());
+            (
+                Some(image_exports(
+                    repo_root.clone(),
+                    branch.clone(),
+                    repo_slug,
+                    dc.clone(),
+                )),
+                Some(dc),
+            )
+        } else {
+            (None, None)
+        };
+        let md_exports = if include_image {
+            Some(md_exports(repo_root.clone(), branch.clone()))
+        } else {
+            None
+        };
+        let ipfs_exports = if include_image {
+            Some(ipfs_exports(repo_root.clone(), branch.clone()))
+        } else {
+            None
+        };
+        Self {
+            inner: MockHost::new(),
+            git_exports,
+            image_exports,
+            ipfs_exports,
+            md_exports,
+            image_disk_cache,
+        }
+    }
+
+    pub fn host_handle(repo_root: PathBuf, branch: String, include_image: bool) -> HostHandle {
+        Rc::new(RefCell::new(Self::new(repo_root, branch, include_image)))
+    }
+}
+
+impl Host for CleverScriptServerHost {
+    fn fetch(&self, url: &str, options: Option<&CsValue>) -> Result<CsValue, String> {
+        self.inner.borrow().fetch(url, options)
+    }
+
+    fn navigate(&self, path: &str) -> Result<(), String> {
+        self.inner.borrow().navigate(path)
+    }
+
+    fn create_element(
+        &self,
+        tag: &str,
+        props: &CsValue,
+        children: &[CsValue],
+    ) -> Result<CsValue, String> {
+        self.inner.borrow().create_element(tag, props, children)
+    }
+
+    fn load_module(&self, path: &str) -> Result<CsValue, String> {
+        match path {
+            RELAY_GIT_MODULE => Ok(self.git_exports.clone()),
+            RELAY_IMAGE_MODULE => self
+                .image_exports
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| format!("unknown module {:?}", path)),
+            RELAY_IPFS_MODULE => self
+                .ipfs_exports
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| format!("unknown module {:?}", path)),
+            RELAY_MD_MODULE => self
+                .md_exports
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| format!("unknown module {:?}", path)),
+            _ => Err(format!("unknown module {:?}", path)),
+        }
+    }
+
+    fn log(&self, level: &str, message: &str) {
+        self.inner.borrow().log(level, message)
+    }
+}
+
+/// **`next`** for GET hooks (`export default function run(ctx, next)`): reads `ctx.relPath` from git and
+/// returns a hook-shaped file object, mirroring the default template GET fallback (UTF-8 vs base64
+/// bodies; JSON body with HTTP 404 on read failure).
+pub fn hook_default_next_native_fn(
+    ctx: serde_json::Value,
+    repo_root: PathBuf,
+    branch: String,
+) -> CsValue {
+    CsValue::NativeFn(NativeFnClosure(Rc::new(move |_args| {
+        default_plain_file_hook_from_context(&ctx, &repo_root, &branch)
+    })))
+}
+
+fn default_plain_file_hook_from_context(
+    ctx: &serde_json::Value,
+    repo_root: &PathBuf,
+    branch: &str,
+) -> Result<CsValue, String> {
+    let rel = ctx.get("relPath").and_then(|v| v.as_str()).unwrap_or("");
+    let ct_field = ctx
+        .get("contentType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let inferred = (!rel.is_empty()).then(|| {
+        mime_guess::from_path(rel)
+            .first_or_octet_stream()
+            .essence_str()
+            .to_string()
+    });
+    let ct = if !ct_field.is_empty() {
+        ct_field.to_string()
+    } else {
+        inferred.unwrap_or_default()
+    };
+
+    match read_file_from_repo(repo_root, branch, rel) {
+        Ok(bytes) => Ok(default_plain_ok_response(&ct, &bytes)),
+        Err(_) => Ok(default_plain_not_found(rel)),
+    }
+}
+
+fn default_plain_ok_response(declared_ct: &str, bytes: &[u8]) -> CsValue {
+    let ct_trim = declared_ct.trim();
+    let ct_lower = ct_trim.to_ascii_lowercase();
+    let is_text_like = ct_lower.starts_with("text/")
+        || ct_lower.starts_with("application/json");
+
+    let mut headers = HashMap::new();
+    headers.insert(
+        "Cache-Control".to_string(),
+        CsValue::String("public, max-age=3600".into()),
+    );
+
+    let mut obj = HashMap::new();
+    obj.insert("kind".to_string(), CsValue::String("file".into()));
+
+    if is_text_like {
+        let content_type = if ct_trim.is_empty() {
+            "text/plain; charset=utf-8".to_string()
+        } else {
+            ct_trim.to_string()
+        };
+        obj.insert("contentType".to_string(), CsValue::String(content_type));
+        obj.insert(
+            "bodyUtf8".to_string(),
+            CsValue::String(String::from_utf8_lossy(bytes).into_owned()),
+        );
+    } else {
+        let content_type = if ct_trim.is_empty() {
+            "application/octet-stream".to_string()
+        } else {
+            ct_trim.to_string()
+        };
+        obj.insert("contentType".to_string(), CsValue::String(content_type));
+        obj.insert(
+            "bodyBase64".to_string(),
+            CsValue::String(B64.encode(bytes)),
+        );
+    }
+
+    obj.insert("headers".to_string(), CsValue::Object(headers));
+    CsValue::Object(obj)
+}
+
+fn default_plain_not_found(rel_path: &str) -> CsValue {
+    let body = serde_json::json!({
+        "ok": false,
+        "status": "not_found",
+        "path": rel_path,
+        "messageForReaders": "There is nothing at this path in the repository branch you requested. If you followed a link or typed the URL, check the path spelling and branch name.",
+        "hintForDebugging": format!(
+            "read_file_from_repo failed for relPath `{}` (branch HEAD on this gateway); file missing, wrong branch, or not yet pushed.",
+            rel_path
+        ),
+    }).to_string();
+    let mut headers = HashMap::new();
+    headers.insert(
+        "Cache-Control".to_string(),
+        CsValue::String("public, max-age=60".into()),
+    );
+    let mut obj = HashMap::new();
+    obj.insert("kind".to_string(), CsValue::String("file".into()));
+    obj.insert("status".to_string(), CsValue::Number(404.0));
+    obj.insert(
+        "contentType".to_string(),
+        CsValue::String("application/json; charset=utf-8".into()),
+    );
+    obj.insert("bodyUtf8".to_string(), CsValue::String(body));
+    obj.insert("headers".to_string(), CsValue::Object(headers));
+    CsValue::Object(obj)
+}
+
+/// Insert `requestHeaders` (sanitized) into hook JSON context.
+pub fn augment_get_context_headers(context: &mut Value, headers: &HeaderMap) {
+    let Value::Object(map) = context else {
+        return;
+    };
+    map.insert(
+        "requestHeaders".to_string(),
+        crate::git::request_headers::request_headers_object(headers),
+    );
+}

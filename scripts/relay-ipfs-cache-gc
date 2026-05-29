@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""
+Remove IPFS cache dirs for CIDs no longer referenced on publish branches.
+
+  RELAY_REPO_PATH=/var/lib/relay/repos RELAY_IPFS_CACHE_ROOT=/var/cache/relay-ipfs \\
+    relay-ipfs-cache-gc [--dry-run]
+
+Optional: RELAY_MASTER_CATALOG_PATH for publish_branch per repo.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+POINTER_MAGIC = "relay-ipfs-v1"
+MANIFEST = "assets.manifest.json"
+GRACE_DAYS = int(os.environ.get("RELAY_IPFS_GC_GRACE_DAYS", "14"))
+
+
+def run(cmd: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def catalog_publish_branch(catalog_path: Path, slug: str) -> str:
+    p = catalog_path / "catalog" / "repos" / f"{slug}.json"
+    if p.is_file():
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        return doc.get("publish_branch", "main")
+    return "main"
+
+
+def collect_cids_from_repo(repo: Path, branch: str) -> set[str]:
+    cids: set[str] = set()
+    proc = run(["git", "-C", str(repo), "ls-tree", "-r", branch])
+    if proc.returncode != 0:
+        return cids
+    for line in proc.stdout.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        path = parts[1]
+        show = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{branch}:{path}"],
+            capture_output=True,
+        )
+        if show.returncode != 0:
+            continue
+        data = show.stdout
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if text.startswith(POINTER_MAGIC + "\n"):
+            lines = text.splitlines()
+            if len(lines) >= 2:
+                cids.add(lines[1].strip())
+    manifest = run(["git", "-C", str(repo), "show", f"{branch}:{MANIFEST}"])
+    if manifest.returncode == 0:
+        try:
+            doc = json.loads(manifest.stdout)
+            for a in doc.get("assets", []):
+                if a.get("ipfs"):
+                    cids.add(a["ipfs"])
+        except json.JSONDecodeError:
+            pass
+    return cids
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+
+    repo_root = Path(os.environ.get("RELAY_REPO_PATH", "/var/lib/relay/repos"))
+    cache_root = Path(os.environ.get("RELAY_IPFS_CACHE_ROOT", "/tmp/ipfs-cache"))
+    catalog_path = os.environ.get("RELAY_MASTER_CATALOG_PATH")
+    catalog = Path(catalog_path) if catalog_path else None
+
+    if not cache_root.is_dir():
+        print(f"cache root missing: {cache_root}")
+        return 0
+
+    active: set[str] = set()
+    for bare in repo_root.glob("*.git"):
+        slug = bare.name.removesuffix(".git")
+        branch = catalog_publish_branch(catalog, slug) if catalog else "main"
+        active |= collect_cids_from_repo(bare, branch)
+        print(f"{slug}@{branch}: {len(active)} cids total")
+
+    now = time.time()
+    grace_secs = GRACE_DAYS * 86400
+    freed = 0
+    for entry in cache_root.iterdir():
+        if not entry.is_dir():
+            continue
+        cid = entry.name
+        if cid in active:
+            continue
+        data = entry / "data"
+        if not data.is_file():
+            continue
+        age = now - data.stat().st_mtime
+        if age < grace_secs:
+            continue
+        sz = data.stat().st_size
+        if args.dry_run:
+            print(f"would remove {cid} ({sz} bytes)")
+        else:
+            shutil.rmtree(entry)
+            print(f"removed {cid} ({sz} bytes)")
+        freed += sz
+
+    print(f"done; freed ~{freed} bytes (dry_run={args.dry_run})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,27 @@
+# Runtime-only image for local IPFS dev (mount release binaries from host).
+# Match host glibc (e.g. Ubuntu 24.04 dev machines) when mounting release binaries.
+FROM ubuntu:24.04
+RUN groupadd -r relay && useradd -r -g relay -d /srv/relay -s /usr/sbin/nologin relay \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libssl3t64 git curl \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /srv/relay
+RUN mkdir -p /srv/relay/data /srv/relay/www /srv/relay/logs /srv/relay/hooks \
+    /srv/relay/ipfs-cache /srv/relay/image-cache \
+    && chown -R 1000:1000 /srv/relay \
+    && ln -sf /usr/local/bin/relay-hook-handler /srv/relay/hooks/pre-receive \
+    && ln -sf /usr/local/bin/relay-hook-handler /srv/relay/hooks/post-receive \
+    && ln -sf /usr/local/bin/relay-hook-handler /srv/relay/hooks/post-update \
+    && git config --system core.hooksPath /srv/relay/hooks
+COPY relay/relay-gateway/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENV RELAY_REPO_PATH=/srv/relay/data \
+    RELAY_HTTP_PORT=8080 \
+    RELAY_GIT_PORT=9418 \
+    DEFAULT_REPOS="" \
+    RUST_LOG=info
+EXPOSE 8080 9418
+HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=6 \
+    CMD curl -sf "http://localhost:${RELAY_HTTP_PORT}/api/config" || exit 1
+USER 1000:1000
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

@@ -96,8 +96,8 @@ pub fn branch_from(headers: &HeaderMap) -> String {
     crate::types::DEFAULT_BRANCH.to_string()
 }
 
-/// Branch for a request: optional `X-Relay-Branch`, else bare repo `HEAD` target, else **`main`**.
-/// Lets `GET http://repo.node/file` work when the default branch is **`master`** (no extra headers).
+/// Branch for a request: optional `X-Relay-Branch`, else bare repo default branch, else **`main`**.
+/// Default branch prefers symbolic `HEAD` when it exists; stale `HEAD` (e.g. `master` after rename) falls back to `main`.
 pub fn branch_for_request(
     headers: &HeaderMap,
     repo_root: &PathBuf,

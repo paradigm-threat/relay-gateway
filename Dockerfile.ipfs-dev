@@ -1,0 +1,51 @@
+# Dev image: build relay-gateway with path deps (relay-runtime, md2ast).
+# Build context must be the parent of relay/, relay-runtime/, and md2ast/ (e.g. ~/dev):
+#   docker build -f relay/relay-gateway/Dockerfile.ipfs-dev -t relay-gateway:dev .
+FROM lukemathwalker/cargo-chef:latest-rust-1.85-slim AS chef
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config libssl-dev build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM chef AS planner
+COPY relay/relay-gateway/ .
+COPY relay-runtime /relay-runtime
+COPY md2ast /md2ast
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+COPY relay/relay-gateway/ .
+COPY relay-runtime /relay-runtime
+COPY md2ast /md2ast
+RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo build --release --bin relay-gateway \
+    && cargo build --release --bin relay-hook-handler
+
+FROM debian:bookworm-slim
+RUN groupadd -r relay && useradd -r -g relay -d /srv/relay -s /sbin/nologin relay
+WORKDIR /srv/relay
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libssl3 git curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/relay-gateway /usr/local/bin/relay-gateway
+COPY --from=builder /app/target/release/relay-hook-handler /usr/local/bin/relay-hook-handler
+RUN mkdir -p /srv/relay/data /srv/relay/www /srv/relay/logs /srv/relay/hooks /srv/relay/ipfs-cache /srv/relay/image-cache \
+    && chown -R relay:relay /srv/relay
+RUN ln -s /usr/local/bin/relay-hook-handler /srv/relay/hooks/pre-receive \
+    && ln -s /usr/local/bin/relay-hook-handler /srv/relay/hooks/post-receive \
+    && ln -s /usr/local/bin/relay-hook-handler /srv/relay/hooks/post-update \
+    && git config --system core.hooksPath /srv/relay/hooks
+COPY relay/relay-gateway/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENV RELAY_REPO_PATH=/srv/relay/data \
+    RELAY_STATIC_DIR=/srv/relay/www \
+    RELAY_HTTP_PORT=8080 \
+    RELAY_GIT_PORT=9418 \
+    DEFAULT_REPOS="" \
+    RUST_LOG=info
+EXPOSE 8080 9418
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=5 \
+    CMD curl -sf "http://localhost:${RELAY_HTTP_PORT}/api/config" || exit 1
+USER relay
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

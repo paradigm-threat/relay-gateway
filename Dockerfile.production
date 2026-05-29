@@ -1,0 +1,70 @@
+# Production image for relay-gateway (GitLab CI / Rackspace Spot).
+#
+# Build from a staged flat context (see scripts/stage-docker-context.sh):
+#   ./scripts/docker-build-production.sh
+
+FROM lukemathwalker/cargo-chef:latest-rust-1.85-slim AS chef
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config libssl-dev build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM chef AS planner
+COPY relay-gateway/ .
+COPY relay-runtime /relay-runtime
+COPY md2ast /md2ast
+COPY relay/relay-gateway/themed-styler /relay/relay-gateway/themed-styler
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+COPY relay-gateway/ .
+COPY relay-runtime /relay-runtime
+COPY md2ast /md2ast
+COPY relay/relay-gateway/themed-styler /relay/relay-gateway/themed-styler
+RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo build --release --bin relay-gateway \
+    && cargo build --release --bin relay-hook-handler
+
+FROM ubuntu:24.04
+ARG DEFAULT_REPOS="https://gitlab.com/clevertree/relay-template.git"
+LABEL org.opencontainers.image.source="https://gitlab.com/clevertree/relay-server"
+LABEL org.opencontainers.image.title="relay-gateway"
+
+RUN groupadd -r relay && useradd -r -g relay -d /srv/relay -s /usr/sbin/nologin relay \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libssl3t64 git curl xz-utils nodejs jq certbot python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /srv/relay
+
+COPY --from=builder /app/target/release/relay-gateway /usr/local/bin/relay-gateway
+COPY --from=builder /app/target/release/relay-hook-handler /usr/local/bin/relay-hook-handler
+
+RUN mkdir -p /srv/relay/data /srv/relay/www /srv/relay/prebuilt /srv/relay/logs /srv/relay/hooks \
+    /srv/relay/ipfs-cache /srv/relay/image-cache \
+    && chown -R relay:relay /srv/relay \
+    && ln -sf /usr/local/bin/relay-hook-handler /srv/relay/hooks/pre-receive \
+    && ln -sf /usr/local/bin/relay-hook-handler /srv/relay/hooks/post-receive \
+    && ln -sf /usr/local/bin/relay-hook-handler /srv/relay/hooks/post-update \
+    && git config --system core.hooksPath /srv/relay/hooks
+
+COPY relay-gateway/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENV RELAY_REPO_PATH=/srv/relay/data \
+    RELAY_STATIC_DIR=/srv/relay/www \
+    RELAY_HTTP_PORT=8080 \
+    RELAY_GIT_PORT=9418 \
+    DEFAULT_REPOS=${DEFAULT_REPOS} \
+    RELAY_IPFS_CACHE_ROOT=/srv/relay/ipfs-cache \
+    RELAY_IMAGE_CACHE_ROOT=/srv/relay/image-cache \
+    RUST_LOG=info
+
+EXPOSE 8080 9418
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=5 \
+    CMD curl -sf "http://localhost:${RELAY_HTTP_PORT}/api/config" || exit 1
+
+USER relay
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

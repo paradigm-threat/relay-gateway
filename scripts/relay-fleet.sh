@@ -35,6 +35,9 @@ Global flags (before subcommand):
   --build             With update/deploy-all: run pack-linode-deploy.sh first
   --interactive       Allow prompts (default: BatchMode, no stdin)
 
+Trailing --build (only for update / deploy-all):
+  ./relay-fleet.sh update --build   → same intent as ./relay-fleet.sh --build update
+
 Subcommands:
   hosts               Print fleet hosts, SSH user, identity path
   ssh-check           Parallel SSH probe (fails if any host fails)
@@ -45,6 +48,7 @@ Subcommands:
   repair              Remote: sudo install.sh repair
   features-set        Remote install.sh reconfigure-features (non-interactive)
   reclone-repo REPO   Remote bare reset + catalog sync; optional --peer for git:// fetch
+  fix-bare-head      Point each catalog bare repo symbolic HEAD at its .gitmodules branch (default main)
   bootstrap-ssh       Install deploy pubkey for ari via root+sshpass (SSHPASS or RELAY_ROOT_PASSWORD)
   reinstall           Safe default = update. Destructive: --danger-wipe-relay-data --confirm-wipe=<fqdn>
 
@@ -62,7 +66,8 @@ reclone-repo flags:
 Examples:
   ./scripts/relay-fleet.sh ssh-check
   ./scripts/relay-fleet.sh status --only=atlanta3.relaygateway.net
-  ./scripts/relay-fleet.sh deploy-all --build
+  ./scripts/relay-fleet.sh --build deploy-all
+  ./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net --build update
   ./scripts/relay-fleet.sh features-set --only=atlanta3.relaygateway.net --piper=0 --npm-pkgs=
 EOF
   exit "${1:-0}"
@@ -89,6 +94,12 @@ done
 
 SUB="${1:-}"; shift || true
 [[ -n "$SUB" ]] || usage 1
+
+# Ergonomic: `update --build` / `deploy-all --build` works even though global flags normally precede subcommand.
+if [[ "$SUB" == update || "$SUB" == deploy-all ]] && [[ "${1:-}" == --build ]]; then
+  BUILD=1
+  shift || true
+fi
 
 RELAY_SSH_IDENTITY="${RELAY_SSH_IDENTITY:-$HOME/.ssh/id_ed25519_relay_gateway}"
 RELAY_SSH_USER="${RELAY_SSH_USER:-ari}"
@@ -443,6 +454,43 @@ EOS
   cmd_update
 }
 
+cmd_fix_bare_head() {
+  source_env
+  parse_hosts_to_array
+  local h
+  for h in "${FLEET_HOSTS[@]}"; do
+    echo "[relay-fleet] fix-bare-head begin $h"
+    "${SSH_BATCH[@]}" "$(ssh_target "$h")" bash -s "$DATA_ROOT" "$CATALOG_PATH" <<'EOS'
+set -euo pipefail
+DATA_ROOT="$1" CATALOG="$2"
+sudo -u relay env DATA_ROOT="$DATA_ROOT" CATALOG="$CATALOG" bash -s <<'INNER'
+set -euo pipefail
+cd "$CATALOG"
+while IFS= read -r name; do
+  [[ -z "$name" ]] && continue
+  branch=$(git config --file .gitmodules --get "submodule.${name}.branch" 2>/dev/null || echo main)
+  bare="${DATA_ROOT}/${name}.git"
+  [[ -d "$bare" ]] || continue
+  ref="refs/heads/${branch}"
+  if ! git --git-dir="$bare" rev-parse --verify "$ref" >/dev/null 2>&1; then
+    echo "skip ${name}: missing ${ref}" >&2
+    continue
+  fi
+  current=$(git --git-dir="$bare" symbolic-ref -q HEAD 2>/dev/null || true)
+  if [[ "$current" != "$ref" ]]; then
+    git --git-dir="$bare" symbolic-ref HEAD "$ref"
+    echo "fixed ${name}: HEAD -> ${ref} (was ${current:-<unset>})"
+  else
+    echo "ok ${name}: HEAD already ${ref}"
+  fi
+done < <(git config --file .gitmodules --name-only --get-regexp '^submodule\..*\.path$' | sed -n 's/^submodule\.\(.*\)\.path$/\1/p' | sort -u)
+INNER
+sudo systemctl restart relay-gateway relay-git-daemon 2>/dev/null || true
+EOS
+    echo "[relay-fleet] fix-bare-head end $h"
+  done
+}
+
 case "$SUB" in
   hosts) cmd_hosts ;;
   ssh-check) cmd_ssh_check ;;
@@ -453,6 +501,7 @@ case "$SUB" in
   repair) cmd_repair ;;
   features-set) cmd_features_set "$@" ;;
   reclone-repo) cmd_reclone_repo "$@" ;;
+  fix-bare-head) cmd_fix_bare_head ;;
   bootstrap-ssh) cmd_bootstrap_ssh ;;
   reinstall) cmd_reinstall ;;
   -h|--help|help) usage 0 ;;

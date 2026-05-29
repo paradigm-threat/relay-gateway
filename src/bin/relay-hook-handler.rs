@@ -1,3 +1,5 @@
+use base64::engine::general_purpose::STANDARD as B64_ENGINE;
+use base64::Engine;
 use relay_server::git::{execute_repo_hook, HookContext};
 use std::io::{self, Read};
 use std::path::PathBuf;
@@ -271,7 +273,7 @@ fn extract_changed_files(
             .output()?;
 
         if content_out.status.success() {
-            files.insert(path.to_string(), base64::encode(&content_out.stdout));
+            files.insert(path.to_string(), B64_ENGINE.encode(&content_out.stdout));
         }
     }
 

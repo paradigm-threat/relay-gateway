@@ -1,31 +1,39 @@
-#!/bin/sh
-# Build, tag, push relay image and update DaemonSet.
-# Usage: REGISTRY=ghcr.io/yourorg RELAY_IMAGE_TAG=latest ./build-push-deploy.sh
-set -e
-REGISTRY="${REGISTRY:-}" # e.g. ghcr.io/clevertree
-TAG="${RELAY_IMAGE_TAG:-latest}"
-if [ -z "$REGISTRY" ]; then
-  echo "Set REGISTRY (e.g. ghcr.io/yourorg)"
-  exit 2
-fi
-IMAGE="$REGISTRY/relay:$TAG"
+#!/usr/bin/env bash
+# Build, tag, push relay-gateway image and roll Rackspace DaemonSet.
+# Usage:
+#   REGISTRY=registry.gitlab.com/clevertree/relay-server \
+#   RELAY_IMAGE_TAG=main \
+#   ./build-push-deploy.sh
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GW_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+REGISTRY="${REGISTRY:-registry.gitlab.com/clevertree/relay-server}"
+TAG="${RELAY_IMAGE_TAG:-main}"
+IMAGE="${REGISTRY}/relay-gateway:${TAG}"
 
 echo "Building image $IMAGE"
-cd ../..
-docker build -t $IMAGE .
+"$GW_DIR/scripts/docker-build-production.sh"
+docker tag "${RELAY_IMAGE:-registry.gitlab.com/clevertree/relay-server/relay-gateway:latest}" "$IMAGE"
 
 echo "Pushing image $IMAGE"
-docker push $IMAGE
+docker push "$IMAGE"
 
-# Update the DaemonSet manifest and patch the running DaemonSet
-SED_ESC_IMAGE=$(printf '%s' "$IMAGE" | sed 's/[\/&]/\\&/g')
-# Update in-file manifest
-sed -i.bak "s|image: .*relay:latest|image: $SED_ESC_IMAGE|" ../k8s/relay-daemonset.yaml
+KUBECONFIG="${KUBECONFIG:-/tmp/kubeconfig}"
+for manifest in relay-daemonset.yaml relay-daemonset-dfw2.yaml; do
+  path="$SCRIPT_DIR/../k8s/$manifest"
+  if [[ -f "$path" ]]; then
+    sed -i.bak "s|image: registry.gitlab.com/clevertree/relay-server/relay-gateway:.*|image: ${IMAGE}|" "$path"
+  fi
+done
 
-echo "Applying updated DaemonSet manifest"
-kubectl --kubeconfig=/tmp/kubeconfig apply -f ../k8s/relay-daemonset.yaml
+echo "Applying DaemonSet manifest(s)"
+kubectl --kubeconfig="$KUBECONFIG" apply -f "$SCRIPT_DIR/../k8s/relay-daemonset.yaml"
+if [[ -f "$SCRIPT_DIR/../k8s/relay-daemonset-dfw2.yaml" ]]; then
+  kubectl --kubeconfig="$KUBECONFIG" apply -f "$SCRIPT_DIR/../k8s/relay-daemonset-dfw2.yaml"
+fi
 
-echo "Triggering DaemonSet rollout"
-kubectl --kubeconfig=/tmp/kubeconfig rollout restart daemonset/relay-daemon
+echo "Restarting rollout"
+kubectl --kubeconfig="$KUBECONFIG" rollout restart daemonset/relay-daemon || true
 
 echo "Done"

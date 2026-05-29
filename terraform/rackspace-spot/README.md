@@ -14,7 +14,7 @@ Usage
 3. Run `terraform init` then `terraform apply` in this folder.
 
 Notes
-- This configuration creates a cloudspace and a spot nodepool (Kubernetes) by default. If you prefer a single VM instance with a systemd unit that pulls the GHCR image, I can add that as an alternate, simpler module.
+- This configuration creates a cloudspace and a spot nodepool (Kubernetes) by default. Relay images are built in GitLab CI and pushed to **`registry.gitlab.com/clevertree/relay-server/relay-gateway`** (see `scripts/build-push-deploy.sh`).
 - The Terraform here uses the `rackerlabs/spot` provider. See `variables.tf` and `terraform.tfvars.example` for overridable defaults.
 
 Vercel DNS secrets

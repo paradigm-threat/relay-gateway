@@ -63,3 +63,10 @@ relay-runtime/gradle.properties
 .parcel-cache/
 .eslintcache
 *.tsbuildinfo
+
+# Local Docker IPFS dev (bare repo copies)
+docker-data/
+
+# Rackspace secrets (use terraform.tfvars.example)
+terraform/rackspace-spot/terraform.tfvars
+terraform/rackspace-spot/secrets.auto.tfvars

@@ -22,7 +22,9 @@ Install-time **optional capabilities** (Piper TTS, offline Argos translation, np
 
 **Primary tool:** from **`relay-gateway/`**, **`./scripts/relay-fleet.sh`** — **`deploy-all`**, **`status`**, **`drift`**, **`ssh-check`**, **`repair`**, **`features-set`**, **`reclone-repo`**, **`bootstrap-ssh`**. See **[`docs/RELAY_FLEET_CONSOLE.md`](docs/RELAY_FLEET_CONSOLE.md)**. **`./scripts/deploy-all-masters.sh`** is a thin **`--build`** wrapper around **`relay-fleet deploy-all`**.
 
-**Vendored for CI:** **`relay-runtime/`** (CleverScript runtime) and a **Rust-only `src/` + `Cargo.toml` snapshot** of **`themed-styler/`** ship in this repo so **`cargo test --locked`** does not depend on sibling directories. The published **`themed-styler`** crate may lag this snapshot; refresh **`themed-styler/`** from your checkout when APIs diverge, then run **`cargo test --locked`**.
+**CleverScript runtime:** **`relay-runtime`** lives as a **sibling crate** at **`../../relay-runtime`** (see `relay-gateway/Cargo.toml` `path = …`). **`cargo test --locked`** in **relay-gateway** uses that path dependency.
+
+**Vendored for CI:** a **Rust-only `src/` + `Cargo.toml` snapshot** of **`themed-styler/`** ships in this repo so tests do not depend on an external themed-styler checkout. The published **`themed-styler`** crate may lag this snapshot; refresh **`themed-styler/`** from your checkout when APIs diverge, then run **`cargo test --locked`**.
 
 ## Fresh Ubuntu server from GitLab tarball
 
@@ -79,6 +81,9 @@ The bundled **`git daemon`** enables **`receive-pack`**: there is **no git trans
 
 ### Git Hooks (`relay-hook-handler`)
 The server includes a native `relay-hook-handler` binary that should be symlinked to `hooks/pre-receive` and `hooks/post-receive` in your bare repositories.
+
+Operators can validate the **same** branch rules locally or in CI with **`relay-branch-policy-check`** (`range` / `walk` subcommands). See **[`docs/RELAY_BRANCH_POLICY_OPERATOR.md`](docs/RELAY_BRANCH_POLICY_OPERATOR.md)**.
+
 - **Branch Protection**: Enforces GPG/SSH signature requirements natively in Rust.
 - **Custom validation**: Runs CleverScript (`.cs`) hooks from `.relay.yaml` with full commit context when configured.
 - **Auto-Push**: Synchronizes successful pushes to a list of peer servers with **fast-forward** `git push` (no `--force`).
@@ -114,7 +119,7 @@ The server includes a native `relay-hook-handler` binary that should be symlinke
 - **`RELAY_MASTER_TRUST_ROOT`**: Optional but **recommended in production**: 40-character commit id—the **initial (root) commit** of your canonical **`relay-master`** (`git rev-list --max-parents=0 main`). Startup verifies it is an **ancestor** of the checkout **`HEAD`** so a mistaken clone path cannot point at an unrelated repo.
 - **`RELAY_MASTER_BRANCH`**: If the catalog checkout is in **detached HEAD**, set this branch name for the synthetic **`relay-master`** policy row (default **`main`**).
 - **`RELAY_AUTHORIZED_REPOS_PATH`**: YAML allowlist (legacy / CI); do not set together with **`RELAY_MASTER_CATALOG_PATH`**.
-- `RELAY_MASTER_REPO_LIST`: Semicolon-separated list of repos to clone on startup (e.g., `https://github.com/clevertree/relay-template`)
+- `RELAY_MASTER_REPO_LIST`: Semicolon-separated list of repos to clone on startup (e.g., `https://gitlab.com/clevertree/relay-template.git`)
 - `DEFAULT_REPOS`: Alternative to RELAY_MASTER_REPO_LIST for Docker entrypoint
 - **`RELAY_GIT_ENSURE_BARE_ENABLED`**: When enabled (default: **on** if unset), **`POST /api/git/ensure-bare/:repo`** may create **`RELAY_REPO_PATH/<repo>.git`**. Set to **`0`** / **`false`** / **`no`** to turn off.
 - **`POST /api/config` → `startup_catalog_sync`**: JSON from **`state/startup_catalog_sync.json`** (last **`relay-startup-catalog-sync.sh`** run: forge sync ok, optional error tail, peer fetch counts). Omitted if the file is missing. Forge sync failure does **not** block **`relay-gateway`**; HTTP serves whatever bare repos exist.
@@ -151,9 +156,9 @@ Server hook scripts (paths from `.relay.yaml` under `server.hooks.*`)
 
 ### 1. Build
 ```bash
-cargo build --release --bin relay-gateway --bin relay-hook-handler
+cargo build --release --bin relay-gateway --bin relay-hook-handler --bin relay-branch-policy-check
 ```
-Binaries: **`target/release/relay-gateway`**, **`target/release/relay-hook-handler`**.
+Binaries: **`target/release/relay-gateway`**, **`target/release/relay-hook-handler`**, **`target/release/relay-branch-policy-check`** (optional operator / CI validator — not installed on masters by default).
 
 ### 2. Run server
 ```bash
@@ -193,7 +198,7 @@ docker build -t relay-gateway .
 ```bash
 docker run -d \
   -p 8080:8080 \
-  -e DEFAULT_REPOS="https://github.com/clevertree/relay-template" \
+  -e DEFAULT_REPOS="https://gitlab.com/clevertree/relay-template.git" \
   -e RELAY_HTTP_PORT=8080 \
   relay-gateway
 ```
@@ -250,7 +255,7 @@ The server will be accessible at `https://node-dfw1.relaynet.online` with automa
 
 ## Developing and deploying a UI for repositories
 
-**Universal client (relay-runtime + md2jsx):** see **[`docs/RELAY_UNIVERSAL_CLIENT_AND_PARADIGM_SITE.md`](docs/RELAY_UNIVERSAL_CLIENT_AND_PARADIGM_SITE.md)**, **[`docs/RELAY_MD2JSX_PLACEMENT.md`](docs/RELAY_MD2JSX_PLACEMENT.md)**, and **`../relay-client-web`** (`npm run build:wasm` then `npm run build`).
+**Universal client (relay-runtime + md2ast):** see **[`docs/RELAY_UNIVERSAL_CLIENT_AND_PARADIGM_SITE.md`](docs/RELAY_UNIVERSAL_CLIENT_AND_PARADIGM_SITE.md)**, **[`docs/RELAY_MD2AST_PLACEMENT.md`](docs/RELAY_MD2AST_PLACEMENT.md)**, and **`../relay-client-web`** (`npm run build:wasm` then `npm run build`).
 
 A. Build/export all HTML/JS/asset files of your UI (e.g., into `template-ui/dist`).
 B. Test locally: run **`relay-gateway`** and pass **`--static`** (repeatable) for your UI folder.

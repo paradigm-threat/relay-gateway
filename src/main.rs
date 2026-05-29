@@ -145,6 +145,7 @@ async fn main() -> Result<()> {
                 .head(handlers::head_root)
                 .options(handlers::options_capabilities),
         )
+        .route("/ipfs/*cid", get(handlers::handle_get_ipfs_prefixed))
         .route(
             "/*path",
             get(handlers::handle_get_file)

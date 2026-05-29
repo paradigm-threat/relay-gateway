@@ -50,6 +50,22 @@ pub fn has_index_hook(cfg: &RelayConfig) -> bool {
         .is_some()
 }
 
+/// Path to CleverScript GET hook (`.cs`), if configured under `server.hooks.get`.
+pub fn clever_get_hook_path(cfg: &RelayConfig) -> Option<String> {
+    let p = cfg
+        .server
+        .as_ref()?
+        .hooks
+        .as_ref()?
+        .get("get")
+        .map(|h| h.path.as_str())?;
+    if p.ends_with(".cs") {
+        Some(p.to_string())
+    } else {
+        None
+    }
+}
+
 /// Path to CleverScript QUERY hook (`.cs`), if configured under `server.hooks.query`.
 pub fn clever_query_hook_path(cfg: &RelayConfig) -> Option<String> {
     let p = cfg
@@ -84,7 +100,7 @@ mod tests {
     fn cfg_with_index<F: FnOnce(&mut HookPath)>(f: F) -> RelayConfig {
         let mut hooks = HashMap::new();
         let mut hp = HookPath {
-            path: "hooks/x.mjs".into(),
+            path: "hooks/x.cs".into(),
             branches: None,
             query: None,
         };
@@ -164,5 +180,55 @@ mod tests {
             vec!["a", "b"]
         );
         assert!(export_fields_for_collection(&cfg, "index").is_none());
+    }
+
+    fn cfg_with_get_path(path: &str) -> RelayConfig {
+        let mut hooks = HashMap::new();
+        hooks.insert(
+            "get".to_string(),
+            HookPath {
+                path: path.into(),
+                branches: None,
+                query: None,
+            },
+        );
+        RelayConfig {
+            client: None,
+            server: Some(ServerConfig { hooks: Some(hooks) }),
+            git: None,
+            name: None,
+            version: None,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn clever_get_hook_path_accepts_cs_only() {
+        let cfg = cfg_with_get_path("hooks/server/get.cs");
+        assert_eq!(
+            clever_get_hook_path(&cfg).as_deref(),
+            Some("hooks/server/get.cs")
+        );
+    }
+
+    #[test]
+    fn clever_get_hook_path_rejects_mjs() {
+        let cfg = cfg_with_get_path("hooks/server/get.mjs");
+        assert!(clever_get_hook_path(&cfg).is_none());
+    }
+
+    #[test]
+    fn clever_get_hook_path_missing_hook() {
+        let cfg = RelayConfig {
+            client: None,
+            server: Some(ServerConfig {
+                hooks: Some(HashMap::new()),
+            }),
+            git: None,
+            name: None,
+            version: None,
+            description: None,
+        };
+        assert!(clever_get_hook_path(&cfg).is_none());
     }
 }

@@ -1,16 +1,17 @@
 //! Authorized repo list + anchor commit validation (pull today; push/planned).
 //!
 //! Two sources:
-//! - **`RELAY_MASTER_CATALOG_PATH`**: open a **`relay-master`** worktree (`relay-catalog.json` + `HEAD`);
-//!   optional **`RELAY_MASTER_TRUST_ROOT`** pins the catalog to an expected **root** commit so the
-//!   wrong repository cannot be mounted at that path.
+//! - **`RELAY_MASTER_CATALOG_PATH`**: open a **`relay-master`** worktree (`catalog/repos/*.json` or
+//!   legacy `relay-catalog.json` + `HEAD`); optional **`RELAY_MASTER_TRUST_ROOT`** pins the catalog.
 //! - **`RELAY_AUTHORIZED_REPOS_PATH`**: YAML file (e.g. emitted by **`sync-relay-catalog.sh`**).
 //!
-//! See `docs/RELAY_TRUST_AND_BOOTSTRAP.md`.
+//! See `docs/RELAY_TRUST_AND_BOOTSTRAP.md` and `docs/RELAY_CATALOG.md`.
 use anyhow::Context;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
+
+use crate::catalog_policy::{self, CatalogIndex, CatalogRepoRecord};
 
 /// `relay-catalog.json` at the root of **relay-master** (no git submodules).
 #[derive(Debug, Deserialize)]
@@ -89,22 +90,16 @@ pub fn verify_master_catalog_trust_root(
     Ok(())
 }
 
-/// Build allowlist from `relay-master` checkout: `relay-catalog.json` + synthetic `relay-master` row from `HEAD`.
+/// In-memory catalog loaded from `catalog/repos/*.json` when present.
+pub fn load_catalog_index_from_master(catalog_path: &Path) -> anyhow::Result<CatalogIndex> {
+    catalog_policy::load_catalog_index(catalog_path)
+}
+
+/// Build allowlist from `relay-master` checkout: unified `catalog/repos/` or legacy `relay-catalog.json`.
 pub fn load_from_master_catalog(
     catalog_path: &Path,
     relay_server_id: &str,
 ) -> anyhow::Result<AuthorizedReposFile> {
-    let catalog_json = catalog_path.join("relay-catalog.json");
-    if !catalog_json.is_file() {
-        anyhow::bail!(
-            "RELAY_MASTER_CATALOG_PATH {} has no relay-catalog.json",
-            catalog_path.display()
-        );
-    }
-
-    let s = std::fs::read_to_string(&catalog_json).context("read relay-catalog.json")?;
-    let cat: RelayCatalogFile = serde_json::from_str(&s).context("parse relay-catalog.json")?;
-
     let repo = git2::Repository::open(catalog_path)
         .with_context(|| format!("open catalog {}", catalog_path.display()))?;
     let head_ref = repo.head().context("catalog HEAD")?;
@@ -129,6 +124,41 @@ pub fn load_from_master_catalog(
         },
     );
 
+    if catalog_path.join("catalog/repos").is_dir() {
+        let index = catalog_policy::load_catalog_index(catalog_path)?;
+        for (name, entry) in index.repos {
+            let root = entry.relay_root_commit.trim().to_string();
+            if root.len() != 40 || !root.chars().all(|c| c.is_ascii_hexdigit()) {
+                anyhow::bail!(
+                    "catalog/repos/{nm}: relay_root_commit must be 40 hex chars",
+                    nm = name
+                );
+            }
+            repos.insert(
+                name,
+                RepoAnchor {
+                    anchor_commit: root,
+                    branch: entry.publish_branch,
+                },
+            );
+        }
+        return Ok(AuthorizedReposFile {
+            relay_server_id: Some(relay_server_id.to_string()),
+            repos,
+        });
+    }
+
+    let catalog_json = catalog_path.join("relay-catalog.json");
+    if !catalog_json.is_file() {
+        anyhow::bail!(
+            "RELAY_MASTER_CATALOG_PATH {} has no catalog/repos/ or relay-catalog.json",
+            catalog_path.display()
+        );
+    }
+
+    let s = std::fs::read_to_string(&catalog_json).context("read relay-catalog.json")?;
+    let cat: RelayCatalogFile = serde_json::from_str(&s).context("parse relay-catalog.json")?;
+
     for (name, entry) in cat.repos {
         let root = entry.relay_root_commit.trim().to_string();
         if root.len() != 40 || !root.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -150,6 +180,18 @@ pub fn load_from_master_catalog(
         relay_server_id: Some(relay_server_id.to_string()),
         repos,
     })
+}
+
+/// Lookup per-repo catalog record (unified layout only).
+pub fn catalog_repo_record(
+    catalog_path: &Path,
+    repo_slug: &str,
+) -> anyhow::Result<Option<CatalogRepoRecord>> {
+    if !catalog_path.join("catalog/repos").is_dir() {
+        return Ok(None);
+    }
+    let index = catalog_policy::load_catalog_index(catalog_path)?;
+    Ok(index.repos.get(repo_slug).cloned())
 }
 
 /// When allowlist is active: repo must be listed (server id checked at startup).
@@ -316,5 +358,48 @@ mod tests {
             .commit(None, &sig, &sig, "otherroot", &tree2, &[])
             .unwrap();
         assert!(verify_master_catalog_trust_root(td.path(), &other.to_string()).is_err());
+    }
+
+    #[test]
+    fn load_from_unified_catalog_repos_dir() {
+        let td = tempdir().unwrap();
+        let repo = Repository::init(td.path()).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+        let tb = repo.treebuilder(None).unwrap();
+        let t1 = tb.write().unwrap();
+        let tree1 = repo.find_tree(t1).unwrap();
+        repo.reference(
+            "refs/heads/main",
+            repo.commit(None, &sig, &sig, "tip", &tree1, &[]).unwrap(),
+            true,
+            "test",
+        )
+        .unwrap();
+        repo.set_head("refs/heads/main").unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap().id();
+
+        let repos_dir = td.path().join("catalog/repos");
+        std::fs::create_dir_all(&repos_dir).unwrap();
+        std::fs::write(
+            repos_dir.join("sample-repo.json"),
+            format!(
+                r#"{{
+  "schema": "relay.catalog-repo.v1",
+  "repo": "sample-repo",
+  "tier": "primary",
+  "forge_url": "https://example.com/sample.git",
+  "relay_root_commit": "{head}",
+  "publish_branch": "main",
+  "signing_keys_source": "repo"
+}}"#
+            ),
+        )
+        .unwrap();
+
+        let ar = load_from_master_catalog(td.path(), "relay-test").unwrap();
+        assert!(ar.repos.contains_key("relay-master"));
+        let sample = ar.repos.get("sample-repo").unwrap();
+        assert_eq!(sample.anchor_commit, head.to_string());
+        assert_eq!(sample.branch, "main");
     }
 }

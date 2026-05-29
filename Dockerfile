@@ -20,7 +20,7 @@ RUN cargo build --release --bin relay-gateway \
     && cargo build --release --bin relay-hook-handler
 
 FROM debian:bookworm-slim
-ARG DEFAULT_REPOS="https://github.com/clevertree/relay-template"
+ARG DEFAULT_REPOS="https://gitlab.com/clevertree/relay-template.git"
 LABEL org.opencontainers.image.source="${DEFAULT_REPOS}"
 
 # Create non-root user

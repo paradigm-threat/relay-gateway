@@ -1,6 +1,9 @@
+use crate::git::clever_script_host::CleverScriptServerHost;
+use crate::git::meta_index;
+use crate::git::repo::read_file_from_repo;
+use relay_runtime::value::Value as CsValue;
 use std::path::PathBuf;
-use std::process::Command;
-use tracing::{debug, error};
+use tracing::debug;
 
 pub struct HookContext {
     pub repo_path: PathBuf,
@@ -13,9 +16,37 @@ pub struct HookContext {
     pub files: std::collections::HashMap<String, String>,
 }
 
+fn strip_shebang_bytes(content: &[u8]) -> Vec<u8> {
+    if content.starts_with(b"#!") {
+        if let Some(pos) = content.iter().position(|&b| b == b'\n') {
+            content[pos + 1..].to_vec()
+        } else {
+            Vec::new()
+        }
+    } else {
+        content.to_vec()
+    }
+}
+
+fn hook_return_ok(v: &CsValue) -> bool {
+    match v {
+        CsValue::Bool(b) => *b,
+        CsValue::Number(n) => *n != 0.0,
+        CsValue::Null => true,
+        CsValue::Object(o) => {
+            if let Some(CsValue::Bool(b)) = o.get("ok") {
+                *b
+            } else {
+                true
+            }
+        }
+        _ => true,
+    }
+}
+
+/// Run a server hook from `.relay.yaml` as **CleverScript only** (`.cs`). Node/RelayHost is not supported.
 pub fn execute_repo_hook(ctx: &HookContext, hook_name: &str) -> anyhow::Result<bool> {
-    // Read .relay.yaml from the NEW_COMMIT using git CLI (quarantine-aware)
-    let config_output = Command::new("git")
+    let config_output = std::process::Command::new("git")
         .arg("-C")
         .arg(&ctx.repo_path)
         .arg("show")
@@ -33,7 +64,6 @@ pub fn execute_repo_hook(ctx: &HookContext, hook_name: &str) -> anyhow::Result<b
         return Ok(true);
     };
 
-    // Find the hook path in config
     let hook_entry = match hook_name {
         "pre-commit" | "pre-receive" | "post-receive" | "index" => config
             .server
@@ -65,94 +95,22 @@ pub fn execute_repo_hook(ctx: &HookContext, hook_name: &str) -> anyhow::Result<b
         }
     };
 
-    // Create a temporary directory for the whole hook environment
-    let tmp_dir = tempfile::Builder::new()
-        .prefix(&format!(
-            "relay-hook-env-{}-{}-",
+    if !hook_path.ends_with(".cs") {
+        anyhow::bail!(
+            "server hook {:?} must be a CleverScript file (.cs); Node hooks ({}) are no longer supported",
             hook_name,
-            &ctx.new_commit[..8]
-        ))
-        .tempdir()?;
-    let tmp_dir_path = tmp_dir.path().to_path_buf();
-
-    // Extract the hook's directory from the tree using git archive (quarantine-aware)
-    let hook_dir_path = std::path::Path::new(hook_path)
-        .parent()
-        .unwrap_or(std::path::Path::new(""));
-    let archive_output = Command::new("git")
-        .arg("-C")
-        .arg(&ctx.repo_path)
-        .arg("archive")
-        .arg("--format=tar")
-        .arg(&ctx.new_commit)
-        .arg(hook_dir_path)
-        .output()?;
-
-    if archive_output.status.success() {
-        let mut child = Command::new("tar")
-            .arg("-x")
-            .arg("-C")
-            .arg(&tmp_dir_path)
-            .stdin(std::process::Stdio::piped())
-            .spawn()?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            stdin.write_all(&archive_output.stdout)?;
-        }
-        child.wait()?;
-    }
-
-    // The script might be nested in tmp_dir because git archive preserves paths
-    // but it preserves them relative to the archive root (which is the repo root)
-    // So the script will be at tmp_dir/hook_path
-    let tmp_script_path = tmp_dir_path.join(hook_path);
-    if !tmp_script_path.exists() {
-        error!(
-            "Hook script '{}' not found in commit after extraction",
             hook_path
         );
-        return Ok(true);
     }
 
-    // Read script content to strip shebang if present
-    let content = std::fs::read(&tmp_script_path)?;
-    let content_to_write = if content.starts_with(b"#!") {
-        if let Some(newline_pos) = content.iter().position(|&b| b == b'\n') {
-            &content[newline_pos + 1..]
-        } else {
-            &content[..]
-        }
-    } else {
-        &content[..]
-    };
-    std::fs::write(&tmp_script_path, content_to_write)?;
+    if hook_name == "index" {
+        meta_index::sync_meta_yaml_index(ctx)?;
+    }
 
-    // Write RelayHost.mjs to the tmp_dir
-    let relay_host_source = if cfg!(test) {
-        include_str!("RelayHostMod.mjs")
-    } else {
-        include_str!("RelayHost.mjs")
-    };
-    let relay_host_path = tmp_dir_path.join("RelayHost.mjs");
-    std::fs::write(&relay_host_path, relay_host_source)?;
+    let bytes = read_file_from_repo(&ctx.repo_path, &ctx.branch, hook_path)?;
+    let stripped = strip_shebang_bytes(&bytes);
+    let source = String::from_utf8_lossy(&stripped).into_owned();
 
-    let node_bin = match Command::new("which").arg("node").output() {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        Err(_) => "node".to_string(),
-    };
-
-    let mut cmd = Command::new(node_bin);
-    cmd.arg("RelayHost.mjs")
-        .arg(hook_path) // Path relative to current_dir which is tmp_dir
-        .current_dir(&tmp_dir_path)
-        .env("GIT_DIR", &ctx.repo_path)
-        .env("OLD_COMMIT", &ctx.old_commit)
-        .env("NEW_COMMIT", &ctx.new_commit)
-        .env("REFNAME", &ctx.refname)
-        .env("BRANCH", &ctx.branch);
-
-    // Provide the extracted files and context as JSON via stdin
     let context_json = serde_json::json!({
         "old_commit": ctx.old_commit,
         "new_commit": ctx.new_commit,
@@ -163,17 +121,142 @@ pub fn execute_repo_hook(ctx: &HookContext, hook_name: &str) -> anyhow::Result<b
         "is_verified": ctx.is_verified
     });
 
-    cmd.stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit());
+    let host = CleverScriptServerHost::host_handle(ctx.repo_path.clone(), ctx.branch.clone(), false);
+    let raw = relay_runtime::run_query_script(&source, host, &context_json, None, None)
+        .map_err(|e| anyhow::anyhow!("CleverScript hook {}: {}", hook_name, e))?;
 
-    let mut child = cmd.spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write;
-        stdin.write_all(context_json.to_string().as_bytes())?;
+    Ok(hook_return_ok(&raw))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use git2::{Repository, Signature};
+    use std::collections::HashMap;
+    use tempfile::tempdir;
+
+    fn commit_hook_repo(hook_cs: &str, relay_yaml: &str) -> (tempfile::TempDir, PathBuf, HookContext) {
+        let dir = tempdir().unwrap();
+        let repo_path = dir.path().join("r.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+        let cfg_oid = repo.blob(relay_yaml.as_bytes()).unwrap();
+        let hook_oid = repo.blob(hook_cs.as_bytes()).unwrap();
+        let mut tb_srv = repo.treebuilder(None).unwrap();
+        tb_srv.insert("pre-commit.cs", hook_oid, 0o100644).unwrap();
+        let srv_tid = tb_srv.write().unwrap();
+        let mut tb_hooks = repo.treebuilder(None).unwrap();
+        tb_hooks.insert("server", srv_tid, 0o040000).unwrap();
+        let hooks_tid = tb_hooks.write().unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert(".relay.yaml", cfg_oid, 0o100644).unwrap();
+        tb.insert("hooks", hooks_tid, 0o040000).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let commit = repo
+            .commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap()
+            .to_string();
+        let ctx = HookContext {
+            repo_path: repo_path.clone(),
+            old_commit: "0000000000000000000000000000000000000000".into(),
+            new_commit: commit,
+            refname: "refs/heads/main".into(),
+            branch: "main".into(),
+            is_verified: true,
+            files: HashMap::new(),
+        };
+        (dir, repo_path, ctx)
     }
 
-    let status = child.wait()?;
+    #[test]
+    fn strip_shebang_removes_first_line() {
+        let raw = b"#!/usr/bin/env false\nexport default function run(c) { return null; }\n";
+        let out = strip_shebang_bytes(raw);
+        assert!(!out.starts_with(b"#!"));
+        assert!(String::from_utf8_lossy(&out).contains("export default"));
+    }
 
-    Ok(status.success())
+    #[test]
+    fn execute_pre_commit_cs_succeeds_on_null_return() {
+        let yaml = r#"
+server:
+  hooks:
+    pre-commit:
+      path: hooks/server/pre-commit.cs
+"#;
+        let cs = "export default function run(c) { return null; }\n";
+        let (_dir, _path, ctx) = commit_hook_repo(cs, yaml);
+        assert!(execute_repo_hook(&ctx, "pre-commit").unwrap());
+    }
+
+    #[test]
+    fn execute_pre_commit_cs_shebang_ok() {
+        let yaml = r#"
+server:
+  hooks:
+    pre-commit:
+      path: hooks/server/pre-commit.cs
+"#;
+        let cs = "#!/bin/false\nexport default function run(c) { return null; }\n";
+        let (_dir, _path, ctx) = commit_hook_repo(cs, yaml);
+        assert!(execute_repo_hook(&ctx, "pre-commit").unwrap());
+    }
+
+    #[test]
+    fn execute_pre_commit_rejects_mjs_path() {
+        let yaml = r#"
+server:
+  hooks:
+    pre-commit:
+      path: hooks/server/pre-commit.mjs
+"#;
+        let cs = "export default function run(c) { return null; }\n";
+        let (_dir, _path, ctx) = commit_hook_repo(cs, yaml);
+        let err = execute_repo_hook(&ctx, "pre-commit").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no longer supported") || msg.contains("CleverScript"),
+            "{}",
+            msg
+        );
+    }
+
+    #[test]
+    fn execute_pre_commit_false_return_fails() {
+        let yaml = r#"
+server:
+  hooks:
+    pre-commit:
+      path: hooks/server/pre-commit.cs
+"#;
+        let cs = "export default function run(c) { return false; }\n";
+        let (_dir, _path, ctx) = commit_hook_repo(cs, yaml);
+        assert!(!execute_repo_hook(&ctx, "pre-commit").unwrap());
+    }
+
+    #[test]
+    fn execute_unknown_hook_name_is_noop() {
+        let yaml = "server:\n  hooks: {}\n";
+        let cs = "export default function run(c) { return false; }\n";
+        let (_dir, _path, ctx) = commit_hook_repo(cs, yaml);
+        assert!(execute_repo_hook(&ctx, "not-a-real-hook").unwrap());
+    }
+
+    #[test]
+    fn execute_index_skipped_when_branch_not_allowlisted() {
+        let yaml = r#"
+server:
+  hooks:
+    index:
+      path: hooks/server/index.cs
+      branches: ["other"]
+"#;
+        let cs = "export default function run(c) { return false; }\n";
+        let (_dir, _path, ctx) = commit_hook_repo(cs, yaml);
+        assert!(
+            execute_repo_hook(&ctx, "index").unwrap(),
+            "branch allowlist should skip hook without running CS"
+        );
+    }
 }

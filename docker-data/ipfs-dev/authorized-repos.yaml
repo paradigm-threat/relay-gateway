@@ -1,0 +1,11 @@
+# Local Docker IPFS dev allowlist (no RELAY_MASTER_CATALOG_PATH — avoids git2 owner on bind mount).
+# Inline IPFS stubs in the thin tree are served via get.cs on blob read; catalog thin_ipfs flag
+# only gates tree-miss paths. Re-enable catalog mount for tree-miss / policy tests.
+relay_server_id: relay-docker-dev
+repos:
+  paradigm-threat-files:
+    anchor_commit: "9099b9d282540a1f9bb41f28d2f060fdca58c5a1"
+    branch: main
+  paradigm-threat-timeline:
+    anchor_commit: "6ae43df0c6d920b0cda7ab94ce334281efac999b"
+    branch: main

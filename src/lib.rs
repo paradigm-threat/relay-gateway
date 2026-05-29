@@ -1,4 +1,5 @@
 pub mod authorized_repos;
+pub mod catalog_policy;
 pub mod cli;
 pub mod config;
 pub mod git;

@@ -19,10 +19,14 @@
 |------|---------|
 | **`--env-file=PATH`** | Load env from PATH instead of **`./relay.env`**. |
 | **`--only=FQDN`** | Restrict commands to one fleet member. **Required** for destructive **`reinstall`** wipe. |
-| **`--build`** | Before **`update`** / **`deploy-all`**: run **`pack-linode-deploy.sh`**. Also runs if **`target/relay-linode-deploy.tgz`** is missing. |
+| **`--build`** | Before **`update`** / **`deploy-all`**: run **`pack-linode-deploy.sh`** ( **`cargo build --release`** for **`relay-gateway`** + **`relay-hook-handler`** ), then recreate **`target/relay-linode-deploy.tgz`**. Also runs if that tarball is **missing**. |
 | **`--interactive`** | Omit **`ssh -o BatchMode=yes`** (allows password prompts — rarely needed). |
 
-Destructive **`reinstall`** additionally requires **`--danger-wipe-relay-data`** and **`--confirm-wipe=<exact-fqdn>`** matching the single **`--only`** host.
+**`--build` placement (read this before production deploys):** Global flags are parsed **before** the subcommand. The safe, canonical forms are **`./scripts/relay-fleet.sh --build update`** and **`./scripts/relay-fleet.sh --build deploy-all`** (optionally with **`--only=…`** before the subcommand). For **`update`** and **`deploy-all` only**, a **trailing** **`--build`** is also accepted (**`./scripts/relay-fleet.sh deploy-all --build`**) so a mistaken ordering still rebuilds — do not rely on that for other subcommands.
+
+**Stale tarball hazard:** If **`target/relay-linode-deploy.tgz`** already exists and you run **`update`** / **`deploy-all`** **without** triggering a pack (**`--build`** or delete the tarball), the fleet uploads **whatever is on disk** — including **weeks-old** binaries. After changing **`relay-gateway`** Rust code, always use **`--build`**, or run **`./scripts/pack-linode-deploy.sh`** manually first, then **`ls -la target/relay-linode-deploy.tgz`** to confirm the mtime.
+
+**`reinstall` (destructive):** **`--danger-wipe-relay-data`**, **`--confirm-wipe=<exact-fqdn>`**, and **`--only=<matching-fqdn>`** are required; see **`reinstall`** in the Subcommands table.
 
 ## Subcommands
 
@@ -33,7 +37,7 @@ Destructive **`reinstall`** additionally requires **`--danger-wipe-relay-data`**
 | **`status`** | Parallel **`POST https://<host>/api/config`**; prints **`relay_server_id`**, **`catalog_forge_sync_ok`**, **`authorized_repos`** summary. |
 | **`drift`** | **`git -C $RELAY_MASTER_CATALOG_PATH rev-parse HEAD`** per host (default path **`/opt/relay/src/relay-master`**); flags mismatches. |
 | **`update`** | **`relay-linode-redeploy-seed.sh`** per host with **`RELAY_REDEPLOY_SKIP_SEED=1`**, then **`systemctl restart relay-gateway relay-git-daemon`**. |
-| **`deploy-all`** | Same as **`update`** ( **`deploy-all-masters.sh`** is a thin **`--build`** wrapper). |
+| **`deploy-all`** | Same as **`update`** (**`relay-linode-redeploy-seed.sh`** …). **`./scripts/deploy-all-masters.sh`** wraps **`relay-fleet.sh --build deploy-all`** (always repacks — use **`relay-fleet.sh deploy-all`** alone only if you intend to reuse an existing tarball). |
 | **`repair`** | Uploads **`target/relay-linode-deploy.tgz`**, extracts under **`/tmp`**, runs **`./install.sh repair`** (same pattern as **`relay-linode-redeploy-seed`** — **`install.sh` is not kept under `/opt/relay/bin`** on nodes). |
 | **`features-set`** | Same tarball staging, then **`./install.sh reconfigure-features`** with **`RELAY_INSTALL_NONINTERACTIVE=1`** and **`RELAY_FEAT_*`** from flags or your environment: **`--piper=0|1`**, **`--npm-pkgs=`**, **`--translation=0|1`**, **`--translation-pkgs=`**, **`--libretranslate=0|1`**. |
 | **`reclone-repo REPO`** | Stops **`relay-git-daemon`**, removes **`$RELAY_REPO_PATH/$REPO.git`**, **`git pull` + `sync-relay-catalog.sh`**, optional **`--peer=FQDN`** **`git fetch`** from **`git://`**, restarts daemons. See **[`OPERATOR_BARE_REPO_RESET.md`](./OPERATOR_BARE_REPO_RESET.md)**. |
@@ -56,16 +60,21 @@ cd relay-gateway
 ./scripts/relay-fleet.sh ssh-check
 ./scripts/relay-fleet.sh status --only=atlanta3.relaygateway.net
 ./scripts/relay-fleet.sh drift
-./scripts/relay-fleet.sh deploy-all --build
+# Rebuild tarball + push to whole fleet (preferred flag order):
+./scripts/relay-fleet.sh --build deploy-all
+# One node only:
+./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net --build update
 ./scripts/relay-fleet.sh features-set --only=atlanta3.relaygateway.net --piper=0 --npm-pkgs=
 ./scripts/relay-fleet.sh reclone-repo paradigm-threat-files --peer=atlanta3.relaygateway.net --only=jp-osa.relaygateway.net
 ```
 
 ## Related
 
+- **[`RELAY_BRANCH_POLICY_OPERATOR.md`](./RELAY_BRANCH_POLICY_OPERATOR.md)** — `.relay.yaml` **pre-receive** policy, why forge vs fleet differ, **`relay-branch-policy-check`** validation.
 - **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** — full install / DNS / secrets.
 - **[`.cursor/rules/relay-production-ops.mdc`](../.cursor/rules/relay-production-ops.mdc)** — SSH, autossh, tarball flow.
 - **[`OPERATOR_BARE_REPO_RESET.md`](./OPERATOR_BARE_REPO_RESET.md)** — catalog sync, peer fetch, **`ensure-bare`**.
+- **[`RELAY_FLEET_GIT_CONSENSUS_PLAN.md`](./RELAY_FLEET_GIT_CONSENSUS_PLAN.md)** — (plan) priority authority, auto-reconcile bare tips, UI confirmation model.
 
 ## Follow-ups (mesh health)
 

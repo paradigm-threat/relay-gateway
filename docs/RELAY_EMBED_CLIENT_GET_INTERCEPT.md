@@ -1,6 +1,12 @@
 # Relay embed client + server GET intercept (requirements & plan)
 
-**Status:** requirements **accepted**; implementation **not shipped** (plan only).
+**Status:** **shipped** (gateway + client bundle). Remaining: repo-specific `hooks/server/get.cs` templates that return custom HTML (optional); production deploy wiring of `relay-client-web` **`dist/assets/embed.{js,css}`** next to the main static bundle.
+
+**Implementation (relay monorepo):**
+
+- Gateway: `relay-gateway/src/git/embed_html.rs` (fallback HTML + `Vary` / cache / `X-Relay-*` parity), `relay-gateway/src/git/resolve.rs` (markdown + `Accept` / `?embed=` + `server.hooks.get`), `relay-gateway/src/handlers/head.rs` (query map parity with GET).
+- Client: `relay-client-web/src/embed-main.tsx`, `relay-client-web/src/EmbedApp.tsx`, esbuild entry **`embed`** → `dist/assets/embed.js` + `embed.css`.
+- Template hook comments: `relay-template/hooks/server/get.cs` (`embedMarkdownRequest` context field).
 
 ## Product requirement
 
@@ -25,7 +31,7 @@ The **embed** feature **reuses the same hook dispatch and JSON→HTTP contract**
 
 GET-hook returns are documented on **`get_hook_json_to_response`**: **`kind: "file"`**, **`contentType`**, **`bodyUtf8`** or **`bodyBase64`**, optional **`status`** and **`headers`**. Returning **`text/html`** is therefore **already valid** once the hook runs for the request.
 
-**Gap:** `resolve.rs` does not yet invoke the GET hook for **markdown + HTML negotiation** (that design lives in [**`RELAY_MARKDOWN_HTML_GET_HOOK_PLAN.md`**](RELAY_MARKDOWN_HTML_GET_HOOK_PLAN.md)); the **embed** product needs that (or an equivalent branch) **plus** a **standard HTML template** that loads the embed client.
+**Shipped behavior:** `git_resolve_and_respond` invokes **`server.hooks.get`** for markdown blobs when embed negotiation applies, passes **`embedMarkdownRequest: true`**, then maps hook JSON to HTTP or falls back to **`fallback_embed_html_response`**. The older “markdown + HTML only” gap in **`RELAY_MARKDOWN_HTML_GET_HOOK_PLAN.md`** is largely superseded by this embed path for browser HTML.
 
 ## Implementation plan (phased)
 

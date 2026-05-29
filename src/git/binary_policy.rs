@@ -1,0 +1,115 @@
+//! Reject raw binary blobs on push when catalog disallows them (thin IPFS repos).
+
+use std::path::Path;
+use std::process::Command;
+
+use crate::catalog_policy::CatalogRepoRecord;
+use crate::git::ipfs::{is_likely_binary_content, parse_pointer_bytes, MANIFEST_PATH};
+
+pub fn allow_binary_files(catalog: Option<&CatalogRepoRecord>) -> bool {
+    catalog.map(|c| c.allow_binary_files()).unwrap_or(true)
+}
+
+/// Paths touched in `commit` must not introduce disallowed binary blobs.
+pub fn enforce_commit_no_disallowed_binaries(
+    repo_path: &Path,
+    commit: &str,
+    allow_binary: bool,
+) -> Result<(), String> {
+    if allow_binary {
+        return Ok(());
+    }
+
+    let paths = diff_paths_for_commit(repo_path, commit)?;
+    for path in paths {
+        if should_skip_path(&path) {
+            continue;
+        }
+        let bytes = read_blob_at_commit(repo_path, commit, &path)?;
+        if bytes.is_empty() {
+            continue;
+        }
+        if parse_pointer_bytes(&bytes).is_some() {
+            continue;
+        }
+        if path == MANIFEST_PATH || path.ends_with(".md") || path.ends_with(".svg") {
+            if !is_likely_binary_content(&bytes) {
+                continue;
+            }
+        }
+        if is_likely_binary_content(&bytes) {
+            return Err(format!(
+                "commit {}: binary file {:?} not allowed (use relay-ipfs-ingest; expected {} pointer)",
+                commit, path, crate::git::ipfs::POINTER_MAGIC
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn should_skip_path(path: &str) -> bool {
+    if path.starts_with(".git/") {
+        return true;
+    }
+    if path.starts_with(".relay/assets/") && path.ends_with(".ipfs") {
+        return false;
+    }
+    if path.starts_with(".relay/") {
+        return true;
+    }
+    path.ends_with(".json") && path != MANIFEST_PATH
+}
+
+fn diff_paths_for_commit(repo_path: &Path, commit: &str) -> Result<Vec<String>, String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["diff-tree", "--no-commit-id", "--name-only", "-r", commit])
+        .output()
+        .map_err(|e| format!("git diff-tree: {}", e))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git diff-tree failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
+}
+
+fn read_blob_at_commit(repo_path: &Path, commit: &str, path: &str) -> Result<Vec<u8>, String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["show", &format!("{}:{}", commit, path)])
+        .output()
+        .map_err(|e| format!("git show: {}", e))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git show {}:{} failed: {}",
+            commit,
+            path,
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(out.stdout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skip_manifest_json_false_positive() {
+        assert!(!should_skip_path("assets.manifest.json"));
+    }
+
+    #[test]
+    fn central_ipfs_stubs_are_checked() {
+        assert!(!should_skip_path(".relay/assets/media/foo.png.ipfs"));
+        assert!(should_skip_path(".relay/local-assets/x.png"));
+    }
+}

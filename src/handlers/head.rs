@@ -72,6 +72,7 @@ pub async fn head_root(
             &branch,
             &repo_name,
             "index.html",
+            None,
         ) {
             let head_resp = headify_response(resp, &branch, &repo_name);
             if head_resp.status() == StatusCode::OK {
@@ -88,9 +89,10 @@ pub async fn head_file(
     State(state): State<AppState>,
     headers: HeaderMap,
     AxPath(path): AxPath<String>,
-    _query: Option<Query<HashMap<String, String>>>,
+    query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
+    let qmap = query.as_ref().map(|q| &q.0);
 
     let repo_name_opt =
         helpers::repo_from_host_or_default(&state.repo_path, state.node_fqdn.as_deref(), &headers);
@@ -118,7 +120,14 @@ pub async fn head_file(
     }
 
     // Resolve via Git - if found, return headers without body
-    match git::git_resolve_and_respond(&state.repo_path, &headers, &branch, &repo_name, &decoded) {
+    match git::git_resolve_and_respond(
+        &state.repo_path,
+        &headers,
+        &branch,
+        &repo_name,
+        &decoded,
+        qmap,
+    ) {
         GitResolveResult::Respond(resp) => {
             let head_resp = headify_response(resp, &branch, &repo_name);
             if head_resp.status() == StatusCode::OK {

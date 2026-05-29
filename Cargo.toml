@@ -1,7 +1,7 @@
 [package]
 name = "relay-gateway"
 # Update with each release
-version = "0.3.11"
+version = "0.3.12"
 edition = "2021"
 description = "Self-hosted relay gateway for HTTP plus git protocol content delivery, mesh bootstrap, and optional on-node TTS"
 license = "MIT"
@@ -24,6 +24,10 @@ path = "src/main.rs"
 name = "relay-hook-handler"
 path = "src/bin/relay-hook-handler.rs"
 
+[[bin]]
+name = "relay-branch-policy-check"
+path = "src/bin/relay-branch-policy-check.rs"
+
 [dependencies]
 axum = { version = "0.7", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
@@ -39,6 +43,7 @@ tracing-appender = "0.2"
 mime_guess = "2"
 percent-encoding = "2"
 base64 = "0.22"
+sha2 = "0.10"
 hex = "0.4"
 jsonschema = "0.17"
 http-body = "1"
@@ -53,7 +58,9 @@ rustls = { version = "0.23", features = ["ring"] }
 hook-transpiler = "0.2.5"
 tempfile = "3"
 redb = "2.6"
-relay-runtime = { path = "relay-runtime" }
+relay-runtime = { version = "0.1.1", path = "../../relay-runtime" }
+md2ast = { version = "1.0.2", path = "../../md2ast" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 [dev-dependencies]
 serial_test = "3"

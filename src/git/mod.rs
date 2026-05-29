@@ -1,19 +1,33 @@
+pub mod binary_policy;
+pub mod branch_features;
 pub mod branch_policy;
+pub mod ipfs;
+pub mod clever_hooks;
+pub mod clever_script_host;
+pub mod embed_html;
+pub mod get_hook_http;
 pub mod hooks;
+pub mod image_cache;
+pub mod image_transform;
 pub mod index_policy;
+pub mod markdown_html;
+pub mod meta_index;
 pub mod index_store;
 pub mod indexing;
 pub mod query;
 pub mod repo;
+pub mod request_headers;
 pub mod resolve;
 
 #[cfg(test)]
 mod tests;
 
 pub use branch_policy::{
-    branch_requires_signature, enforce_push_range, enforce_unsigned_http_allowed,
+    branch_requires_signature, enforce_all_commits_on_branch, enforce_push_range,
+    enforce_push_range_with_catalog, enforce_single_commit, enforce_unsigned_http_allowed,
     resolve_branch_rule,
 };
+pub use get_hook_http::get_hook_json_to_response;
 pub use hooks::{execute_repo_hook, HookContext};
 pub use indexing::{
     branch_data_dir, branch_hash_short, branch_index_paths, branch_operation_mutex, ensure_indexed,

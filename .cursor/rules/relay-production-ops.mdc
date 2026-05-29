@@ -32,7 +32,7 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
 
 ## Standard binary deploy (trusted build → masters)
 
-**Preferred:** from **`relay-gateway/`**, **`./scripts/relay-fleet.sh deploy-all --build`** (or **`update`** / **`--only=`**) — see **`docs/RELAY_FLEET_CONSOLE.md`**. Low-level steps below match what **`relay-fleet`** / **`relay-linode-redeploy-seed.sh`** run.
+**Preferred:** from **`relay-gateway/`**, **`./scripts/relay-fleet.sh --build deploy-all`** (or **`--only=NODE --build update`**) — see **`docs/RELAY_FLEET_CONSOLE.md`** (includes **stale-tarball** and **`--build` flag-order** pitfalls). **`deploy-all --build`** also works for **`deploy-all`** / **`update`** only. Low-level steps below match what **`relay-fleet`** / **`relay-linode-redeploy-seed.sh`** run.
 
 1. **Build tarball (local):**
 

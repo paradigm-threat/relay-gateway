@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""
+Batch inventory + IPFS pin + assets.manifest.json for thin-repo migration.
+
+  relay-ipfs-migrate-inventory /path/to/repo [--branch main] [--output migration.csv]
+
+Walks git tree at branch HEAD, finds binary blobs, runs `ipfs add`, writes manifest
+and a CSV mapping path,cid,sha256,bytes,mime for filter-repo rewrite.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+MANIFEST = "assets.manifest.json"
+SCHEMA = "relay.assets-manifest.v1"
+POINTER_MAGIC = "relay-ipfs-v1"
+
+BINARY_EXT = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip",
+    ".mp3", ".mp4", ".woff", ".woff2",
+}
+
+
+def run(cmd: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, check=False, text=True, capture_output=True)
+
+
+def git_ls_files(repo: Path, branch: str) -> list[str]:
+    proc = run(["git", "-C", str(repo), "ls-tree", "-r", "--name-only", branch])
+    if proc.returncode != 0:
+        sys.exit(proc.stderr)
+    return [l.strip() for l in proc.stdout.splitlines() if l.strip()]
+
+
+def git_show(repo: Path, branch: str, path: str) -> bytes:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{branch}:{path}"],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return b""
+    return proc.stdout
+
+
+def is_binary(path: str, data: bytes) -> bool:
+    if data.startswith(b"relay-ipfs-v1\n"):
+        return False
+    ext = Path(path).suffix.lower()
+    if ext in {".md", ".svg", ".json", ".txt", ".yaml", ".yml", ".html", ".css", ".js", ".cs"}:
+        if b"\0" not in data:
+            try:
+                data.decode("utf-8")
+                return False
+            except UnicodeDecodeError:
+                pass
+    if b"\0" in data:
+        return True
+    return ext in BINARY_EXT and len(data) > 128
+
+
+def ipfs_add_bytes(data: bytes, name: str) -> str:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(name).suffix) as f:
+        f.write(data)
+        tmp = f.name
+    try:
+        proc = run(["ipfs", "add", "--pin", "--quieter", "--cid-version=1", tmp])
+        if proc.returncode != 0:
+            sys.exit(f"ipfs add failed: {proc.stderr}")
+        return proc.stdout.strip().split()[-1]
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def guess_mime(path: str) -> str:
+    import mimetypes
+    t, _ = mimetypes.guess_type(path)
+    return t or "application/octet-stream"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("repo", type=Path)
+    ap.add_argument("--branch", default="main")
+    ap.add_argument("--output", type=Path, default=Path("ipfs-migration.csv"))
+    ap.add_argument("--max-files", type=int, default=0, help="0 = no limit")
+    ap.add_argument("--skip-manifest-write", action="store_true")
+    args = ap.parse_args()
+    repo = args.repo.resolve()
+    if not (repo / ".git").exists():
+        sys.stderr.write("not a git repo\n")
+        return 1
+
+    rows = []
+    assets = []
+    count = 0
+    for path in git_ls_files(repo, args.branch):
+        data = git_show(repo, args.branch, path)
+        if not data or not is_binary(path, data):
+            continue
+        if args.max_files and count >= args.max_files:
+            break
+        cid = ipfs_add_bytes(data, path)
+        sha = sha256_bytes(data)
+        mime = guess_mime(path)
+        rows.append({
+            "path": path,
+            "cid": cid,
+            "sha256": sha,
+            "bytes": len(data),
+            "mime": mime,
+        })
+        assets.append({
+            "id": path.replace("/", "_"),
+            "path": path,
+            "ipfs": cid,
+            "contentType": mime,
+            "sha256": sha,
+            "bytes": len(data),
+        })
+        count += 1
+        print(f"pinned {path} -> {cid} ({len(data)} bytes)")
+
+    with args.output.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["path", "cid", "sha256", "bytes", "mime"])
+        w.writeheader()
+        w.writerows(rows)
+
+    if not args.skip_manifest_write:
+        doc = {"schema": SCHEMA, "assets": sorted(assets, key=lambda a: a["path"])}
+        out = repo / MANIFEST
+        out.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        print(f"wrote {out} ({len(assets)} assets)")
+
+    print(f"wrote {args.output} ({len(rows)} rows)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -46,7 +46,7 @@ When multiple bare repos are deployed on one server, **GET/HEAD/OPTIONS and clie
 |-----------|------|--------|
 | HTTP/HTTPS | Axum 0.7 | ✅ Solid |
 | Git ops | libgit2 (git2 crate) | ✅ Solid |
-| Hooks | Node.js + RelayHost.mjs sandbox | ⚠️ Partial sandbox |
+| Hooks | CleverScript (.cs) in-process; no Node | ✅ No Node shell |
 | Transpile | hook-transpiler WASM | ✅ Working |
 | Deployment | Docker, K8s (terraform/rackspace-spot) | ✅ Working |
 
@@ -113,7 +113,7 @@ These repos are the **canonical staging targets** for Linode: multi-repo servers
 
 ### 1.5 relay-template (secondary)
 
-- Remove debug comments in `get-client.jsx` (e.g. "Test change Tue Jan 6...").
+- Remove debug comments in `get.jsx` (e.g. "Test change Tue Jan 6...").
 - Add `query` hook path to `.relay.yaml` if `query-client.jsx` is used.
 - Ensure `relay_index.json` vs `.relay_data/branches/` layout is documented; template uses flat index.
 - Add integration test for `pre-commit` (PUT flow) in addition to `pre-receive`.
@@ -129,7 +129,7 @@ These repos are the **canonical staging targets** for Linode: multi-repo servers
 | PUT/DELETE unauthenticated | High | Add optional API key or token auth; document as "trusted network" deployment |
 | GitHub webhook unverified | Medium | Implement `X-Hub-Signature-256` verification |
 | `allowedKeys` not enforced | Medium | Addressed in `git/branch_policy` + `git verify-commit` (SSH allowed signers) |
-| Hook sandbox escape | Medium | REPODB_PLAN: remove `fs`, `path`, `child_process` from RelayHost; use Relay.fs only |
+| Hook sandbox escape | Lower | Server hooks are CleverScript-only (no Node `vm` / `RelayHost`) |
 
 ### 2.2 Unfinished / Incomplete Features
 
@@ -343,16 +343,16 @@ Run: `k6 run stress.js`
 ### 7.1 Pre-commit (PUT flow)
 
 1. PUT a file via Relay API (e.g. `data/test/meta.yaml`).
-2. Verify `pre-commit.mjs` runs and validation passes.
+2. Verify `pre-commit.cs` runs and validation passes.
 3. PUT an invalid path (e.g. `unauthorized.file`) and verify rejection.
 4. PUT invalid `meta.yaml` (bad schema) and verify rejection.
 
 ### 7.2 Pre-receive (git push)
 
 1. Clone relay-template, make a valid change, push to node's git daemon.
-2. Verify `pre-receive.mjs` runs.
+2. Verify `pre-receive.cs` runs.
 3. Push invalid change (e.g. disallowed path) and verify rejection.
-4. Run `tests/test_hooks.mjs` locally before pushing.
+4. Exercise hooks via real `PUT` / `git push` (see `docs/SERVER_HOOKS.md`).
 
 ### 7.3 Index hook
 

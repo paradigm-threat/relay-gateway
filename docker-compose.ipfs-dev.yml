@@ -1,0 +1,75 @@
+# Local IPFS + relay-gateway dev stack (build from source).
+#
+# Prereqs: `ipfs daemon` on the host with pins from thin migration (port 8080 gateway).
+# Usage: ./scripts/docker-ipfs-dev.sh up
+#
+# Relay fetches CIDs via HTTP gateway (RELAY_IPFS_GATEWAY), not the Kubo API.
+# Linux: network_mode host so relay reaches Kubo on 127.0.0.1:8080 (default gateway bind).
+
+services:
+  ipfs:
+    image: ipfs/kubo:v0.32.1
+    container_name: relay-ipfs-dev
+    profiles:
+      - bundled-ipfs
+    ports:
+      - "4001:4001"
+      - "5001:5001"
+      - "8081:8080"
+    volumes:
+      - ipfs_data:/data/ipfs
+    healthcheck:
+      test: ["CMD-SHELL", "ipfs id >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  relay-gateway:
+    build:
+      context: ../..
+      dockerfile: relay/relay-gateway/Dockerfile.ipfs-dev-runtime
+    container_name: relay-gateway-dev
+    # Kubo gateway is 127.0.0.1:8080 on the host; bridge networks cannot reach it on Linux.
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      RUST_LOG: info
+      RELAY_HTTP_PORT: ${RELAY_DEV_HTTP_PORT:-18080}
+      RELAY_GIT_PORT: ${RELAY_DEV_GIT_PORT:-19418}
+      RELAY_GIT_ENSURE_BARE_ENABLED: "1"
+      RELAY_REPO_PATH: /srv/relay/data
+      RELAY_PUBLIC_HOSTNAME: ${RELAY_DEV_HOSTNAME:-localhost}
+      RELAY_AUTHORIZED_REPOS_PATH: /srv/relay/authorized-repos.yaml
+      RELAY_SSL_MODE: none
+      # Host Kubo (default) or bundled ipfs service: http://ipfs:8080
+      RELAY_IPFS_GATEWAY: ${RELAY_IPFS_GATEWAY:-http://127.0.0.1:8080}
+      RELAY_IPFS_GATEWAY_ALLOW_PRIVATE: "1"
+      RELAY_IPFS_CACHE_ROOT: /srv/relay/ipfs-cache
+      RELAY_IPFS_FETCH_TIMEOUT: "60"
+      RELAY_IMAGE_CACHE_ROOT: /srv/relay/image-cache
+      RELAY_SERVER_ID: ${RELAY_DEV_SERVER_ID:-relay-docker-dev}
+      RELAY_SKIP_DEFAULT_REPOS: "1"
+      DEFAULT_REPOS: ""
+      RELAY_MASTER_REPO_LIST: ""
+    volumes:
+      - ${RELAY_GATEWAY_BIN:-./target/release/relay-gateway}:/usr/local/bin/relay-gateway:ro
+      - ${RELAY_HOOK_HANDLER_BIN:-./target/release/relay-hook-handler}:/usr/local/bin/relay-hook-handler:ro
+      - ./docker-entrypoint.sh:/usr/local/bin/docker-entrypoint.sh:ro,Z
+      - ${RELAY_DEV_DATA_DIR:-./docker-data/ipfs-dev/data}:/srv/relay/data:ro
+      - ./docker-data/ipfs-dev/authorized-repos.yaml:/srv/relay/authorized-repos.yaml:ro
+      - relay_ipfs_cache:/srv/relay/ipfs-cache
+      - relay_image_cache:/srv/relay/image-cache
+      - ${RELAY_DEV_LOGS_DIR:-./docker-data/ipfs-dev/logs}:/srv/relay/logs
+    entrypoint: ["/bin/bash", "/usr/local/bin/docker-entrypoint.sh"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/api/config"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 25s
+
+volumes:
+  ipfs_data:
+  relay_ipfs_cache:
+  relay_image_cache:

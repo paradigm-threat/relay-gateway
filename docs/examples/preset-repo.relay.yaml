@@ -37,11 +37,11 @@ git:
 server:
   hooks:
     pre-commit:
-      path: hooks/server/pre-commit.mjs
+      path: hooks/server/pre-commit.cs
     pre-receive:
-      path: hooks/server/pre-receive.mjs
+      path: hooks/server/pre-receive.cs
     index:
-      path: hooks/server/index.mjs
+      path: hooks/server/index.cs
       # Optional: only these branches get JIT index + QUERY (omit = all branches)
       # branches: [ "main" ]
       # Optional: QUERY row projection / column order (CSV, JSON, XML)

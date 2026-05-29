@@ -110,6 +110,27 @@ git:
         );
     }
 
+    #[test]
+    fn test_default_branch_from_bare_head_stale_master_falls_back_to_main() {
+        use crate::git::repo::default_branch_from_bare_head;
+        use std::path::PathBuf;
+        let td = tempdir().unwrap();
+        let root: PathBuf = td.path().to_path_buf();
+        let repo_path = root.join("r.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+        let tb = repo.treebuilder(None).unwrap();
+        let tid = tb.write().unwrap();
+        let tree = repo.find_tree(tid).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "x", &tree, &[])
+            .unwrap();
+        repo.set_head("refs/heads/master").unwrap();
+        assert_eq!(
+            default_branch_from_bare_head(&root, "r").as_deref(),
+            Some("main")
+        );
+    }
+
     /// Regression: extended `HookPath` under `server.hooks.index` deserializes (branches + query.fields).
     #[test]
     fn test_read_relay_config_index_hook_extended() {
@@ -121,7 +142,7 @@ git:
 server:
   hooks:
     index:
-      path: hooks/server/index.mjs
+      path: hooks/server/index.cs
       branches: ["main", "dev"]
       query:
         collections:
@@ -147,7 +168,7 @@ server:
             .unwrap()
             .get("index")
             .unwrap();
-        assert_eq!(hook.path, "hooks/server/index.mjs");
+        assert_eq!(hook.path, "hooks/server/index.cs");
         assert_eq!(hook.branches.as_ref().unwrap(), &["main", "dev"]);
         let fields = hook
             .query

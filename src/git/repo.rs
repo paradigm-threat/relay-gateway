@@ -42,16 +42,53 @@ pub fn open_repo(root: &PathBuf, name: &str) -> Option<Repository> {
     Repository::open_bare(p).ok()
 }
 
-/// Default branch name from the bare repo's symbolic `HEAD` (e.g. `refs/heads/master` → `master`).
-/// Used when the client sends no branch header. Returns `None` if `HEAD` is missing or not symbolic.
+/// True when `refs/heads/{branch}` exists on the bare repo.
+pub fn branch_ref_exists(repo: &Repository, branch: &str) -> bool {
+    !branch.is_empty()
+        && repo
+            .find_reference(&format!("refs/heads/{branch}"))
+            .is_ok()
+}
+
+/// Default branch name from the bare repo's symbolic `HEAD` (e.g. `refs/heads/main` → `main`).
+/// If `HEAD` points at a missing branch (stale `master` after rename), falls back to `main`,
+/// then `master`, then the first existing branch. Returns `None` only when no branch refs exist.
 pub fn default_branch_from_bare_head(root: &PathBuf, name: &str) -> Option<String> {
     let repo = open_repo(root, name)?;
-    let head = repo.find_reference("HEAD").ok()?;
-    let target = head.symbolic_target()?;
-    target
-        .strip_prefix("refs/heads/")
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+    if let Ok(head) = repo.find_reference("HEAD") {
+        if let Some(target) = head.symbolic_target() {
+            if let Some(branch) = target.strip_prefix("refs/heads/").filter(|s| !s.is_empty()) {
+                if branch_ref_exists(&repo, branch) {
+                    return Some(branch.to_string());
+                }
+            }
+        }
+    }
+    for fallback in [crate::types::DEFAULT_BRANCH, "master"] {
+        if branch_ref_exists(&repo, fallback) {
+            return Some(fallback.to_string());
+        }
+    }
+    let mut names = bare_repo_branch_names(&repo);
+    names.into_iter().next()
+}
+
+/// Sorted branch names (without `refs/heads/` prefix) for a bare repo.
+fn bare_repo_branch_names(repo: &Repository) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Ok(refs) = repo.references() {
+        for r in refs.flatten() {
+            if let Some(name) = r.name() {
+                if let Some(branch) = name.strip_prefix("refs/heads/") {
+                    if !branch.is_empty() {
+                        names.push(branch.to_string());
+                    }
+                }
+            }
+        }
+    }
+    names.sort();
+    names
 }
 
 /// Read .relay.yaml configuration from git tree for the given revision (branch name or commit hash)

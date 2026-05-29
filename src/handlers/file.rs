@@ -5,8 +5,6 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use base64::engine::general_purpose;
-use base64::Engine;
 use tracing::{error, info, warn};
 
 use crate::{
@@ -14,12 +12,12 @@ use crate::{
     HEADER_REPO,
 };
 
-/// GET file handler — resolves from Git first, then hooks/get.mjs, then static
+/// GET file handler — resolves from Git first, then `server.hooks.get` CleverScript (`.cs`), then static
 pub async fn handle_get_file(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     axum::extract::Path(path): axum::extract::Path<String>,
-    _query: Option<Query<HashMap<String, String>>>,
+    query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
     info!(%path, "get_file called");
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
@@ -65,7 +63,9 @@ pub async fn handle_get_file(
     }
     let normalized_path = decoded.trim_start_matches('/').to_string();
 
-    if transpiler::helpers::should_transpile_request(&headers, &_query)
+    let qmap = query.as_ref().map(|q| &q.0);
+
+    if transpiler::helpers::should_transpile_request(&headers, &query)
         && transpiler::helpers::is_transpilable_hook_path(&normalized_path)
     {
         if let Some(transpiled) = transpiler::helpers::transpile_hook_file(
@@ -80,12 +80,19 @@ pub async fn handle_get_file(
 
     info!(%branch, "resolved branch");
 
-    let git_result =
-        git::git_resolve_and_respond(&state.repo_path, &headers, &branch, &repo_name, &decoded);
+    let git_result = git::git_resolve_and_respond(
+        &state.repo_path,
+        &headers,
+        &branch,
+        &repo_name,
+        &decoded,
+        qmap,
+    );
     match git_result {
         GitResolveResult::Respond(resp) => return resp,
         GitResolveResult::NotFound(rel_missing) => {
-            let hook_resp = run_get_script_or_404(&state, &branch, &repo_name, &rel_missing).await;
+            let hook_resp =
+                run_get_clever_or_404(&state, &headers, &branch, &repo_name, &rel_missing, qmap).await;
             if hook_resp.status() != StatusCode::NOT_FOUND {
                 return hook_resp;
             }
@@ -97,11 +104,13 @@ pub async fn handle_get_file(
     }
 }
 
-async fn run_get_script_or_404(
+async fn run_get_clever_or_404(
     state: &AppState,
+    headers: &axum::http::HeaderMap,
     branch: &str,
     repo_name: &str,
     rel_missing: &str,
+    query: Option<&HashMap<String, String>>,
 ) -> Response {
     let repo = match git::open_repo(&state.repo_path, repo_name) {
         Some(r) => r,
@@ -121,121 +130,76 @@ async fn run_get_script_or_404(
             return (StatusCode::NOT_FOUND, error_msg).into_response();
         }
     };
-    let tree = match commit.tree() {
-        Ok(t) => t,
-        Err(_) => {
+    let head = commit.id().to_string();
+    let relay_cfg = git::read_relay_config(&repo, &head).unwrap_or_default();
+    let cs_path = match git::index_policy::clever_get_hook_path(&relay_cfg) {
+        Some(p) => p,
+        None => {
             let error_msg = format!(
-                "Not Found\n\nPath: {}\nBranch: {}\nRepo: {}\n\nFailed to read tree from branch.",
+                "Not Found\n\nPath: {}\nBranch: {}\nRepo: {}\n\nNo `server.hooks.get` CleverScript (.cs) configured in .relay.yaml for dynamic GET.",
                 rel_missing, branch, repo_name
             );
             return (StatusCode::NOT_FOUND, error_msg).into_response();
         }
     };
-    let entry = match tree.get_path(std::path::Path::new("hooks/get.mjs")) {
-        Ok(e) => e,
-        Err(_) => {
-            let error_msg = format!(
-                "Not Found\n\nPath: {}\nBranch: {}\nRepo: {}\n\nFile not found in git repository. No hooks/get.mjs found to handle dynamic routing.",
-                rel_missing, branch, repo_name
-            );
-            return (StatusCode::NOT_FOUND, error_msg).into_response();
-        }
-    };
-    let blob = match entry.to_object(&repo).and_then(|o| o.peel_to_blob()) {
+    let repo_full = state.repo_path.join(format!("{}.git", repo_name));
+    let source_bytes = match git::read_file_from_repo(&repo_full, branch, &cs_path) {
         Ok(b) => b,
         Err(_) => {
             let error_msg = format!(
-                "Not Found\n\nPath: {}\nBranch: {}\nRepo: {}\n\nFile not found in git repository. hooks/get.mjs exists but cannot be read.",
-                rel_missing, branch, repo_name
+                "Not Found\n\nPath: {}\nBranch: {}\nRepo: {}\n\nConfigured GET hook missing in tree: {}",
+                rel_missing, branch, repo_name, cs_path
             );
             return (StatusCode::NOT_FOUND, error_msg).into_response();
         }
     };
-    let tmp = std::env::temp_dir().join(format!("relay-get-{}-{}.mjs", branch, commit.id()));
-    if let Err(e) = std::fs::write(&tmp, blob.content()) {
-        error!(?e, "failed to write get.mjs temp file");
-        return (StatusCode::NOT_FOUND, "Not Found").into_response();
-    }
-    let node_bin = std::env::var("RELAY_NODE_BIN").unwrap_or_else(|_| "node".to_string());
-    let mut cmd = std::process::Command::new(node_bin);
-    cmd.arg(&tmp)
-        .env("GIT_DIR", repo.path())
-        .env("BRANCH", branch)
-        .env("REL_PATH", rel_missing)
-        .env(
-            "CACHE_ROOT",
-            std::env::var("RELAY_IPFS_CACHE_ROOT")
-                .unwrap_or_else(|_| DEFAULT_IPFS_CACHE_ROOT.to_string()),
-        )
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    let output = match cmd.output() {
-        Ok(o) => o,
-        Err(e) => {
-            error!(?e, "failed to execute get.mjs");
-            let _ = std::fs::remove_file(&tmp);
-            return (StatusCode::NOT_FOUND, "Not Found").into_response();
+    let source = String::from_utf8_lossy(&source_bytes);
+    let content_type = mime_guess::from_path(rel_missing)
+        .first_or_octet_stream()
+        .essence_str()
+        .to_string();
+    let mut ctx = serde_json::json!({
+        "relPath": rel_missing,
+        "branch": branch,
+        "repo": repo_name,
+        "commitSha": head,
+        "contentType": content_type,
+        "cacheRoot": std::env::var("RELAY_IPFS_CACHE_ROOT").unwrap_or_else(|_| DEFAULT_IPFS_CACHE_ROOT.to_string()),
+    });
+    if let Some(q) = query {
+        if let Ok(obj) = serde_json::to_value(q) {
+            ctx["query"] = obj;
         }
-    };
-    let _ = std::fs::remove_file(&tmp);
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!(%stderr, "get.mjs non-success status");
-        return (StatusCode::NOT_FOUND, "Not Found").into_response();
     }
-    let val: serde_json::Value = match serde_json::from_slice(&output.stdout) {
+    crate::git::clever_script_host::augment_get_context_headers(&mut ctx, headers);
+    let val = match git::clever_hooks::run_clever_hook(
+        &source,
+        &ctx,
+        repo_full.clone(),
+        branch.to_string(),
+        true,
+    ) {
         Ok(v) => v,
         Err(e) => {
-            warn!(?e, "get.mjs returned invalid JSON");
-            return (StatusCode::NOT_FOUND, "Not Found").into_response();
+            error!(?e, "GET CleverScript hook failed");
+            return git::get_hook_http::get_hook_execution_error_response(
+                branch, repo_name, &e,
+            );
         }
     };
-    let kind = val.get("kind").and_then(|k| k.as_str()).unwrap_or("");
-    match kind {
-        "file" => {
-            let ct = val
-                .get("contentType")
-                .and_then(|v| v.as_str())
-                .unwrap_or("application/octet-stream");
-            let b64 = val.get("bodyBase64").and_then(|v| v.as_str()).unwrap_or("");
-            match general_purpose::STANDARD.decode(b64.as_bytes()) {
-                Ok(bytes) => (
-                    StatusCode::OK,
-                    [
-                        ("Content-Type", ct.to_string()),
-                        (HEADER_BRANCH, branch.to_string()),
-                        (HEADER_REPO, repo_name.to_string()),
-                    ],
-                    bytes,
-                )
-                    .into_response(),
-                Err(e) => {
-                    warn!(?e, "failed to decode get.mjs bodyBase64");
-                    (StatusCode::NOT_FOUND, "Not Found").into_response()
-                }
-            }
-        }
-        "dir" => (
-            StatusCode::OK,
-            [
-                ("Content-Type", "application/json".to_string()),
-                (HEADER_BRANCH, branch.to_string()),
-                (HEADER_REPO, repo_name.to_string()),
-            ],
-            axum::Json(val),
-        )
-            .into_response(),
-        _ => (
-            StatusCode::NOT_FOUND,
-            [
-                ("Content-Type", "text/plain".to_string()),
-                (HEADER_BRANCH, branch.to_string()),
-                (HEADER_REPO, repo_name.to_string()),
-            ],
-            "Not Found",
-        )
-            .into_response(),
+    if let Some(resp) = git::get_hook_json_to_response(&val, branch, repo_name) {
+        return resp;
     }
+    (
+        StatusCode::NOT_FOUND,
+        [
+            ("Content-Type", "text/plain".to_string()),
+            (HEADER_BRANCH, branch.to_string()),
+            (HEADER_REPO, repo_name.to_string()),
+        ],
+        "Not Found",
+    )
+        .into_response()
 }
 
 /// Try to serve a file from static paths

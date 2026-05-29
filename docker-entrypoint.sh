@@ -6,9 +6,14 @@ log() {
 }
 
 # Parse repo list (comma/semicolon/whitespace separated)
-# Support both DEFAULT_REPOS and RELAY_MASTER_REPO_LIST
-REPOS_STR="${RELAY_MASTER_REPO_LIST:-${DEFAULT_REPOS:-https://github.com/clevertree/relay-template}}"
-REPOS=$(echo "$REPOS_STR" | tr ',;' ' ')
+# Support both DEFAULT_REPOS and RELAY_MASTER_REPO_LIST.
+# RELAY_SKIP_DEFAULT_REPOS=1: do not fall back to relay-template (local dev / pre-seeded data).
+if [[ "${RELAY_SKIP_DEFAULT_REPOS:-0}" == "1" ]]; then
+  REPOS_STR="${RELAY_MASTER_REPO_LIST:-${DEFAULT_REPOS:-}}"
+else
+  REPOS_STR="${RELAY_MASTER_REPO_LIST:-${DEFAULT_REPOS:-https://gitlab.com/clevertree/relay-template.git}}"
+fi
+REPOS=$(echo "$REPOS_STR" | tr ',;' ' ' | xargs)
 
 DATA_ROOT="${RELAY_REPO_PATH:-/srv/relay/data}"
 WWW_DIR="${RELAY_STATIC_DIR:-/srv/relay/www}"

@@ -7,7 +7,7 @@
 
 services:
   relay-gateway:
-    image: ghcr.io/clevertree/relay-gateway:latest
+    image: ${RELAY_IMAGE:-registry.gitlab.com/clevertree/relay-server/relay-gateway:latest}
     container_name: relay-gateway
     restart: unless-stopped
     ports:
@@ -19,7 +19,8 @@ services:
       - RELAY_GIT_PORT=9418
       - RELAY_GIT_ENSURE_BARE_ENABLED=${RELAY_GIT_ENSURE_BARE_ENABLED:-1}
       - RELAY_MASTER_PEER_LIST=${RELAY_MASTER_PEER_LIST:-}
-      - DEFAULT_REPOS=${DEFAULT_REPOS:-https://github.com/clevertree/relay-template}
+      - RELAY_SKIP_DEFAULT_REPOS=${RELAY_SKIP_DEFAULT_REPOS:-0}
+      - DEFAULT_REPOS=${DEFAULT_REPOS:-https://gitlab.com/clevertree/relay-template.git}
     volumes:
       - ./data:/srv/relay/data
       - ./logs:/srv/relay/logs
