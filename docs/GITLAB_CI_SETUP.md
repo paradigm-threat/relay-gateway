@@ -57,14 +57,14 @@ RELAY_CI_PATH_DEPS=1 ./scripts/ci-ensure-deps.sh
 
 ## Rackspace roll
 
-After `docker:publish` succeeds:
+After `docker:publish` succeeds (pipeline [#2562267413](https://gitlab.com/clevertree/relay-server/-/pipelines/2562267413) on `73da48d`):
 
 ```bash
-docker login registry.gitlab.com
-export KUBECONFIG=/path/to/kubeconfig
-export REGISTRY=registry.gitlab.com/clevertree/relay-server
-export RELAY_IMAGE_TAG=main
-./terraform/rackspace-spot/scripts/build-push-deploy.sh
+docker pull registry.gitlab.com/clevertree/relay-server/relay-gateway:main
+export KUBECONFIG=terraform/rackspace-spot/kubeconfig   # refresh via terraform if stale
+./terraform/rackspace-spot/scripts/deploy-from-registry.sh
 ```
 
-`build-push-deploy.sh` can skip local build if the image is already in the registry (re-tag/pull only).
+If kubeconfig API host does not resolve, refresh the Rackspace cloudspace (`terraform apply` in `terraform/rackspace-spot`).
+
+`build-push-deploy.sh` builds locally; prefer `deploy-from-registry.sh` when CI already published the image.

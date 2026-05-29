@@ -8,6 +8,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GW_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+KUBECTL="${KUBECTL:-${GW_DIR}/terraform/kubectl}"
+if [[ ! -x "$KUBECTL" ]]; then
+  KUBECTL=kubectl
+fi
 REGISTRY="${REGISTRY:-registry.gitlab.com/clevertree/relay-server}"
 TAG="${RELAY_IMAGE_TAG:-main}"
 IMAGE="${REGISTRY}/relay-gateway:${TAG}"
@@ -29,13 +34,13 @@ for manifest in relay-daemonset.yaml relay-daemonset-dfw2.yaml; do
   fi
 done
 
-kubectl apply -f "$SCRIPT_DIR/../k8s/relay-daemonset.yaml"
+"$KUBECTL" apply -f "$SCRIPT_DIR/../k8s/relay-daemonset.yaml"
 if [[ -f "$SCRIPT_DIR/../k8s/relay-daemonset-dfw2.yaml" ]]; then
-  kubectl apply -f "$SCRIPT_DIR/../k8s/relay-daemonset-dfw2.yaml"
+  "$KUBECTL" apply -f "$SCRIPT_DIR/../k8s/relay-daemonset-dfw2.yaml"
 fi
 
-kubectl rollout restart daemonset/relay-daemon 2>/dev/null || true
-kubectl rollout status daemonset/relay-daemon --timeout=300s 2>/dev/null || true
+"$KUBECTL" rollout restart daemonset/relay-daemon 2>/dev/null || true
+"$KUBECTL" rollout status daemonset/relay-daemon --timeout=300s 2>/dev/null || true
 
 echo "Done. Pods:"
-kubectl get pods -l app=relay -o wide 2>/dev/null || true
+"$KUBECTL" get pods -l app=relay -o wide 2>/dev/null || true
