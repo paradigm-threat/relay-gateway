@@ -8,7 +8,7 @@ workflow:
     - if: $CI_COMMIT_TAG
 
 variables:
-  RUST_VERSION: "1.85"
+  RUST_VERSION: "1.91"
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo-cache"
   DOCKER_IMAGE: "${CI_REGISTRY_IMAGE}/relay-gateway"
   DOCKERFILE: "Dockerfile.production"

@@ -3,7 +3,7 @@
 # Build from a staged flat context (see scripts/stage-docker-context.sh):
 #   ./scripts/docker-build-production.sh
 
-FROM lukemathwalker/cargo-chef:latest-rust-1.85-slim AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.91.1-slim-bookworm AS chef
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev build-essential \
