@@ -23,9 +23,11 @@ rsync -a --delete \
   --exclude data \
   --exclude .git \
   --exclude deps \
+  --exclude terraform \
+  --exclude 'strace*.txt' \
   "$GW_DIR/" "$OUT/relay-gateway/"
-rsync -a "$DEPS_ROOT/relay-runtime/" "$OUT/relay-runtime/"
-rsync -a "$DEPS_ROOT/md2ast/" "$OUT/md2ast/"
+rsync -a --exclude .git "$DEPS_ROOT/relay-runtime/" "$OUT/relay-runtime/"
+rsync -a --exclude .git "$DEPS_ROOT/md2ast/" "$OUT/md2ast/"
 rsync -a "$GW_DIR/themed-styler/" "$OUT/relay/relay-gateway/themed-styler/"
 
 echo "[stage-docker-context] $OUT"
