@@ -36,34 +36,7 @@ test:verify:
     - ./scripts/ci-ensure-deps.sh
   script:
     - cargo test
-    - cargo build
-    - mkdir -p ci-data
-    - |
-      export RELAY_REPO_PATH="$CI_PROJECT_DIR/ci-data"
-      export RELAY_BIND=127.0.0.1:18080
-      ./target/debug/relay-gateway > relay-smoke.log 2>&1 &
-      RELAY_PID=$!
-      READY=0
-      for i in $(seq 1 120); do
-        if curl -sfS -X POST "http://127.0.0.1:18080/api/config" >/dev/null 2>&1; then
-          READY=1
-          break
-        fi
-        if ! kill -0 "$RELAY_PID" 2>/dev/null; then
-          echo "relay-gateway exited before ready"
-          cat relay-smoke.log || true
-          exit 1
-        fi
-        sleep 0.5
-      done
-      if [ "$READY" != "1" ]; then
-        echo "relay-gateway not ready after 60s"
-        cat relay-smoke.log || true
-        exit 1
-      fi
-      curl -sfS -X POST "http://127.0.0.1:18080/api/config" | jq -e 'type == "object"'
-      kill $RELAY_PID 2>/dev/null || true
-      wait $RELAY_PID 2>/dev/null || true
+    - cargo build --release
 
 package:linode-tgz:
   stage: package

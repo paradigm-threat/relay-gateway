@@ -11,7 +11,7 @@ use_registry() {
   sed -i 's|^md2ast = .*|md2ast = "1.0.2"|' Cargo.toml
   touch .ci-registry-deps
   # Avoid stale target/ from prior path-dep CI runs (different dependency graph).
-  rm -rf target
+  rm -rf target 2>/dev/null || true
   export PATH="${PATH:-/usr/local/cargo/bin}:$HOME/.cargo/bin"
   cargo update -q -p relay-runtime -p md2ast 2>/dev/null || cargo update -q
 }
