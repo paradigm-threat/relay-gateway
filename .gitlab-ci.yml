@@ -1,5 +1,5 @@
-# relay-gateway — GitLab CI (standalone relay-server project at repo root)
-# Lint: scripts/gitlab-ci-lint.sh
+# relay-gateway — GitLab CI (clevertree/relay-server at repo root)
+# Setup: docs/GITLAB_CI_SETUP.md
 
 workflow:
   rules:
@@ -10,7 +10,6 @@ workflow:
 variables:
   RUST_VERSION: "1.85"
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo-cache"
-  # Sub-image name under the project registry (matches Rackspace k8s manifests).
   DOCKER_IMAGE: "${CI_REGISTRY_IMAGE}/relay-gateway"
   DOCKERFILE: "Dockerfile.production"
 
@@ -26,44 +25,45 @@ cache:
     - .cargo-cache/git/
     - target/
 
-.rust_before:
+test:verify:
+  stage: test
+  image: rust:${RUST_VERSION}-bookworm
+  timeout: 45m
   before_script:
     - export PATH="/usr/local/cargo/bin:$PATH"
     - apt-get update -qq && apt-get install -y -qq curl jq nodejs git rsync
     - chmod +x ./scripts/ci-ensure-deps.sh
     - ./scripts/ci-ensure-deps.sh
-
-test:verify:
-  stage: test
-  image: rust:${RUST_VERSION}-bookworm
-  extends: .rust_before
   script:
-    - |
-      LOCK_FLAG="--locked"
-      if [[ -f .ci-registry-deps ]]; then LOCK_FLAG=""; fi
-      cargo test $LOCK_FLAG
-      cargo build --release $LOCK_FLAG
+    - cargo test
+    - cargo build
     - mkdir -p ci-data
     - |
-      RELAY_REPO_PATH="$CI_PROJECT_DIR/ci-data" RELAY_BIND=127.0.0.1:18080 ./target/release/relay-gateway &
+      RELAY_REPO_PATH="$CI_PROJECT_DIR/ci-data" RELAY_BIND=127.0.0.1:18080 ./target/debug/relay-gateway &
       RELAY_PID=$!
-      for i in $(seq 1 30); do
+      for i in $(seq 1 60); do
         curl -sfS -X POST "http://127.0.0.1:18080/api/config" >/dev/null && break
-        sleep 0.2
+        sleep 0.5
       done
       curl -sfS -X POST "http://127.0.0.1:18080/api/config" | jq -e 'type == "object"'
-      kill $RELAY_PID
+      kill $RELAY_PID 2>/dev/null || true
       wait $RELAY_PID 2>/dev/null || true
 
 package:linode-tgz:
   stage: package
   needs: ["test:verify"]
   image: rust:${RUST_VERSION}-bookworm
-  extends: .rust_before
+  timeout: 45m
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  before_script:
+    - export PATH="/usr/local/cargo/bin:$PATH"
+    - apt-get update -qq && apt-get install -y -qq git rsync
+    - chmod +x ./scripts/ci-ensure-deps.sh
+    - ./scripts/ci-ensure-deps.sh
   script:
+    - cargo build --release
     - ./scripts/pack-linode-deploy.sh
   artifacts:
     name: "relay-linode-deploy-$CI_COMMIT_SHORT_SHA"
@@ -71,21 +71,21 @@ package:linode-tgz:
       - target/relay-linode-deploy.tgz
     expire_in: 30 days
 
-# Stage flat build context on a full Debian image (Kaniko lacks git/rsync).
 docker:prepare-context:
   stage: docker
   needs: ["test:verify"]
   image: rust:${RUST_VERSION}-bookworm
+  timeout: 30m
   variables:
     RELAY_CI_PATH_DEPS: "1"
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   before_script:
     - export PATH="/usr/local/cargo/bin:$PATH"
     - apt-get update -qq && apt-get install -y -qq git rsync
     - chmod +x ./scripts/ci-ensure-deps.sh
     - ./scripts/ci-ensure-deps.sh
-  rules:
-    - if: $CI_COMMIT_TAG =~ /^v/
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   script:
     - ./scripts/stage-docker-context.sh "$CI_PROJECT_DIR/docker-ctx"
   artifacts:
@@ -94,12 +94,16 @@ docker:prepare-context:
       - docker-ctx/
     expire_in: 1 hour
 
-.docker_publish:
+docker:publish:
   stage: docker
   image:
     name: gcr.io/kaniko-project/executor:debug
     entrypoint: [""]
   needs: ["docker:prepare-context"]
+  timeout: 30m
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   before_script:
     - mkdir -p /kaniko/.docker
     - echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf "%s:%s" "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
@@ -117,20 +121,17 @@ docker:prepare-context:
         --dockerfile "${CI_PROJECT_DIR}/${DOCKERFILE}" \
         $TAGS
 
-docker:publish:
-  extends: .docker_publish
-  rules:
-    - if: $CI_COMMIT_TAG =~ /^v/
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
 publish:crate:
   stage: package
   image: rust:${RUST_VERSION}-bookworm
   needs: ["test:verify"]
-  extends: .rust_before
   rules:
     - if: $CI_COMMIT_TAG =~ /^v[0-9]/
       when: manual
+  before_script:
+    - export PATH="/usr/local/cargo/bin:$PATH"
+    - chmod +x ./scripts/ci-ensure-deps.sh
+    - ./scripts/ci-ensure-deps.sh
   script:
-    - cargo publish --locked --dry-run
+    - cargo publish --dry-run
   allow_failure: true
