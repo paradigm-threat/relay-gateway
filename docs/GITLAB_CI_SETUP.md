@@ -13,13 +13,11 @@
 
 ### Option A — CI job token (recommended)
 
-On **`clevertree/relay-runtime`** (private):
+On **`clevertree/relay-runtime`**:
 
-1. **Settings → CI/CD → Job token permissions**
-2. **Add project** → `clevertree/relay-server`
-3. Grant **read_repository**
-
-Repeat for **`clevertree/md2jsx`** only if clones fail (project is public today).
+- **Public** (recommended if already on crates.io), **or**
+- **Private** with job token: **Settings → CI/CD → Job token permissions** → add `clevertree/relay-server`, **or**
+- Deploy token via `RELAY_RUNTIME_GIT_URL` (see Option B below)
 
 ### Option B — Deploy token (works across groups)
 
