@@ -8,18 +8,18 @@ provider "spot" {
   token = local.spot_token
 }
 
-// Data source to list available server classes and their metadata (used for debugging)
 data "spot_serverclasses" "all" {}
 
 resource "spot_cloudspace" "cs" {
-  cloudspace_name   = var.cloudspace_name
-  region            = var.region
-  hacontrol_plane   = false
-  wait_until_ready  = true
+  cloudspace_name    = var.cloudspace_name
+  region             = var.region
+  hacontrol_plane    = false
+  wait_until_ready   = true
   kubernetes_version = "1.30.10"
-  cni               = "calico"
+  cni                = "calico"
 }
 
+# dfw1 — single spot node for dfw1.relaygateway.net (formerly atlanta3 on this cluster)
 resource "spot_spotnodepool" "pool" {
   cloudspace_name      = spot_cloudspace.cs.cloudspace_name
   server_class         = var.server_class
@@ -30,19 +30,6 @@ resource "spot_spotnodepool" "pool" {
     "managed-by" = "terraform"
     "component"  = "relay-server"
     "relay-node" = "dfw1"
-  }
-}
-
-resource "spot_spotnodepool" "pool_dfw2" {
-  cloudspace_name      = spot_cloudspace.cs.cloudspace_name
-  server_class         = var.server_class
-  bid_price            = var.bid_price
-  desired_server_count = 1
-
-  labels = {
-    "managed-by" = "terraform"
-    "component"  = "relay-server"
-    "relay-node" = "dfw2"
   }
 }
 

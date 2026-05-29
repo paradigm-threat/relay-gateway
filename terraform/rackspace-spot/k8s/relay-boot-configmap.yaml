@@ -43,10 +43,10 @@ data:
         [[ "$PUB_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && break
       done
       if [[ -n "$PUB_IP" ]]; then
-        DOMAIN="${RELAY_DNS_DOMAIN:-relaynet.online}"
-        SUB="${RELAY_DNS_SUBDOMAIN:-node1}"
-        VERCEL_API_TOKEN="${VERCEL_API_TOKEN}" VERCEL_TEAM_ID="${VERCEL_TEAM_ID:-}" \
-          /scripts/vercel-dns-upsert.sh "${SUB}.${DOMAIN}" "$PUB_IP" || true
+        if [[ -n "${RELAY_PUBLIC_HOSTNAME:-}" ]]; then
+          VERCEL_API_TOKEN="${VERCEL_API_TOKEN}" VERCEL_TEAM_ID="${VERCEL_TEAM_ID:-}" \
+            /scripts/vercel-dns-upsert.sh "${RELAY_PUBLIC_HOSTNAME}" "$PUB_IP" || true
+        fi
         if [[ -n "${RELAY_EXTRA_DNS_FQDNS:-}" ]]; then
           IFS=',' read -ra extras <<< "${RELAY_EXTRA_DNS_FQDNS}"
           for fqdn in "${extras[@]}"; do

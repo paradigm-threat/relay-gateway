@@ -1,0 +1,4 @@
+cloudspace_name = "relay-ord1"
+region          = "us-central-ord-1"
+server_class    = "gp.vs1.small-ord"
+bid_price       = 0.002

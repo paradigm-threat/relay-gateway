@@ -1,0 +1,4 @@
+cloudspace_name = "relay-lon1"
+region          = "eu-west-lon-1"
+server_class    = "gp.vs1.small-lon"
+bid_price       = 0.002

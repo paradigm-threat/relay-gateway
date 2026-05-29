@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: relay-daemon
+  labels:
+    app: relay
+spec:
+  selector:
+    matchLabels:
+      app: relay
+  template:
+    metadata:
+      labels:
+        app: relay
+    spec:
+      hostNetwork: true
+      hostPID: false
+      securityContext:
+        fsGroup: 1000
+      tolerations:
+        - operator: "Exists"
+      containers:
+        - name: relay
+          image: registry.gitlab.com/clevertree/relay-server/relay-gateway:main
+          imagePullPolicy: Always
+          command: ["/bin/bash", "/scripts/relay-boot.sh"]
+          envFrom:
+            - configMapRef:
+                name: relay-config
+          env:
+            - name: VERCEL_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: relay-credentials
+                  key: VERCEL_API_TOKEN
+            - name: VERCEL_TEAM_ID
+              valueFrom:
+                secretKeyRef:
+                  name: relay-credentials
+                  key: VERCEL_TEAM_ID
+            - name: RELAY_MASTER_MESH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: relay-credentials
+                  key: RELAY_MASTER_MESH_SECRET
+                  optional: true
+            - name: RELAY_PEER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: relay-credentials
+                  key: RELAY_PEER_SECRET
+                  optional: true
+            - name: GITLAB_DEPLOY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: relay-credentials
+                  key: GITLAB_DEPLOY_USER
+                  optional: true
+            - name: GITLAB_DEPLOY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: relay-credentials
+                  key: GITLAB_DEPLOY_TOKEN
+                  optional: true
+          ports:
+            - containerPort: 8080
+            - containerPort: 9418
+          securityContext:
+            runAsUser: 0
+            privileged: false
+          volumeMounts:
+            - name: relay-data
+              mountPath: /srv/relay/data
+            - name: relay-catalog
+              mountPath: /srv/relay/src/relay-master
+            - name: relay-state
+              mountPath: /srv/relay/state
+            - name: boot-scripts
+              mountPath: /scripts
+      nodeSelector:
+        relay-node: ord1
+      volumes:
+        - name: relay-data
+          hostPath:
+            path: /opt/relay/data
+            type: DirectoryOrCreate
+        - name: relay-catalog
+          hostPath:
+            path: /opt/relay/src/relay-master
+            type: DirectoryOrCreate
+        - name: relay-state
+          hostPath:
+            path: /opt/relay/state
+            type: DirectoryOrCreate
+        - name: boot-scripts
+          configMap:
+            name: relay-boot-scripts
+            defaultMode: 0755

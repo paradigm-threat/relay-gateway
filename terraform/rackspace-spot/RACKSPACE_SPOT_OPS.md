@@ -1,15 +1,26 @@
 # Rackspace Spot — operations
 
+## Stacks (relaygateway.net)
+
+| Stack | FQDN | Region | Terraform path |
+|-------|------|--------|----------------|
+| **dfw1** | `dfw1.relaygateway.net` | `us-central-dfw-1` | `terraform/rackspace-spot/` (root) |
+| **lon1** | `lon1.relaygateway.net` | `uk-lon-1` | `terraform/rackspace-spot/stacks/lon1/` |
+| **ord1** | `ord1.relaygateway.net` | `us-central-ord-1` | `terraform/rackspace-spot/stacks/ord1/` |
+
+Mesh peers: `atlanta2;dfw1;jp-osa;lon1;ord1` (all `*.relaygateway.net`).
+
+**Retired:** `node-dfw1` / `node-dfw2` on `relaynet.online`, second dfw spot pool, `atlanta3` naming on spot (use **dfw1**).
+
 ## Deploy
 
 ```bash
+# All stacks (terraform + k8s + DNS upsert)
 ./terraform/rackspace-spot/scripts/rackspace-deploy.sh
-```
 
-Roll manifests only (cluster already up):
-
-```bash
-SKIP_TERRAFORM=1 ./terraform/rackspace-spot/scripts/rackspace-deploy.sh
+# One stack
+RELAY_SPOT_STACK=dfw1 ./terraform/rackspace-spot/scripts/rackspace-deploy.sh
+SKIP_TERRAFORM=1 RELAY_SPOT_STACK=lon1 ./terraform/rackspace-spot/scripts/rackspace-deploy.sh
 ```
 
 ## Paradigm Threat (PT) on the mirror list
@@ -45,7 +56,7 @@ SKIP_TERRAFORM=1 ./terraform/rackspace-spot/scripts/rackspace-deploy.sh
 |--------|----------------|------------|
 | **Pod crash / restart** | Same node, **hostPath** keeps `/opt/relay/data` and catalog worktree. Boot script re-runs sync + DNS upsert. | Yes (DaemonSet restart) |
 | **Spot preemption** (bid lost) | VM replaced; **new IP**; **empty disk** unless you add persistent volumes. Terraform/nodepool places a new bid. | Partially |
-| **New spot node wins bid** | `relay-boot.sh` runs: clone `relay-master`, `sync-relay-catalog.sh`, **Vercel upsert** for `node-dfw1.relaynet.online` + **`atlanta3.relaygateway.net`**, start git daemon + relay. | Yes (on pod start) |
+| **New spot node wins bid** | `relay-boot.sh` runs: clone `relay-master`, `sync-relay-catalog.sh`, **Vercel upsert** for **`{stack}.relaygateway.net`**, start git daemon + relay. | Yes (on pod start) |
 | **DNS** | `vercel-dns-upsert.sh` updates A records to the node’s current public IP. | Yes (boot script + deploy script) |
 | **SSL / HTTPS** | Not automatic on spot today (`RELAY_SSL_MODE=none`). Certbot path needs `/var/www/certbot` or switch to Caddy sidecar. | No — manual / follow-up |
 | **Bare mirror data** | After preemption, re-sync from **forge** (thin stubs) + **peer fetch** from other masters or re-**push** full trees. | Peer fetch automatic if `RELAY_MASTER_PEER_LIST` + mesh secrets set and peers up |

@@ -1,24 +1,35 @@
 #!/usr/bin/env bash
-# Provision Rackspace Spot cloudspace, apply k8s manifests, roll relay image from GitLab CI.
-# When spot nodes win bids, relay entrypoint upserts Vercel DNS (node-dfw1 + atlanta3).
+# Provision Rackspace Spot cloudspaces and deploy relay on dfw1, lon1, ord1.
 #
 # Usage (from relay-gateway/):
 #   ./terraform/rackspace-spot/scripts/rackspace-deploy.sh
+#   RELAY_SPOT_STACK=dfw1 ./terraform/rackspace-spot/scripts/rackspace-deploy.sh
+#   SKIP_TERRAFORM=1 RELAY_SPOT_STACKS="dfw1 lon1 ord1" ./terraform/rackspace-spot/scripts/rackspace-deploy.sh
 #
 # Env:
-#   VERCEL_API_TOKEN / VERCEL_TEAM_ID — k8s secret + post-deploy atlanta3 upsert
-#   RELAY_FLEET_DNS_FQDN — default atlanta3.relaygateway.net
-#   SKIP_TERRAFORM=1 — only roll DaemonSets (kubeconfig must exist)
+#   RELAY_SPOT_STACK — deploy only this stack (dfw1|lon1|ord1)
+#   RELAY_SPOT_STACKS — space-separated list (default: dfw1 lon1 ord1)
+#   SKIP_TERRAFORM=1 — k8s roll only
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TF_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-GW_DIR="$(cd "$TF_DIR/../.." && pwd)"
+TF_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+GW_DIR="$(cd "$TF_ROOT/../.." && pwd)"
 TERRAFORM="${TERRAFORM:-${GW_DIR}/terraform/terraform}"
 KUBECTL="${KUBECTL:-${GW_DIR}/terraform/kubectl}"
-KUBECONFIG="${KUBECONFIG:-${TF_DIR}/kubeconfig}"
-FLEET_FQDN="${RELAY_FLEET_DNS_FQDN:-atlanta3.relaygateway.net}"
-NODE_LABEL="${RELAY_RACKSPACE_NODE_LABEL:-relay-node=dfw1}"
+
+DEFAULT_STACKS=(dfw1 lon1 ord1)
+if [[ -n "${RELAY_SPOT_STACK:-}" ]]; then
+  STACKS=("$RELAY_SPOT_STACK")
+else
+  read -ra STACKS <<< "${RELAY_SPOT_STACKS:-dfw1 lon1 ord1}"
+fi
+
+# Spot provider accepts RXTSPOT_TOKEN; reuse token from dfw1 tfvars for all stacks.
+if [[ -z "${RXTSPOT_TOKEN:-}" && -f "$TF_ROOT/terraform.tfvars" ]]; then
+  RXTSPOT_TOKEN="$(grep -E '^rackspace_spot_token\s*=' "$TF_ROOT/terraform.tfvars" | sed -n 's/.*=\s*"\([^"]*\)".*/\1/p' | head -1)"
+  export RXTSPOT_TOKEN
+fi
 
 vercel_token_from_cli() {
   local f
@@ -31,41 +42,88 @@ vercel_token_from_cli() {
   return 1
 }
 
-ensure_vercel_tfvars() {
-  local secrets="${TF_DIR}/secrets.auto.tfvars"
-  [[ -f "$secrets" ]] && return 0
-  local token team
-  token="${VERCEL_API_TOKEN:-$(vercel_token_from_cli || true)}"
-  [[ -n "$token" ]] || {
-    echo "Set VERCEL_API_TOKEN or log in with Vercel CLI (secrets.auto.tfvars missing)" >&2
-    return 1
-  }
-  team="${VERCEL_TEAM_ID:-team_bB1RJkslury9ynlawD5kmMdG}"
-  cat >"$secrets" <<EOF
-vercel_api_token = "$(printf '%s' "$token" | sed 's/"/\\"/g')"
-vercel_team_id   = "${team}"
-EOF
-  chmod 600 "$secrets"
-  echo "Wrote ${secrets} (gitignored)"
+stack_tf_dir() {
+  case "$1" in
+    dfw1) echo "$TF_ROOT" ;;
+    lon1|ord1) echo "$TF_ROOT/stacks/$1" ;;
+    *) echo "Unknown stack: $1" >&2; return 1 ;;
+  esac
 }
 
-label_spot_nodes() {
-  export KUBECONFIG
-  local nodes=()
-  mapfile -t nodes < <("$KUBECTL" get nodes -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
-  [[ "${#nodes[@]}" -ge 1 ]] && "$KUBECTL" label node "${nodes[0]}" relay-node=dfw1 --overwrite >/dev/null 2>&1 || true
-  [[ "${#nodes[@]}" -ge 2 ]] && "$KUBECTL" label node "${nodes[1]}" relay-node=dfw2 --overwrite >/dev/null 2>&1 || true
-  echo "Labeled ${#nodes[@]} node(s) relay-node=dfw1/dfw2"
+stack_kubeconfig() {
+  case "$1" in
+    dfw1) echo "$TF_ROOT/kubeconfig" ;;
+    lon1|ord1) echo "$TF_ROOT/stacks/$1/kubeconfig" ;;
+  esac
+}
+
+stack_fqdn() {
+  echo "$1.relaygateway.net"
+}
+
+stack_node_label() {
+  echo "relay-node=$1"
+}
+
+terraform_apply_stack() {
+  local stack="$1" tf_dir
+  tf_dir="$(stack_tf_dir "$stack")"
+  cd "$tf_dir"
+  echo "==> [$stack] terraform apply in $tf_dir"
+  "$TERRAFORM" init -input=false
+  local attempt=0 out var_file=()
+  if [[ "$stack" == "dfw1" && -f "$TF_ROOT/terraform.tfvars" ]]; then
+    var_file=(-var-file="$TF_ROOT/terraform.tfvars")
+  fi
+  while [[ "$attempt" -lt 12 ]]; do
+    if out=$("$TERRAFORM" apply -auto-approve -input=false "${var_file[@]}" 2>&1); then
+      echo "$out"
+      break
+    fi
+    echo "$out"
+    if echo "$out" | grep -q 'object is being deleted'; then
+      attempt=$((attempt + 1))
+      echo "[$stack] Cloudspace still deleting; retry in 30s ($attempt/12)..." >&2
+      sleep 30
+    else
+      return 1
+    fi
+  done
+  [[ "$attempt" -lt 12 ]] || { echo "[$stack] terraform apply failed after retries" >&2; return 1; }
+}
+
+wait_for_kube_api() {
+  local kubeconfig="$1" timeout="${2:-600}" elapsed=0
+  export KUBECONFIG="$kubeconfig"
+  while [[ "$elapsed" -lt "$timeout" ]]; do
+    if "$KUBECTL" cluster-info >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 15
+    elapsed=$((elapsed + 15))
+    echo "Waiting for Kubernetes API (${elapsed}s)..." >&2
+  done
+  return 1
+}
+
+label_spot_node() {
+  local stack="$1" kubeconfig="$2"
+  export KUBECONFIG="$kubeconfig"
+  local node=""
+  node=$("$KUBECTL" get nodes -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  [[ -n "$node" ]] || return 0
+  "$KUBECTL" label node "$node" "$(stack_node_label "$stack")" --overwrite >/dev/null 2>&1 || true
+  echo "[$stack] Labeled node $node with $(stack_node_label "$stack")"
 }
 
 ensure_k8s_credentials_secret() {
-  export KUBECONFIG
+  local kubeconfig="$1"
+  export KUBECONFIG="$kubeconfig"
   local token team mesh peer git_user git_tok
   token="${VERCEL_API_TOKEN:-$(vercel_token_from_cli || true)}"
   team="${VERCEL_TEAM_ID:-team_bB1RJkslury9ynlawD5kmMdG}"
   [[ -n "$token" ]] || { echo "Skip relay-credentials secret: no VERCEL_API_TOKEN" >&2; return 0; }
 
-  # Optional: source relay.env for mesh + GitLab deploy token (gitignored locally)
   local env_file="${GW_DIR}/relay.env"
   if [[ -f "$env_file" ]]; then
     # shellcheck disable=SC1090
@@ -87,109 +145,82 @@ ensure_k8s_credentials_secret() {
   "$KUBECTL" create secret generic relay-credentials \
     "${args[@]}" \
     --dry-run=client -o yaml | "$KUBECTL" apply -f -
-  echo "Applied relay-credentials secret"
-}
-
-wait_for_kube_api() {
-  local timeout="${1:-600}" elapsed=0
-  export KUBECONFIG
-  while [[ "$elapsed" -lt "$timeout" ]]; do
-    if "$KUBECTL" cluster-info >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 15
-    elapsed=$((elapsed + 15))
-    echo "Waiting for Kubernetes API (${elapsed}s)..." >&2
-  done
-  return 1
 }
 
 wait_for_node_ip() {
-  local timeout="${1:-900}" elapsed=0 ip=""
-  export KUBECONFIG
+  local stack="$1" kubeconfig="$2"
+  local timeout="${3:-900}" elapsed=0 ip="" label
+  label="$(stack_node_label "$stack")"
+  export KUBECONFIG="$kubeconfig"
   while [[ "$elapsed" -lt "$timeout" ]]; do
-    ip=$("$KUBECTL" get nodes -l "$NODE_LABEL" -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' 2>/dev/null || true)
+    ip=$("$KUBECTL" get nodes -l "$label" -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' 2>/dev/null || true)
     if [[ -z "$ip" ]]; then
-      ip=$("$KUBECTL" get nodes -l "$NODE_LABEL" -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || true)
+      ip=$("$KUBECTL" get nodes -l "$label" -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || true)
+    fi
+    if [[ -z "$ip" && "$elapsed" -ge 60 ]]; then
+      ip=$("$KUBECTL" get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || true)
     fi
     if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
       echo "$ip"
       return 0
     fi
-    # Nodes may exist before spot pool labels are applied
-    if [[ "$elapsed" -ge 60 ]]; then
-      local unlabeled
-      unlabeled=$("$KUBECTL" get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || true)
-      if [[ "$unlabeled" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo "$unlabeled"
-        return 0
-      fi
-    fi
     sleep 15
     elapsed=$((elapsed + 15))
-    echo "Waiting for spot node ExternalIP (${elapsed}s)..." >&2
+    echo "[$stack] Waiting for node IP (${elapsed}s)..." >&2
   done
   return 1
 }
 
-upsert_fleet_dns() {
-  local ip="$1"
+upsert_stack_dns() {
+  local stack="$1" ip="$2" fqdn
+  fqdn="$(stack_fqdn "$stack")"
   export VERCEL_API_TOKEN="${VERCEL_API_TOKEN:-$(vercel_token_from_cli || true)}"
   export VERCEL_TEAM_ID="${VERCEL_TEAM_ID:-team_bB1RJkslury9ynlawD5kmMdG}"
-  [[ -n "${VERCEL_API_TOKEN:-}" ]] || { echo "Skip fleet DNS upsert: no VERCEL_API_TOKEN" >&2; return 0; }
-  "$SCRIPT_DIR/vercel-dns-upsert.sh" "$FLEET_FQDN" "$ip"
+  [[ -n "${VERCEL_API_TOKEN:-}" ]] || { echo "[$stack] Skip DNS upsert: no token" >&2; return 0; }
+  "$SCRIPT_DIR/vercel-dns-upsert.sh" "$fqdn" "$ip"
+}
+
+deploy_stack() {
+  local stack="$1" kubeconfig fqdn
+  kubeconfig="$(stack_kubeconfig "$stack")"
+  fqdn="$(stack_fqdn "$stack")"
+
+  if [[ "${SKIP_TERRAFORM:-0}" != "1" ]]; then
+    terraform_apply_stack "$stack" || return 1
+  fi
+
+  if [[ ! -f "$kubeconfig" ]]; then
+    echo "[$stack] kubeconfig missing: $kubeconfig" >&2
+    return 1
+  fi
+
+  echo "==> [$stack] deploy relay DaemonSet"
+  if ! wait_for_kube_api "$kubeconfig" 600; then
+    echo "[$stack] Kubernetes API not reachable" >&2
+    return 1
+  fi
+  ensure_k8s_credentials_secret "$kubeconfig"
+  label_spot_node "$stack" "$kubeconfig"
+  RELAY_SPOT_STACK="$stack" KUBECONFIG="$kubeconfig" "$SCRIPT_DIR/deploy-from-registry.sh"
+
+  echo "==> [$stack] upsert $fqdn"
+  if node_ip=$(wait_for_node_ip "$stack" "$kubeconfig" 900); then
+    echo "[$stack] Node IP: $node_ip"
+    upsert_stack_dns "$stack" "$node_ip" || echo "[$stack] WARN: DNS upsert failed" >&2
+  else
+    echo "[$stack] WARN: no node IP within timeout" >&2
+  fi
+
+  export KUBECONFIG="$kubeconfig"
+  "$KUBECTL" get nodes -o wide 2>/dev/null || true
+  "$KUBECTL" get pods -l app=relay -o wide 2>/dev/null || true
 }
 
 main() {
-  cd "$TF_DIR"
-  if [[ "${SKIP_TERRAFORM:-0}" != "1" ]]; then
-    ensure_vercel_tfvars || true
-    echo "==> terraform apply (cloudspace + nodepools; may take several minutes)"
-    "$TERRAFORM" init -input=false
-    local attempt=0 out
-    while [[ "$attempt" -lt 12 ]]; do
-      if out=$("$TERRAFORM" apply -auto-approve -input=false 2>&1); then
-        echo "$out"
-        break
-      fi
-      echo "$out"
-      if echo "$out" | grep -q 'object is being deleted'; then
-        attempt=$((attempt + 1))
-        echo "Cloudspace still deleting; retry in 30s ($attempt/12)..." >&2
-        sleep 30
-      else
-        exit 1
-      fi
-    done
-    [[ "$attempt" -lt 12 ]] || { echo "terraform apply failed after retries" >&2; exit 1; }
-  fi
-
-  if [[ ! -f "$KUBECONFIG" ]]; then
-    echo "kubeconfig missing after apply: $KUBECONFIG" >&2
-    exit 1
-  fi
-
-  echo "==> deploy relay DaemonSet from GitLab registry"
-  export KUBECONFIG
-  if ! wait_for_kube_api 600; then
-    echo "Kubernetes API not reachable — cloudspace may still be provisioning (check Rackspace Spot UI)" >&2
-    exit 1
-  fi
-  ensure_k8s_credentials_secret
-  label_spot_nodes
-  "$SCRIPT_DIR/deploy-from-registry.sh"
-
-  echo "==> wait for spot node and upsert ${FLEET_FQDN}"
-  if node_ip=$(wait_for_node_ip 900); then
-    echo "Node ExternalIP: $node_ip"
-    upsert_fleet_dns "$node_ip" || echo "WARN: fleet DNS upsert failed (entrypoint may still update on pod start)" >&2
-    echo "Verify: dig +short ${FLEET_FQDN} @8.8.8.8"
-  else
-    echo "WARN: no ExternalIP within timeout — spot bid may still be pending; DNS updates when pod starts" >&2
-  fi
-
-  "$KUBECTL" get nodes -o wide 2>/dev/null || true
-  "$KUBECTL" get pods -l app=relay -o wide 2>/dev/null || true
+  local stack
+  for stack in "${STACKS[@]}"; do
+    deploy_stack "$stack" || echo "WARN: stack $stack deploy failed" >&2
+  done
 }
 
 main "$@"
