@@ -28,7 +28,7 @@ git_dep_url() {
 }
 
 RUNTIME_URL="$(git_dep_url "${RELAY_RUNTIME_GIT_URL:-https://gitlab.com/clevertree/relay-runtime.git}")"
-MD2AST_URL="$(git_dep_url "${MD2AST_GIT_URL:-https://gitlab.com/clevertree/md2ast.git}")"
+MD2AST_URL="$(git_dep_url "${MD2AST_GIT_URL:-https://gitlab.com/clevertree/md2jsx.git}")"
 
 clone_if_missing() {
   local url="$1" dest="$2"
@@ -37,12 +37,16 @@ clone_if_missing() {
     return 0
   fi
   echo "[ci-clone-path-deps] clone $url -> $dest (ref $REF)"
-  git clone --depth 1 --branch "$REF" "$url" "$dest" 2>/dev/null \
-    || git clone --depth 1 "$url" "$dest"
+  if ! git clone --depth 1 --branch "$REF" "$url" "$dest" 2>/dev/null; then
+    if ! git clone --depth 1 "$url" "$dest"; then
+      echo "[ci-clone-path-deps] FAILED: $url (private repo? enable CI job token from relay-server on target project)" >&2
+      return 1
+    fi
+  fi
 }
 
-clone_if_missing "$RUNTIME_URL" "$RUNTIME_DIR"
-clone_if_missing "$MD2AST_URL" "$MD2AST_DIR"
+clone_if_missing "$RUNTIME_URL" "$RUNTIME_DIR" || true
+clone_if_missing "$MD2AST_URL" "$MD2AST_DIR" || true
 
 TS_SRC="$GW_DIR/themed-styler"
 TS_DST="$DEPS_ROOT/relay/relay-gateway/themed-styler"

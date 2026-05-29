@@ -30,7 +30,8 @@ cache:
   before_script:
     - export PATH="/usr/local/cargo/bin:$PATH"
     - apt-get update -qq && apt-get install -y -qq curl jq nodejs git rsync
-    - ./scripts/ci-clone-path-deps.sh
+    - chmod +x ./scripts/ci-ensure-deps.sh
+    - ./scripts/ci-ensure-deps.sh
 
 test:verify:
   stage: test
