@@ -5,7 +5,10 @@ set -euo pipefail
 GW_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PARENT="$(cd "$GW_DIR/.." && pwd)"
 GRAND="$(cd "$GW_DIR/../.." && pwd)"
-if [[ -f "$PARENT/relay-runtime/Cargo.toml" ]]; then
+if [[ -n "${CI_PROJECT_DIR:-}" ]]; then
+  DEPS_ROOT="${CI_PROJECT_DIR}/deps"
+  mkdir -p "$DEPS_ROOT"
+elif [[ -f "$PARENT/relay-runtime/Cargo.toml" ]]; then
   DEPS_ROOT="$PARENT"
 elif [[ -f "$GRAND/relay-runtime/Cargo.toml" ]]; then
   DEPS_ROOT="$GRAND"
