@@ -22,6 +22,8 @@ mkdir -p "$OUT/relay-gateway" "$OUT/relay/relay-gateway"
 
 rsync -a --delete \
   --exclude target \
+  --exclude .cargo-cache \
+  --exclude docker-ctx \
   --exclude docker-data \
   --exclude ci-data \
   --exclude data \
