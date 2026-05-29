@@ -76,7 +76,7 @@ data:
       [[ -z "$rec_id" || "$rec_id" == "null" ]] && continue
       current=$(echo "$list_raw" | jq -r --arg id "$rec_id" '.records[]? | select((.id // .uid)==$id) | .value')
       [[ "$current" == "$IP" ]] && { echo "${FQDN} already -> ${IP}"; exit 0; }
-      curl -fsS -X DELETE -H "$auth" "${base}/v4/domains/${DOMAIN}/records/${rec_id}" >/dev/null
+      curl -fsS -X DELETE -H "$auth" "${base}/v4/domains/${DOMAIN}/records/${rec_id}${team_q}" >/dev/null
     done
     body=$(jq -n --arg n "$NAME" --arg v "$IP" --argjson ttl "$TTL" '{ name: $n, value: $v, type: "A", ttl: $ttl }')
     curl -fsS -X POST -H "$auth" -H 'Content-Type: application/json' -d "$body" \

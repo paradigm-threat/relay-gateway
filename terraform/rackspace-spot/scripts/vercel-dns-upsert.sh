@@ -33,7 +33,7 @@ for rec_id in "${rec_ids[@]}"; do
     echo "${FQDN} already -> ${IP} (${rec_id})"
     exit 0
   fi
-  del_url="${base}/v4/domains/${DOMAIN}/records/${rec_id}"
+  del_url="${base}/v4/domains/${DOMAIN}/records/${rec_id}${team_q}"
   curl -fsS -X DELETE -H "$auth" "$del_url" >/dev/null
   echo "Deleted stale ${FQDN} A record ${rec_id} (${current})"
 done
