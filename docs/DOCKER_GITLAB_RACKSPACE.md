@@ -24,21 +24,40 @@ RELAY_IMAGE=relay-gateway:local ./scripts/docker-build-production.sh
 
 ## GitLab CI
 
-Pipeline (`.gitlab-ci.yml`):
+Pipeline (`.gitlab-ci.yml` at repo root):
 
-1. **test:verify** — `cargo test`, smoke `POST /api/config`
+1. **test:verify** — clone path deps, `cargo test --locked`, smoke `POST /api/config`
 2. **package:linode-tgz** — Linode tarball artifact on `main` / tags
-3. **docker:build** — Kaniko build on `main` / tags
-4. **docker:publish** — push `latest` + SHA (+ tag name on release)
+3. **docker:prepare-context** — stage `relay-gateway/` + `relay-runtime/` + `md2ast/` (artifact)
+4. **docker:publish** — Kaniko push to Container Registry on `main` / tags
 
-Required CI/CD variables (GitLab project **relay-server**):
+### One-time GitLab project setup
+
+| Step | Where | Action |
+|------|--------|--------|
+| Container Registry | **Deploy → Container Registry** | Enable (default on GitLab.com) |
+| CI/CD permissions | **Settings → CI/CD → Token Access** | Allow `relay-runtime` and `md2ast` projects to be cloned via `CI_JOB_TOKEN` (same group), **or** make those repos public |
+| Protected `main` | **Settings → Repository** | Optional: only maintainers merge to `main` so `:main` image tag stays trusted |
+| Runner | **Settings → CI/CD → Runners** | Shared GitLab.com runners are enough |
+
+GitLab injects `CI_REGISTRY_USER`, `CI_REGISTRY_PASSWORD`, and `CI_JOB_TOKEN` automatically — no manual registry secrets required for Kaniko push.
+
+Optional overrides:
 
 | Variable | Purpose |
 |----------|---------|
-| `CI_REGISTRY_USER` | GitLab provides |
-| `CI_REGISTRY_PASSWORD` | GitLab provides |
+| `RELAY_PATH_DEPS_REF` | Branch/tag for `relay-runtime` + `md2ast` clones (default `main`) |
+| `RELAY_RUNTIME_GIT_URL` | Override runtime clone URL |
+| `MD2AST_GIT_URL` | Override md2ast clone URL |
 
-Enable **Container Registry** on the project.
+### Fix a failed pipeline
+
+| Symptom | Fix |
+|---------|-----|
+| `Cargo.lock needs to be updated` | Run `cargo update` locally in `relay-gateway`, commit `Cargo.lock` |
+| `could not read Username` cloning deps | Enable **CI job token** access to sibling repos in the same group |
+| Kaniko `git: not found` | Use current `.gitlab-ci.yml` (`docker:prepare-context` job) |
+| Image pull 404 on Rackspace | Image must be `registry.gitlab.com/clevertree/relay-server/relay-gateway:main` (note `/relay-gateway` suffix) |
 
 ## Rackspace Spot (Kubernetes)
 

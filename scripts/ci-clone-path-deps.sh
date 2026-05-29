@@ -15,9 +15,20 @@ fi
 
 RUNTIME_DIR="$DEPS_ROOT/relay-runtime"
 MD2AST_DIR="$DEPS_ROOT/md2ast"
-RUNTIME_URL="${RELAY_RUNTIME_GIT_URL:-https://gitlab.com/clevertree/relay-runtime.git}"
-MD2AST_URL="${MD2AST_GIT_URL:-https://gitlab.com/clevertree/md2ast.git}"
 REF="${RELAY_PATH_DEPS_REF:-main}"
+
+git_dep_url() {
+  local default="$1"
+  if [[ -n "${CI_JOB_TOKEN:-}" && "$default" == https://gitlab.com/* ]]; then
+    local path="${default#https://gitlab.com/}"
+    echo "https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/${path}"
+  else
+    echo "$default"
+  fi
+}
+
+RUNTIME_URL="$(git_dep_url "${RELAY_RUNTIME_GIT_URL:-https://gitlab.com/clevertree/relay-runtime.git}")"
+MD2AST_URL="$(git_dep_url "${MD2AST_GIT_URL:-https://gitlab.com/clevertree/md2ast.git}")"
 
 clone_if_missing() {
   local url="$1" dest="$2"
