@@ -1,6 +1,8 @@
 # Relay fleet console (`relay-fleet.sh`)
 
-**Canonical operator tool** for deployment, health checks, catalog drift, and remote admin across Linode masters. Prefer this over ad hoc `ssh` / `curl` fragments. **Non-interactive by default** (no stdin prompts); use **`--interactive`** only when you need an open TTY.
+**Canonical operator tool** for **updates** and health checks across relay masters. Prefer this over ad hoc `ssh` / `curl` fragments. **Non-interactive by default** (no stdin prompts); use **`--interactive`** only when you need an open TTY.
+
+**First-time master (provision + install):** use **[`RELAY_INFRA_OPS.md`](./RELAY_INFRA_OPS.md)** and **`./scripts/relay-master-deploy.sh`** (Terraform + tarball + Caddy). **Ongoing** binary/config deploys: **`relay-fleet.sh --build update`** / **`deploy-all`** below.
 
 **Prerequisites:** run from **`relay-gateway/`** with a local **`relay.env`** (gitignored) or **`--env-file`**. SSH key **`RELAY_SSH_IDENTITY`** (default **`~/.ssh/id_ed25519_relay_gateway`**) must authenticate as **`RELAY_SSH_USER`** (default **`ari`**) on each host.
 

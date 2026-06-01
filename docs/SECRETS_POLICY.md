@@ -47,8 +47,14 @@ If validation is enabled and the fingerprint is missing from **`authorized_keys`
 
 ---
 
+## Terraform and Spot tokens
+
+- Never commit **`terraform.tfvars`**, **`secrets.auto.tfvars`**, **`kubeconfig`**, **`terraform.tfstate`**, or **`rackspace_token`**.
+- If a Rackspace Spot or Linode token was committed to git, **rotate** it in the provider console and treat old credentials as compromised (git history rewrite is optional; rotation is required).
+
 ## Related
 
+- **Infra provision:** **[`RELAY_INFRA_OPS.md`](./RELAY_INFRA_OPS.md)**
 - **Deploy flow:** **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (including § Secrets / OpenBao–style futures).
 - **Mesh roles and secrets:** **[`RELAY_MESH_NETWORKING_PLAN.md`](./RELAY_MESH_NETWORKING_PLAN.md)**.
 - **Slack:** **[`SLACK_MESH_NOTIFY.md`](./SLACK_MESH_NOTIFY.md)**.

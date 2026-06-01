@@ -59,25 +59,16 @@ Optional overrides:
 | Kaniko `git: not found` | Use current `.gitlab-ci.yml` (`docker:prepare-context` job) |
 | Image pull 404 on Rackspace | Image must be `registry.gitlab.com/clevertree/relay-server/relay-gateway:main` (note `/relay-gateway` suffix) |
 
-## Rackspace Spot (Kubernetes)
+## Rackspace Spot (retired Kubernetes path)
 
-Manifests: `terraform/rackspace-spot/k8s/`.
+Kubernetes Spot manifests are **archived** under [`docs/archive/rackspace-spot-k8s/`](archive/rackspace-spot-k8s/). Production **dfw1** uses a **bare VM** + the same Linode tarball/Caddy flow:
 
-**Full deploy** (terraform + DaemonSet + atlanta3 DNS when spot nodes get an IP):
+- **[`RELAY_INFRA_OPS.md`](./RELAY_INFRA_OPS.md)**
+- **`./scripts/relay-master-deploy.sh --target spot-dfw1`**
 
-```bash
-./terraform/rackspace-spot/scripts/rackspace-deploy.sh
-```
+This document covers **GitLab CI → Container Registry** only. Do not deploy the Docker image to Spot K8s for new masters.
 
-Roll image only (kubeconfig must exist):
-
-```bash
-SKIP_TERRAFORM=1 ./terraform/rackspace-spot/scripts/rackspace-deploy.sh
-```
-
-When spot bids win, the dfw1 relay pod upserts **`atlanta3.relaygateway.net`** (via `RELAY_EXTRA_DNS_FQDNS` after the next image publish) and the deploy script calls `vercel-dns-upsert.sh` as a belt-and-suspenders step. Set `VERCEL_API_TOKEN` + `VERCEL_TEAM_ID` or log in with the Vercel CLI.
-
-Legacy one-liner (registry pull + apply only):
+Legacy registry pull (historical):
 
 ```bash
 export REGISTRY=registry.gitlab.com/clevertree/relay-server

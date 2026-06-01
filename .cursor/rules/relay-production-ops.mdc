@@ -5,7 +5,9 @@ alwaysApply: true
 
 # Relay production ops (SSH, autossh, deploy, debug)
 
-Use this when the user asks to deploy, restart, inspect logs, or debug **relay-gateway** on **Linode masters** (e.g. **atlanta2.relaygateway.net**, **atlanta3.relaygateway.net**, **jp-osa.relaygateway.net**). Paths below are relative to this crate root (**`relay-gateway/`**).
+Use this when the user asks to deploy, restart, inspect logs, or debug **relay-gateway** on production masters (**atlanta2** Linode, **dfw1** Rackspace Spot VM). Paths below are relative to this crate root (**`relay-gateway/`**).
+
+**Provision / first install:** **[`docs/RELAY_INFRA_OPS.md`](../docs/RELAY_INFRA_OPS.md)** + **`./scripts/relay-master-deploy.sh`**. **Ongoing updates:** **`./scripts/relay-fleet.sh`** (see **[`docs/RELAY_FLEET_CONSOLE.md`](../docs/RELAY_FLEET_CONSOLE.md)**).
 
 ## Identity and access
 

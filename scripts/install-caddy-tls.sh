@@ -8,6 +8,7 @@
 #
 # Optional:
 #   RELAY_HTTP_PORT      — upstream port (default 8080)
+#   RELAY_PIPER_HTTP_PORT — Piper TTS HTTP (default 5590); /voices and /tts proxy here when enabled
 #   RELAY_INSTALL_ROOT   — copy caddy-ask.py from here if set (default: directory of this script)
 #
 # Run: sudo -E bash scripts/install-caddy-tls.sh
@@ -20,6 +21,7 @@ need_root() {
 NODE_FQDN="${RELAY_PUBLIC_HOSTNAME:?set RELAY_PUBLIC_HOSTNAME}"
 EMAIL="${CADDY_EMAIL:?set CADDY_EMAIL (ACME registration email)}"
 UPSTREAM="${RELAY_HTTP_PORT:-8080}"
+PIPER_PORT="${RELAY_PIPER_HTTP_PORT:-5590}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 remove_ufw_nat_redirect_80() {
@@ -91,6 +93,7 @@ EOF
 }
 
 write_caddyfile() {
+  # Piper TTS (relay-tts-piper.service) listens on PIPER_PORT; expose /voices and /tts on the same TLS front door.
   cat >/etc/caddy/Caddyfile <<EOF
 {
 	email ${EMAIL}
@@ -100,14 +103,30 @@ write_caddyfile() {
 }
 
 :80 {
-	reverse_proxy 127.0.0.1:${UPSTREAM}
+	handle /voices* {
+		reverse_proxy 127.0.0.1:${PIPER_PORT}
+	}
+	handle /tts* {
+		reverse_proxy 127.0.0.1:${PIPER_PORT}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:${UPSTREAM}
+	}
 }
 
 https:// {
 	tls {
 		on_demand
 	}
-	reverse_proxy 127.0.0.1:${UPSTREAM}
+	handle /voices* {
+		reverse_proxy 127.0.0.1:${PIPER_PORT}
+	}
+	handle /tts* {
+		reverse_proxy 127.0.0.1:${PIPER_PORT}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:${UPSTREAM}
+	}
 }
 EOF
 }
@@ -144,3 +163,4 @@ systemctl restart caddy
 echo "Caddy + Lets Encrypt (on-demand TLS) installed."
 echo "Test HTTP:  curl -sI http://paradigm-threat-files.${NODE_FQDN}/index.json | head -3"
 echo "Test HTTPS: curl -sI https://paradigm-threat-files.${NODE_FQDN}/index.json | head -5"
+echo "Test Piper: curl -fsS https://${NODE_FQDN}/voices | head -c 120"

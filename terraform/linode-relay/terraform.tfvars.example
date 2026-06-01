@@ -1,0 +1,8 @@
+# Copy to terraform.tfvars (gitignored). Or: export LINODE_TOKEN=... and pass -var linode_token=$LINODE_TOKEN
+
+# linode_token = "REPLACE"
+
+# Match production atlanta2 before import (see IMPORT.md):
+# region         = "us-southeast"
+# instance_type  = "g6-standard-2"
+# label          = "atlanta2-relay"

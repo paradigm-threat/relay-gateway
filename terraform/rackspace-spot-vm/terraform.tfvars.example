@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars (gitignored)
+
+# rackspace_spot_token = "REPLACE"   # or export RXTSPOT_TOKEN
+
+# server_class = "gp.vs1.medium-dfw"
+# bid_price    = 0.005
+
+# If VM already exists (Spot UI): set IP and use relay-master-deploy --install-only
+# public_ip_override = "174.143.201.221"

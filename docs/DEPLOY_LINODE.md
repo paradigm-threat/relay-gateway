@@ -12,11 +12,13 @@
 
 **Fleet operations (canonical):** use **`./scripts/relay-fleet.sh`** from **`relay-gateway/`** for **`ssh-check`**, **`status`**, **`drift`**, **`deploy-all`**, **`repair`**, **`features-set`**, **`reclone-repo`**, etc. See **[`RELAY_FLEET_CONSOLE.md`](./RELAY_FLEET_CONSOLE.md)**.
 
+**Provision (IaC):** first-time or rebuilt masters — **[`RELAY_INFRA_OPS.md`](./RELAY_INFRA_OPS.md)** (`terraform/linode-relay`, **`relay-master-deploy.sh`**). **Ongoing binary updates** stay on **`relay-fleet.sh`**.
+
 ## Recommended plan
 
 | Step | What |
 |------|------|
-| **1. VM** | Linode **Ubuntu 22.04/24.04 LTS**, open **22, 8080, 9418** (and **5590** if Piper). |
+| **1. VM** | Linode **Ubuntu 22.04/24.04 LTS** via **`terraform/linode-relay`** (import existing atlanta2) or dashboard; open **22, 8080, 9418** (and **5590** if Piper). |
 | **2. Binaries** | On a trusted machine: **`./scripts/pack-linode-deploy.sh`** → **`target/relay-linode-deploy.tgz`**. Host the tarball on **any** HTTPS you control (GitLab generic package, internal nginx, USB copy + `file:` path not supported by curl — use **`scp`** or **`RELAY_BIN_SOURCE`**). See **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)**. |
 | **3. Install** | **`relay-curl.sh`** one-liner with **`RELAY_DEPLOY_TGZ_URL`**, **or** `scp` the tgz and **`sudo ./install.sh install`**. The installer’s **first step** is **Vercel DNS** (unless skipped): detect public IPv4, upsert **A** record for your **FQDN**, wait until DNS resolves, then install packages and binaries. Uses **`VERCEL_API_TOKEN`** (optional **`VERCEL_TEAM_ID`**) like Docker/K8s. See **[Vercel DNS (first step of `install`)](#vercel-dns-first-step-of-install)**. |
 | **4. Trust** | **`relay.env`**: **`RELAY_SERVER_ID`** + catalog (**[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**). Prefer **`RELAY_MASTER_CATALOG_GIT_URL`** + **`RELAY_MASTER_TRUST_ROOT`** so a **new** node needs **no manual git clone** — **`ExecStartPre`** clones **`relay-master`** then runs **`sync-relay-catalog.sh`**. *Or* **`RELAY_AUTHORIZED_REPOS_PATH`** (YAML) — never both catalog path and YAML. |

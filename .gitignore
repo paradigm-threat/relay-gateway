@@ -67,6 +67,26 @@ relay-runtime/gradle.properties
 # Local Docker IPFS dev (bare repo copies)
 docker-data/
 
-# Rackspace secrets (use terraform.tfvars.example)
-terraform/rackspace-spot/terraform.tfvars
-terraform/rackspace-spot/secrets.auto.tfvars
+# Terraform — never commit tokens, state, kubeconfig, or provider cache
+**/.terraform/
+**/terraform.tfstate
+**/terraform.tfstate.*
+**/terraform.tfvars
+**/secrets.auto.tfvars
+**/kubeconfig
+**/kubeconfig.*
+**/*.kubeconfig
+**/tfplan
+**/apply_output.txt
+**/config.tmp
+terraform/**/vm-state.json
+rackspace_token
+**/rackspace_token
+
+# Legacy K8s Spot (archived under docs/archive/rackspace-spot-k8s/)
+terraform/rackspace-spot/
+
+# Per-stack secrets (use *.example)
+terraform/rackspace-spot-vm/terraform.tfvars
+terraform/linode-relay/terraform.tfvars
+terraform/linode-relay/stacks/*/terraform.tfvars
