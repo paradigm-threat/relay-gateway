@@ -1,6 +1,6 @@
 use crate::git::clever_script_host::CleverScriptServerHost;
 use crate::git::meta_index;
-use crate::git::repo::read_file_from_repo;
+use crate::git::relay_config_cache::{read_hook_source_cached, read_relay_config_at_path_cached};
 use relay_runtime::value::Value as CsValue;
 use std::path::PathBuf;
 use tracing::debug;
@@ -44,24 +44,25 @@ fn hook_return_ok(v: &CsValue) -> bool {
     }
 }
 
+fn put_requires_precommit_hook() -> bool {
+    std::env::var("RELAY_PUT_REQUIRES_PRECOMMIT").ok().as_deref() == Some("1")
+        || std::env::var("RELAY_DESKTOP_MODE").ok().as_deref() == Some("1")
+}
+
 /// Run a server hook from `.relay.yaml` as **CleverScript only** (`.cs`). Node/RelayHost is not supported.
 pub fn execute_repo_hook(ctx: &HookContext, hook_name: &str) -> anyhow::Result<bool> {
-    let config_output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&ctx.repo_path)
-        .arg("show")
-        .arg(format!("{}:.relay.yaml", ctx.new_commit))
-        .output()?;
-
-    let config: crate::types::RelayConfig = if config_output.status.success() {
-        let content = String::from_utf8_lossy(&config_output.stdout);
-        serde_yaml::from_str(&content)?
-    } else {
-        debug!(
-            "No .relay.yaml found in commit {}, skipping hooks",
-            ctx.new_commit
-        );
-        return Ok(true);
+    let config = match read_relay_config_at_path_cached(&ctx.repo_path, &ctx.new_commit) {
+        Some(c) => c,
+        None => {
+            debug!(
+                "No .relay.yaml found in commit {}, skipping hooks",
+                ctx.new_commit
+            );
+            if hook_name == "pre-commit" && put_requires_precommit_hook() {
+                return Ok(false);
+            }
+            return Ok(true);
+        }
     };
 
     let hook_entry = match hook_name {
@@ -91,6 +92,9 @@ pub fn execute_repo_hook(ctx: &HookContext, hook_name: &str) -> anyhow::Result<b
         Some(p) => p.path.as_str(),
         None => {
             debug!("Hook '{}' not configured in .relay.yaml", hook_name);
+            if hook_name == "pre-commit" && put_requires_precommit_hook() {
+                return Ok(false);
+            }
             return Ok(true);
         }
     };
@@ -107,9 +111,7 @@ pub fn execute_repo_hook(ctx: &HookContext, hook_name: &str) -> anyhow::Result<b
         meta_index::sync_meta_yaml_index(ctx)?;
     }
 
-    let bytes = read_file_from_repo(&ctx.repo_path, &ctx.branch, hook_path)?;
-    let stripped = strip_shebang_bytes(&bytes);
-    let source = String::from_utf8_lossy(&stripped).into_owned();
+    let source = read_hook_source_cached(&ctx.repo_path, &ctx.new_commit, hook_path)?;
 
     let context_json = serde_json::json!({
         "old_commit": ctx.old_commit,
@@ -258,5 +260,18 @@ server:
             execute_repo_hook(&ctx, "index").unwrap(),
             "branch allowlist should skip hook without running CS"
         );
+    }
+
+    #[test]
+    fn execute_pre_commit_missing_hook_rejected_in_desktop_mode() {
+        let yaml = "server:\n  hooks: {}\n";
+        let cs = "export default function run(c) { return true; }\n";
+        let (_dir, _path, ctx) = commit_hook_repo(cs, yaml);
+        std::env::set_var("RELAY_DESKTOP_MODE", "1");
+        assert!(
+            !execute_repo_hook(&ctx, "pre-commit").unwrap(),
+            "desktop mode must reject PUT when pre-commit hook absent"
+        );
+        std::env::remove_var("RELAY_DESKTOP_MODE");
     }
 }

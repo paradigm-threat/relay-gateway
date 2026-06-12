@@ -15,6 +15,7 @@ pub mod meta_index;
 pub mod index_store;
 pub mod indexing;
 pub mod query;
+pub mod relay_config_cache;
 pub mod repo;
 pub mod request_headers;
 pub mod resolve;

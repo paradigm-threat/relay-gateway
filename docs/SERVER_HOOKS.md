@@ -151,9 +151,23 @@ After a successful push:
 2.  It automatically pushes the updated branch to all listed peers.
 3.  Circular sync is avoided using the `RELAY_SYNC_IN_PROGRESS` environment variable.
 
+## Policy layering and performance
+
+**Normative detail:** **[`RELAY_POLICY_AND_PERFORMANCE.md`](./RELAY_POLICY_AND_PERFORMANCE.md)**.
+
+| Tier | Role |
+|------|------|
+| **Rust** | `branchRules`, signatures, PUT infra, hook dispatch, image/IPFS caches |
+| **`.relay.yaml`** | Hook paths, `branchRules`, `autoPush`, `relayTrust` |
+| **CleverScript hooks** | Repo **content policy** only (`ctx.files` on write paths) |
+
+**Caching (gateway):** parsed `.relay.yaml` and hook `.cs` source are cached in-process by `(repo_path, commit_OID)` — see **`RELAY_POLICY_AND_PERFORMANCE.md`**. Disable with **`RELAY_DISABLE_CONFIG_CACHE=1`**.
+
 ## Shared validation
 
-Put optional CleverScript under `.relay/` (e.g. `.relay/validation.cs`) and load it with **`import { readFile } from '@relay/git'`** from your `pre-commit.cs` / `pre-receive.cs` if you want one module reused by both hooks.
+Point **`server.hooks.pre-commit`** and **`server.hooks.pre-receive`** at the **same** CleverScript file when both gates should share rules (e.g. `hooks/server/validation.cs`). Server hooks do not support repo-relative `import` between `.cs` files.
+
+Alternatively, put shared logic under `.relay/validation.cs` and load it with **`readFile` from `@relay/git`** inside a thin wrapper — only if you need separate entrypoint files.
 
 ## GitHub Webhooks
 

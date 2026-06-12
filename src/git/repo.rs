@@ -1,7 +1,5 @@
 use git2::Repository;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-
 use crate::types::ReadError;
 
 /// Fast-forward-only pushes: `git push --force` and non-FF updates are rejected by `receive-pack`.
@@ -91,17 +89,9 @@ fn bare_repo_branch_names(repo: &Repository) -> Vec<String> {
     names
 }
 
-/// Read .relay.yaml configuration from git tree for the given revision (branch name or commit hash)
+/// Read .relay.yaml configuration from git tree for the given revision (branch name or commit hash).
 pub fn read_relay_config(repo: &Repository, rev: &str) -> Option<crate::types::RelayConfig> {
-    let obj = repo.revparse_single(rev).ok()?;
-    let commit = obj.as_commit()?;
-    let tree = commit.tree().ok()?;
-
-    let entry = tree.get_name(".relay.yaml")?;
-    let obj = entry.to_object(repo).ok()?;
-    let blob = obj.as_blob()?;
-    let content = std::str::from_utf8(blob.content()).ok()?;
-    serde_yaml::from_str(content).ok()
+    super::relay_config_cache::read_relay_config_cached(repo, rev)
 }
 
 /// Read hooks/git.yaml configuration from git tree for the given revision
@@ -117,20 +107,7 @@ pub fn read_git_config_from_revision(
     repo_path: &Path,
     rev: &str,
 ) -> Option<crate::types::GitConfig> {
-    let spec = format!("{}:.relay.yaml", rev);
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .arg("show")
-        .arg(&spec)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let content = std::str::from_utf8(&out.stdout).ok()?;
-    let cfg: crate::types::RelayConfig = serde_yaml::from_str(content).ok()?;
-    cfg.git
+    super::relay_config_cache::read_relay_config_at_path_cached(repo_path, rev).and_then(|c| c.git)
 }
 
 /// Get commit information for a branch
@@ -161,7 +138,30 @@ pub fn list_branches(repo: &Repository) -> Vec<String> {
     branches
 }
 
-/// Read a file from a git repository
+/// Read a file at a specific revision (branch name or commit OID).
+pub fn read_file_from_revision(
+    repo_path: &Path,
+    rev: &str,
+    path: &str,
+) -> Result<Vec<u8>, ReadError> {
+    let repo = Repository::open_bare(repo_path).map_err(|e| ReadError::Other(e.into()))?;
+    let obj = repo
+        .revparse_single(rev)
+        .map_err(|_| ReadError::NotFound)?;
+    let commit = obj
+        .peel_to_commit()
+        .map_err(|_| ReadError::NotFound)?;
+    let tree = commit.tree().map_err(|e| ReadError::Other(e.into()))?;
+    let entry = tree
+        .get_path(std::path::Path::new(path))
+        .map_err(|_| ReadError::NotFound)?;
+    let blob = repo
+        .find_blob(entry.id())
+        .map_err(|e| ReadError::Other(e.into()))?;
+    Ok(blob.content().to_vec())
+}
+
+/// Read a file from a git repository at the branch tip.
 pub fn read_file_from_repo(
     repo_path: &PathBuf,
     branch: &str,

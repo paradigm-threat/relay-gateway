@@ -36,7 +36,7 @@ pub struct RulesDoc {
     pub rules: Vec<String>,
 }
 
-#[derive(Deserialize, Debug, Default, Serialize)]
+#[derive(Deserialize, Debug, Default, Serialize, Clone)]
 pub struct RelayConfig {
     #[serde(default)]
     pub client: Option<ClientConfig>,
@@ -52,12 +52,12 @@ pub struct RelayConfig {
     pub description: Option<String>,
 }
 
-#[derive(Deserialize, Debug, Default, Serialize)]
+#[derive(Deserialize, Debug, Default, Serialize, Clone)]
 pub struct ServerConfig {
     pub hooks: Option<std::collections::HashMap<String, HookPath>>,
 }
 
-#[derive(Deserialize, Debug, Default, Serialize)]
+#[derive(Deserialize, Debug, Default, Serialize, Clone)]
 pub struct GitConfig {
     #[serde(rename = "autoPush")]
     pub auto_push: Option<AutoPushConfig>,
@@ -69,7 +69,7 @@ pub struct GitConfig {
     pub relay_trust: Option<RelayTrustConfig>,
 }
 
-#[derive(Deserialize, Debug, Default, Serialize)]
+#[derive(Deserialize, Debug, Default, Serialize, Clone)]
 pub struct BranchRulesConfig {
     pub default: Option<BranchRule>,
     pub branches: Option<Vec<BranchRuleNamed>>,
@@ -93,7 +93,7 @@ pub struct BranchRule {
     pub allow_unsigned: Option<bool>,
 }
 
-#[derive(Deserialize, Debug, Default, Serialize)]
+#[derive(Deserialize, Debug, Default, Serialize, Clone)]
 pub struct RelayTrustConfig {
     #[serde(rename = "authorizedServerIds")]
     pub authorized_server_ids: Option<Vec<String>>,
@@ -101,14 +101,14 @@ pub struct RelayTrustConfig {
     pub authorized_server_key_fingerprints: Option<Vec<String>>,
 }
 
-#[derive(Deserialize, Debug, Default, Serialize)]
+#[derive(Deserialize, Debug, Default, Serialize, Clone)]
 pub struct GithubHooksConfig {
     pub enabled: bool,
     pub path: String,
     pub events: Vec<String>,
 }
 
-#[derive(Deserialize, Debug, Default, Serialize)]
+#[derive(Deserialize, Debug, Default, Serialize, Clone)]
 pub struct AutoPushConfig {
     pub branches: Vec<String>,
     #[serde(rename = "originList")]
@@ -117,13 +117,13 @@ pub struct AutoPushConfig {
     pub debounce_seconds: Option<u64>,
 }
 
-#[derive(Deserialize, Debug, Default, Serialize)]
+#[derive(Deserialize, Debug, Default, Serialize, Clone)]
 pub struct ClientConfig {
     #[serde(default)]
     pub hooks: HooksConfig,
 }
 
-#[derive(Deserialize, Debug, Default, Serialize)]
+#[derive(Deserialize, Debug, Default, Serialize, Clone)]
 pub struct HooksConfig {
     #[serde(default)]
     pub get: Option<HookPath>,

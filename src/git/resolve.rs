@@ -247,10 +247,13 @@ pub fn git_resolve_and_respond(
         Ok(e) => e,
         Err(_) => {
             let qmap: HashMap<String, String> = query.cloned().unwrap_or_default();
+            let has_get_hook = read_relay_config(&repo, &commit.id().to_string())
+                .and_then(|cfg| index_policy::clever_get_hook_path(&cfg))
+                .is_some();
             let thin = catalog_for_repo_name(repo_name)
                 .map(|c| c.thin_ipfs_assets())
                 .unwrap_or(false);
-            if thin && is_asset_like_path(rel) {
+            if has_get_hook || (thin && is_asset_like_path(rel)) {
                 let ct = mime_guess::from_path(rel)
                     .first_or_octet_stream()
                     .essence_str()
