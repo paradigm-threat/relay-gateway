@@ -56,7 +56,9 @@ pub fn build_router(state: AppState) -> Router {
             "/",
             get(handlers::get_root)
                 .head(handlers::head_root)
-                .options(handlers::options_capabilities),
+                .options(handlers::options_capabilities)
+                // QUERY on `/` (repo subdomain hosts) — without this, Axum returns 405.
+                .fallback(relay_path_fallback),
         )
         .route("/ipfs/*cid", get(handlers::handle_get_ipfs_prefixed))
         .route(

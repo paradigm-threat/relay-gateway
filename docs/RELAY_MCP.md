@@ -13,7 +13,7 @@ server:
     index:
       path: hooks/server/index.cs
     query:
-      path: hooks/server/query.cs   # thin router only
+      path: hooks/server/query.cs   # import { search } from '@relay/search/sqlite'
     mcp:
       path: hooks/server/mcp.cs     # enables MCP endpoint
   search:

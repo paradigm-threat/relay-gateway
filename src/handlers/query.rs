@@ -11,6 +11,28 @@ use axum::{
 use std::collections::HashMap;
 use tracing::error;
 
+/// Resolve repo for QUERY:
+/// - `{repo}.{node}` Host → that repo; full path is optional query text
+/// - apex `{node}` Host + first path segment matching a bare repo → that repo (like `/api/mcp/:repo`)
+/// - else apex default repo (`RELAY_DEFAULT_REPO` / `relay-master`)
+fn resolve_query_repo_and_path(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    path: &str,
+) -> Option<(String, String)> {
+    if let Some(name) = helpers::repo_from_host(state, state.node_fqdn.as_deref(), headers) {
+        return Some((name, path.to_string()));
+    }
+    let names = crate::git::repo_names_for_state(state);
+    let mut parts = path.splitn(2, '/');
+    let first = parts.next().unwrap_or("");
+    if !first.is_empty() && names.iter().any(|n| n == first) {
+        let rest = parts.next().unwrap_or("").to_string();
+        return Some((first.to_string(), rest));
+    }
+    helpers::default_http_repo_from_apex(state).map(|name| (name, path.to_string()))
+}
+
 pub async fn handle_query(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -18,22 +40,20 @@ pub async fn handle_query(
     _query: Option<Query<HashMap<String, String>>>,
     body: Option<Json<serde_json::Value>>,
 ) -> impl IntoResponse {
-    let repo_name_opt =
-        helpers::repo_from_host_or_default(&state, state.node_fqdn.as_deref(), &headers);
-    let repo_name = match repo_name_opt {
-        Some(name) => name,
+    let (repo_name, path_rest) = match resolve_query_repo_and_path(&state, &headers, &path) {
+        Some(pair) => pair,
         None => {
             return (
                 StatusCode::BAD_REQUEST,
-                "Host must be {repo}.{RELAY_PUBLIC_HOSTNAME}",
+                "Host must be {repo}.{RELAY_PUBLIC_HOSTNAME}, or path /{repo} on the node apex",
             )
                 .into_response();
         }
     };
     let branch = helpers::branch_for_request(&headers, &state, Some(repo_name.as_str()));
 
-    let mut query_val = if !path.is_empty() && path != "query" {
-        Some(serde_json::Value::String(path))
+    let mut query_val = if !path_rest.is_empty() && path_rest != "query" {
+        Some(serde_json::Value::String(path_rest))
     } else {
         None
     };

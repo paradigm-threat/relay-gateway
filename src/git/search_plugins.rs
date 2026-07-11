@@ -1,4 +1,4 @@
-//! Named QUERY search plugins. CleverScript routes; Rust executes.
+//! Named QUERY search plugins. CleverScript imports `@relay/search/*` (or returns a plugin id); Rust executes.
 
 use crate::git::index_store;
 use crate::git::indexing::{branch_index_paths, branch_sqlite_path};

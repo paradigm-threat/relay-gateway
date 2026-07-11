@@ -1,0 +1,10 @@
+# Catalog repo name (bare: {name}.git) → local checkout path (one per line).
+# Used by relay-local-remotes.sh — edit paths for your workstation.
+paradigm-threat-files	/home/ari/dev/pt/paradigm-threat-files
+paradigm-threat-timeline	/home/ari/dev/pt/paradigm-threat-timeline
+paradigm-threat-site	/home/ari/dev/pt/paradigm-threat-site
+ff-story	/home/ari/dev/ff/ff-story
+ff-teaser	/home/ari/dev/ff/ff-teaser
+relay-master	/home/ari/dev/relay/relay-master
+songwalker-library	/home/ari/dev/songwalker/songwalker-library
+snesology-library	/home/ari/dev/songwalker/snesology-library

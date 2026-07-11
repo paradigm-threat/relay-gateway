@@ -1,4 +1,4 @@
-//! Server CleverScript host: virtual modules `@relay/git` and `@relay/image` only (no global `Relay`).
+//! Server CleverScript host: virtual `@relay/*` modules only (no global `Relay`).
 
 use crate::git::image_cache::{cache_key_digest, ImageDiskCache};
 use crate::git::ipfs::{
@@ -6,6 +6,7 @@ use crate::git::ipfs::{
     IpfsPointer, IpfsResolveOptions, IpfsResolveSource, ASSET_ERROR_HEADER,
 };
 use crate::git::repo::read_file_from_repo;
+use crate::git::search_plugins::{self, PLUGIN_REDB, PLUGIN_SQLITE};
 use axum::http::HeaderMap;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -23,6 +24,8 @@ pub const RELAY_GIT_MODULE: &str = "@relay/git";
 pub const RELAY_IMAGE_MODULE: &str = "@relay/image";
 pub const RELAY_IPFS_MODULE: &str = "@relay/ipfs";
 pub const RELAY_MD_MODULE: &str = "@relay/md";
+pub const RELAY_SEARCH_SQLITE_MODULE: &str = "@relay/search/sqlite";
+pub const RELAY_SEARCH_REDB_MODULE: &str = "@relay/search/redb";
 
 fn git_exports(repo_root: PathBuf, branch: String) -> CsValue {
     let read = {
@@ -67,6 +70,55 @@ fn git_exports(repo_root: PathBuf, branch: String) -> CsValue {
         CsValue::NativeFn(NativeFnClosure(read_b64)),
     );
     CsValue::Object(git)
+}
+
+/// `@relay/search/sqlite` / `@relay/search/redb`: callable `search(opts)` runs the Rust plugin.
+///
+/// `opts` is the QUERY `ctx` (or a subset): `{ collection?, query?, limit? }`.
+/// Returns `{ rows: [...] }` for the existing CleverScript QUERY result path.
+fn search_plugin_exports(repo_root: PathBuf, branch: String, plugin: &'static str) -> CsValue {
+    let search = {
+        let repo_root = repo_root.clone();
+        let branch = branch.clone();
+        Rc::new(move |args: &[CsValue]| -> Result<CsValue, String> {
+            let opts = match args.first() {
+                Some(CsValue::Object(o)) => o,
+                _ => {
+                    return Err(format!(
+                        "{plugin} search requires an options object (QUERY ctx)"
+                    ))
+                }
+            };
+            let collection = cs_obj_str(opts, "collection").unwrap_or("index");
+            let query = opts.get("query").map(|q| q.to_json());
+            let limit = opts.get("limit").and_then(|l| match l {
+                CsValue::Number(n) if *n > 0.0 => Some(*n as usize),
+                _ => None,
+            });
+            let rows = search_plugins::run_plugin(
+                plugin,
+                &repo_root,
+                &branch,
+                collection,
+                query.as_ref(),
+                None,
+                limit,
+            )
+            .map_err(|e| e.to_string())?;
+            let mut out = HashMap::new();
+            out.insert(
+                "rows".to_string(),
+                CsValue::Array(rows.into_iter().map(|v| CsValue::from_json(&v)).collect()),
+            );
+            Ok(CsValue::Object(out))
+        })
+    };
+    let search_fn = CsValue::NativeFn(NativeFnClosure(search));
+    let mut m = HashMap::new();
+    m.insert("search".to_string(), search_fn.clone());
+    m.insert("default".to_string(), search_fn);
+    m.insert("plugin".to_string(), CsValue::String(plugin.to_string()));
+    CsValue::Object(m)
 }
 
 fn cs_obj_str<'a>(m: &'a HashMap<String, CsValue>, key: &str) -> Option<&'a str> {
@@ -764,11 +816,13 @@ fn image_exports(
     CsValue::Object(image)
 }
 
-/// Host for server hooks: delegates browser stubs to [`MockHost`]; resolves `@relay/git` and, when
-/// enabled, `@relay/image`, `@relay/ipfs`, and `@relay/md` from [`load_module`](Host::load_module).
+/// Host for server hooks: delegates browser stubs to [`MockHost`]; resolves `@relay/git`,
+/// `@relay/search/*`, and (when enabled) `@relay/image` / `@relay/ipfs` / `@relay/md`.
 pub struct CleverScriptServerHost {
     inner: Rc<RefCell<MockHost>>,
     git_exports: CsValue,
+    search_sqlite_exports: CsValue,
+    search_redb_exports: CsValue,
     image_exports: Option<CsValue>,
     ipfs_exports: Option<CsValue>,
     md_exports: Option<CsValue>,
@@ -784,6 +838,10 @@ impl CleverScriptServerHost {
             .unwrap_or("repo")
             .to_string();
         let git_exports = git_exports(repo_root.clone(), branch.clone());
+        let search_sqlite_exports =
+            search_plugin_exports(repo_root.clone(), branch.clone(), PLUGIN_SQLITE);
+        let search_redb_exports =
+            search_plugin_exports(repo_root.clone(), branch.clone(), PLUGIN_REDB);
         let (image_exports, image_disk_cache) = if include_image {
             let dc = Arc::new(ImageDiskCache::from_env());
             (
@@ -811,6 +869,8 @@ impl CleverScriptServerHost {
         Self {
             inner: MockHost::new(),
             git_exports,
+            search_sqlite_exports,
+            search_redb_exports,
             image_exports,
             ipfs_exports,
             md_exports,
@@ -844,6 +904,8 @@ impl Host for CleverScriptServerHost {
     fn load_module(&self, path: &str) -> Result<CsValue, String> {
         match path {
             RELAY_GIT_MODULE => Ok(self.git_exports.clone()),
+            RELAY_SEARCH_SQLITE_MODULE => Ok(self.search_sqlite_exports.clone()),
+            RELAY_SEARCH_REDB_MODULE => Ok(self.search_redb_exports.clone()),
             RELAY_IMAGE_MODULE => self
                 .image_exports
                 .as_ref()

@@ -108,7 +108,7 @@ When a commit is pushed via the Git protocol:
 When QUERY (or MCP search) needs an up-to-date index, the gateway runs **Rust** indexing of `data/**/meta.yaml` into `index.db.json`, syncs **SQLite** `index.db` (default search plugin) and legacy **redb**, ingests catalog `index.json` / `data/events.json` when present, then optionally runs `server.hooks.index` CleverScript for thin extra logic. Paths must be `.cs`. See [`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md).
 
 ### QUERY hook (`server.hooks.query`)
-Thin CleverScript router that selects a **search plugin** (`sqlite` default). Do not implement corpus scan/rank in CS. Normative details: [`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md).
+Thin CleverScript that **`import { search } from '@relay/search/sqlite'`** (or redb) and returns `search(ctx)`. Do not implement corpus scan/rank in CS. Normative details: [`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md).
 
 ### MCP hook (`server.hooks.mcp`)
 When configured (and/or `mcp.yaml` is present), **`POST /api/mcp/:repo`** serves Streamable HTTP JSON-RPC. `search_site` calls the same QUERY plugin path. See [`RELAY_MCP.md`](./RELAY_MCP.md).
@@ -143,13 +143,13 @@ If a path is missing from the Git tree, the gateway may run `server.hooks.get` C
 
 The gateway always sets **`X-Relay-Branch`** and **`X-Relay-Repo`** after your headers; values in `headers` for those names are ignored.
 
-Only **`@relay/git`**, **`@relay/image`**, **`@relay/ipfs`**, and **`@relay/md`** (when the host allows GET native modules — dynamic GET with image/markdown support) are valid module specifiers; anything else fails at load time.
+Valid module specifiers: **`@relay/git`**, **`@relay/search/sqlite`**, **`@relay/search/redb`**, and (when the host allows GET native modules) **`@relay/image`**, **`@relay/ipfs`**, **`@relay/md`**. Anything else fails at load time.
 
 **Node.js / `RelayHost.mjs` is not supported.**
 
 ## Security notes and hardening checklist
 
-CleverScript hooks run **in-process** on the gateway with a deliberately small virtual module surface (**`@relay/git`**, **`@relay/image`**, **`@relay/ipfs`**, **`@relay/md`** on GET paths when enabled). They are still **untrusted repo code** relative to the host. Recommended follow-ups:
+CleverScript hooks run **in-process** on the gateway with a deliberately small virtual module surface (**`@relay/git`**, **`@relay/search/*`**, plus **`@relay/image`** / **`@relay/ipfs`** / **`@relay/md`** on GET paths when enabled). They are still **untrusted repo code** relative to the host. Recommended follow-ups:
 
 1. **CPU and wall-clock limits** — `run_query_script` has no timeout today; a malicious or buggy hook can pin a worker thread. Add a per-hook **instruction budget** or **wall-clock timeout** (with process isolation if you need stronger guarantees).
 2. **Memory caps for images** — **`optimizeRasterFromGetContext`** / **`toWebp`** from **`@relay/image`** decode full rasters in memory. Enforce **max input bytes** (from `bodyBase64` decoded length), **max width/height** after decode, and **max output WebP size** before returning bytes; optional **disk cache** size is bounded by **`RELAY_IMAGE_CACHE_MAX_BYTES`** (see Dynamic GET above).

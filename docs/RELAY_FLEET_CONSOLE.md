@@ -15,6 +15,15 @@
 
 **Do not** pin stale IPv4s in docs; use hostnames. Temporary SSH-by-IP is an exception for broken DNS only.
 
+**Local git remotes (developer laptop):** add **`git://dfw1|lon1|hkg1.relaygateway.net:9418/<repo>.git`** to every checkout listed in **`relay-master/catalog/repos/`**:
+
+```bash
+./scripts/relay-local-remotes.sh --all   # ensure-bare on fleet + add remotes + probe
+git push dfw1 main                     # example; use signed commits where .relay.yaml requires it
+```
+
+Edit paths in **`scripts/relay-local-repos.map`**. Legacy **atlanta2** may still use old bare names (e.g. **`snesology.git`**); catalog name **`snesology-library`** is what Spot masters use.
+
 ## Global flags
 
 | Flag | Meaning |

@@ -516,6 +516,44 @@ server:
         assert_eq!(parts.status, StatusCode::NOT_FOUND);
     }
 
+    #[tokio::test]
+    async fn test_query_apex_path_selects_repo() {
+        let (_tmp, state) = query_text_fixture(QUERY_DEFAULT_YAML);
+
+        // Host is node apex (no repo subdomain); first path segment is the bare repo name.
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, "test.local".parse().unwrap());
+        headers.insert(HEADER_BRANCH, "main".parse().unwrap());
+        headers.insert(ACCEPT, "application/json".parse().unwrap());
+
+        let query_body = serde_json::json!({
+            "collection": "index",
+            "query": { "title": "Test Item" }
+        });
+
+        let response = handlers::handle_query(
+            State(state),
+            headers,
+            AxPath("repo".to_string()),
+            None,
+            Some(Json(query_body)),
+        )
+        .await;
+
+        let (parts, body) = response.into_response().into_parts();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        assert_eq!(
+            parts.status,
+            StatusCode::OK,
+            "body={}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let results = json["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["title"], "Test Item");
+    }
+
     /// Test QUERY method returns results from the mock database
     #[tokio::test]
     async fn test_query_method_success() {
@@ -784,6 +822,94 @@ export default function run(ctx) {
         assert_eq!(results[0]["title"], "Test Item");
 
         // SQLite file must exist after QUERY JIT
+        let sqlite = git::branch_sqlite_path(&repo_path, "main");
+        assert!(sqlite.exists(), "expected {}", sqlite.display());
+    }
+
+    /// Preferred: `import { search } from '@relay/search/sqlite'` then `return search(ctx)`.
+    #[tokio::test]
+    async fn test_query_cs_imports_sqlite_search_module() {
+        let yaml = r#"
+server:
+  hooks:
+    index:
+      path: hooks/server/index.cs
+    query:
+      path: hooks/server/query.cs
+  search:
+    plugin: sqlite
+"#;
+        let repo_dir = tempdir().unwrap();
+        let repo_path = repo_dir.path().join("repo.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("relay", "relay@local").unwrap();
+        let config_oid = repo.blob(yaml.as_bytes()).unwrap();
+        let meta_oid = repo.blob(META_YAML.as_bytes()).unwrap();
+        let index_cs_oid = repo.blob(INDEX_STUB_CS.as_bytes()).unwrap();
+        let query_cs = r#"
+import { search } from '@relay/search/sqlite';
+export default function run(ctx) {
+  return search(ctx);
+}
+"#;
+        let query_cs_oid = repo.blob(query_cs.as_bytes()).unwrap();
+        let mut tb_t = repo.treebuilder(None).unwrap();
+        tb_t.insert("meta.yaml", meta_oid, 0o100644).unwrap();
+        let t_tid = tb_t.write().unwrap();
+        let mut tb_data = repo.treebuilder(None).unwrap();
+        tb_data.insert("t", t_tid, 0o040000).unwrap();
+        let data_tid = tb_data.write().unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert(".relay.yaml", config_oid, 0o100644).unwrap();
+        tb.insert("data", data_tid, 0o040000).unwrap();
+        let mut tb_server = repo.treebuilder(None).unwrap();
+        tb_server
+            .insert("index.cs", index_cs_oid, 0o100644)
+            .unwrap();
+        tb_server
+            .insert("query.cs", query_cs_oid, 0o100644)
+            .unwrap();
+        let server_tid = tb_server.write().unwrap();
+        let mut tb_hooks = repo.treebuilder(None).unwrap();
+        tb_hooks.insert("server", server_tid, 0o040000).unwrap();
+        let hooks_tid = tb_hooks.write().unwrap();
+        tb.insert("hooks", hooks_tid, 0o040000).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let state = test_state(repo_dir.path().to_path_buf());
+
+        let mut headers = host_header("repo");
+        headers.insert(HEADER_BRANCH, "main".parse().unwrap());
+        headers.insert(ACCEPT, "application/json".parse().unwrap());
+
+        let query_body = serde_json::json!({
+            "collection": "index",
+            "query": "Test"
+        });
+
+        let response = handlers::handle_query(
+            State(state),
+            headers,
+            AxPath("query".to_string()),
+            None,
+            Some(Json(query_body)),
+        )
+        .await;
+
+        let (parts, body) = response.into_response().into_parts();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        assert_eq!(
+            parts.status,
+            StatusCode::OK,
+            "body={}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let results = json["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["title"], "Test Item");
         let sqlite = git::branch_sqlite_path(&repo_path, "main");
         assert!(sqlite.exists(), "expected {}", sqlite.display());
     }

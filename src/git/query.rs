@@ -20,7 +20,7 @@ fn clever_query_result_to_rows(v: &CsValue) -> anyhow::Result<Option<Vec<Value>>
             if o.contains_key("plugin") {
                 return Ok(None);
             }
-            anyhow::bail!("CleverScript QUERY must return {{ rows: [...] }}, a JSON array, or {{ plugin: \"sqlite\"|\"redb\", ... }}");
+            anyhow::bail!("CleverScript QUERY must return {{ rows: [...] }}, a JSON array, {{ plugin: \"sqlite\"|\"redb\", ... }}, or call search() from @relay/search/sqlite");
         }
         CsValue::Null => Ok(None),
         _ => anyhow::bail!("CleverScript QUERY returned an unsupported type"),
@@ -71,8 +71,10 @@ fn routing_from_cs(
 /// Run JIT index if needed, then QUERY via search plugin (default **sqlite**).
 ///
 /// When `server.hooks.query.path` ends with `.cs`:
-/// - `{ rows: [...] }` / array — legacy full CS result (compat; prefer plugins).
-/// - `{ plugin: "sqlite"|"redb", collection?, query?, limit? }` — thin router; Rust runs the plugin.
+/// - Preferred: `import { search } from '@relay/search/sqlite'; return search(ctx);`
+///   → `{ rows: [...] }` from the host module (Rust FTS).
+/// - Compat: `{ plugin: "sqlite"|"redb", collection?, query?, limit? }` — thin string router.
+/// - Legacy: `{ rows: [...] }` / array built in CS (avoid for new repos).
 /// - `null` — fall through to default plugin.
 pub fn execute_query(
     repo_root: &Path,
