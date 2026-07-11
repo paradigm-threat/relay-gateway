@@ -19,7 +19,7 @@ pub async fn handle_query(
     body: Option<Json<serde_json::Value>>,
 ) -> impl IntoResponse {
     let repo_name_opt =
-        helpers::repo_from_host_or_default(&state.repo_path, state.node_fqdn.as_deref(), &headers);
+        helpers::repo_from_host_or_default(&state, state.node_fqdn.as_deref(), &headers);
     let repo_name = match repo_name_opt {
         Some(name) => name,
         None => {
@@ -30,7 +30,7 @@ pub async fn handle_query(
                 .into_response();
         }
     };
-    let branch = helpers::branch_for_request(&headers, &state.repo_path, Some(repo_name.as_str()));
+    let branch = helpers::branch_for_request(&headers, &state, Some(repo_name.as_str()));
 
     let mut query_val = if !path.is_empty() && path != "query" {
         Some(serde_json::Value::String(path))
@@ -39,6 +39,7 @@ pub async fn handle_query(
     };
 
     let mut collection_storage = "index".to_string();
+    let mut limit: Option<usize> = None;
 
     if let Some(Json(b)) = body {
         if let Some(q) = b.get("query") {
@@ -47,17 +48,21 @@ pub async fn handle_query(
         if let Some(c) = b.get("collection").and_then(|v| v.as_str()) {
             collection_storage = c.to_string();
         }
+        if let Some(n) = b.get("limit").and_then(|v| v.as_u64()) {
+            limit = Some(n.clamp(1, 10_000) as usize);
+        }
     }
 
     let accept = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok());
     let response_format = negotiate_query_format(accept);
 
-    match crate::git::query::execute_query(
+    match crate::git::query::execute_query_limited(
         &state.repo_path,
         &repo_name,
         &branch,
         query_val,
         &collection_storage,
+        limit,
     ) {
         Ok(rows) => match response_format {
             QueryResponseFormat::Json => {

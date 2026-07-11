@@ -82,6 +82,22 @@ pub fn clever_query_hook_path(cfg: &RelayConfig) -> Option<String> {
     }
 }
 
+/// Path to CleverScript MCP hook (`.cs`), if configured under `server.hooks.mcp`.
+pub fn clever_mcp_hook_path(cfg: &RelayConfig) -> Option<String> {
+    let p = cfg
+        .server
+        .as_ref()?
+        .hooks
+        .as_ref()?
+        .get("mcp")
+        .map(|h| h.path.as_str())?;
+    if p.ends_with(".cs") {
+        Some(p.to_string())
+    } else {
+        None
+    }
+}
+
 /// Fields for `server.hooks.index.query.collections.{name}.fields` (projection order).
 pub fn export_fields_for_collection(cfg: &RelayConfig, collection: &str) -> Option<Vec<String>> {
     let hook = cfg.server.as_ref()?.hooks.as_ref()?.get("index")?;
@@ -108,7 +124,10 @@ mod tests {
         hooks.insert("index".to_string(), hp);
         RelayConfig {
             client: None,
-            server: Some(ServerConfig { hooks: Some(hooks) }),
+            server: Some(ServerConfig {
+                hooks: Some(hooks),
+                ..Default::default()
+            }),
             git: None,
             name: None,
             version: None,
@@ -146,7 +165,10 @@ mod tests {
     fn no_index_hook_allows_branch() {
         let cfg = RelayConfig {
             client: None,
-            server: Some(ServerConfig { hooks: None }),
+            server: Some(ServerConfig {
+                hooks: None,
+                ..Default::default()
+            }),
             git: None,
             name: None,
             version: None,
@@ -194,7 +216,10 @@ mod tests {
         );
         RelayConfig {
             client: None,
-            server: Some(ServerConfig { hooks: Some(hooks) }),
+            server: Some(ServerConfig {
+                hooks: Some(hooks),
+                ..Default::default()
+            }),
             git: None,
             name: None,
             version: None,
@@ -223,6 +248,7 @@ mod tests {
             client: None,
             server: Some(ServerConfig {
                 hooks: Some(HashMap::new()),
+                ..Default::default()
             }),
             git: None,
             name: None,

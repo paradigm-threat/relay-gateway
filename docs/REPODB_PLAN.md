@@ -28,7 +28,8 @@ repository.git/
 │   └── branches/
 │       └── [branch_hash]/   # Use branch name hash to avoid filesystem issues
 │           ├── index.db.json   # Written by Rust meta.yaml indexer + optional CleverScript index hook (JSON collections)
-│           ├── index.redb      # Mirrored by relay-gateway (redb) for QUERY reads
+│           ├── index.db        # Default SQLite search plugin (FTS QUERY); synced from JSON + catalog indexes
+│           ├── index.redb      # Legacy mirror by relay-gateway (redb) for plugin: redb
 │           └── ephemeral/   # Branch-local cache/temporary data
 ```
 

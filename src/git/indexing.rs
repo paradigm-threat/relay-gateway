@@ -1,5 +1,7 @@
 use crate::git::hooks::{execute_repo_hook, HookContext};
 use crate::git::index_store;
+use crate::git::meta_index;
+use crate::git::sqlite_index;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -48,22 +50,38 @@ pub fn branch_index_paths(repo_path: &Path, branch: &str) -> (PathBuf, PathBuf) 
     (d.join("index.db.json"), d.join("index.redb"))
 }
 
-/// Run index hook if `indexed_head` in JSON lags `HEAD`; then sync JSON → redb.
+/// Default SQLite plugin DB path (`.relay_data/branches/<hash>/index.db`).
+pub fn branch_sqlite_path(repo_path: &Path, branch: &str) -> PathBuf {
+    sqlite_index::sqlite_db_path(repo_path, branch)
+}
+
+fn read_json_indexed_head(json_path: &Path) -> String {
+    if !json_path.exists() {
+        return String::new();
+    }
+    let Ok(content) = std::fs::read_to_string(json_path) else {
+        return String::new();
+    };
+    let Ok(db) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return String::new();
+    };
+    db.get("metadata")
+        .and_then(|m| m.get("indexed_head"))
+        .and_then(|h| h.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Run index hook if `indexed_head` lags `HEAD`; then sync JSON → redb + SQLite.
 /// Caller should hold [`branch_operation_mutex`] for this repo/branch when serving QUERY.
 pub fn ensure_indexed(ctx: &HookContext) -> anyhow::Result<()> {
-    let (db_path, redb_path) = branch_index_paths(&ctx.repo_path, &ctx.branch);
+    let (json_path, redb_path) = branch_index_paths(&ctx.repo_path, &ctx.branch);
+    let sqlite_path = branch_sqlite_path(&ctx.repo_path, &ctx.branch);
 
-    let mut indexed_head = String::new();
-    if db_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&db_path) {
-            if let Ok(db) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(meta) = db.get("metadata") {
-                    if let Some(head) = meta.get("indexed_head") {
-                        indexed_head = head.as_str().unwrap_or("").to_string();
-                    }
-                }
-            }
-        }
+    let mut indexed_head = sqlite_index::read_indexed_head(&sqlite_path)?
+        .unwrap_or_default();
+    if indexed_head.is_empty() {
+        indexed_head = read_json_indexed_head(&json_path);
     }
 
     if indexed_head != ctx.new_commit {
@@ -82,8 +100,12 @@ pub fn ensure_indexed(ctx: &HookContext) -> anyhow::Result<()> {
         );
     }
 
-    if db_path.exists() {
-        index_store::sync_json_to_redb(&db_path, &redb_path)?;
+    if json_path.exists() {
+        index_store::sync_json_to_redb(&json_path, &redb_path)?;
+        // JSON may only contain meta.yaml rows; re-ingest catalog indexes after so
+        // `index.json` / `events.json` are not wiped by an empty collections.index.
+        sqlite_index::sync_json_to_sqlite(&json_path, &sqlite_path)?;
+        meta_index::ingest_catalog_json_indexes(ctx, &sqlite_path)?;
     }
 
     Ok(())

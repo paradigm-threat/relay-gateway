@@ -1,54 +1,14 @@
 use anyhow::Result;
-use axum::{
-    body::Body,
-    extract::{Path as AxPath, State},
-    http::{header, Request, StatusCode},
-    response::IntoResponse,
-    routing::{get, post},
-    Json, Router,
-};
 use clap::Parser;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
-use tower_http::cors::{Any, CorsLayer};
-use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use tracing_appender::rolling;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use relay_server::{
-    cli::Cli,
-    config::{self, Config},
-    handlers, transpiler, AppState,
+    build_router, cli::Cli, config::{self, Config}, notify,
 };
-
-/// Axum's `MethodFilter` does not support the custom `QUERY` verb; unhandled methods hit fallback.
-async fn relay_path_fallback(
-    State(state): State<AppState>,
-    req: Request<Body>,
-) -> axum::response::Response {
-    if req.method().as_str() != "QUERY" {
-        return (
-            StatusCode::METHOD_NOT_ALLOWED,
-            [(header::ALLOW, "GET, HEAD, PUT, DELETE, OPTIONS, QUERY")],
-            "Method Not Allowed",
-        )
-            .into_response();
-    }
-    let (parts, body) = req.into_parts();
-    let path = parts.uri.path().trim_start_matches('/').to_string();
-    let headers = parts.headers;
-    let json = match axum::body::to_bytes(body, 2 * 1024 * 1024).await {
-        Ok(b) if b.is_empty() => None,
-        Ok(b) => serde_json::from_slice::<serde_json::Value>(&b)
-            .ok()
-            .map(Json),
-        Err(_) => None,
-    };
-    handlers::handle_query(State(state), headers, AxPath(path), None, json)
-        .await
-        .into_response()
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -74,7 +34,7 @@ async fn main() -> Result<()> {
         .with(file_layer)
         .init();
 
-    relay_server::notify::install_panic_hook();
+    notify::install_panic_hook();
 
     let config = Config::from_cli(&cli)?;
     config.initialize_repos();
@@ -110,54 +70,7 @@ async fn main() -> Result<()> {
         "relay mesh node role"
     );
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any)
-        .expose_headers(Any);
-
-    let app = Router::new()
-        .route("/openapi.yaml", get(handlers::get_openapi_yaml))
-        .route("/swagger-ui", get(handlers::get_swagger_ui))
-        .route("/api/config", post(handlers::post_api_config))
-        .route("/api/status", post(handlers::post_api_status))
-        .route(
-            "/api/git/ensure-bare/:repo",
-            post(handlers::post_ensure_bare),
-        )
-        .route("/git-pull", post(handlers::post_git_pull))
-        .route("/hooks/peer", post(handlers::post_peer_hook))
-        .route("/hooks/mesh-event", post(handlers::post_mesh_event))
-        .route("/hooks/github/:repo", post(handlers::post_github_hook))
-        .route("/transpile", post(transpiler::post_transpile))
-        .route(
-            "/.well-known/acme-challenge/*path",
-            get({
-                let dir = config.acme_dir.clone();
-                move |AxPath(path): AxPath<String>| async move {
-                    handlers::serve_acme_challenge(&dir, &path).await
-                }
-            }),
-        )
-        .route(
-            "/",
-            get(handlers::get_root)
-                .head(handlers::head_root)
-                .options(handlers::options_capabilities),
-        )
-        .route("/ipfs/*cid", get(handlers::handle_get_ipfs_prefixed))
-        .route(
-            "/*path",
-            get(handlers::handle_get_file)
-                .head(handlers::head_file)
-                .put(handlers::put_file)
-                .delete(handlers::delete_file)
-                .options(handlers::options_capabilities)
-                .fallback(relay_path_fallback),
-        )
-        .layer(cors)
-        .layer(TraceLayer::new_for_http())
-        .with_state(config.state.clone());
+    let app = build_router(config.state.clone());
 
     let http_addr = config.http_addr;
     let app_http = app.clone();
@@ -166,7 +79,7 @@ async fn main() -> Result<()> {
     let http_task = tokio::spawn(async move {
         info!(%http_addr, "HTTP listening");
         let listener = TcpListener::bind(&http_addr).await.expect("bind http");
-        relay_server::notify::notify_server_started(
+        notify::notify_server_started(
             started_node.as_deref(),
             started_sid.as_deref(),
         );

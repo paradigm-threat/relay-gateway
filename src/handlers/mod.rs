@@ -4,6 +4,7 @@ pub mod ipfs;
 pub mod general;
 pub mod head;
 pub mod helpers;
+pub mod mcp;
 pub mod query;
 pub mod query_response;
 pub mod status;

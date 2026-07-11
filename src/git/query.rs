@@ -1,55 +1,97 @@
 use crate::git;
 use crate::git::hooks::HookContext;
 use crate::git::index_policy;
-use crate::git::index_store;
-use crate::git::indexing::{branch_index_paths, branch_operation_mutex, ensure_indexed};
+use crate::git::indexing::{branch_operation_mutex, ensure_indexed};
+use crate::git::search_plugins;
 use crate::git::clever_script_host::CleverScriptServerHost;
 use crate::git::repo::{read_file_from_repo, read_relay_config};
 use relay_runtime::value::Value as CsValue;
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::path::Path;
 
-fn project_rows(rows: Vec<Value>, fields: Option<&[String]>) -> Vec<Value> {
-    let Some(field_list) = fields.filter(|f| !f.is_empty()) else {
-        return rows;
-    };
-    rows.into_iter()
-        .map(|row| {
-            let mut m = Map::new();
-            if let Some(obj) = row.as_object() {
-                for k in field_list {
-                    if let Some(v) = obj.get(k) {
-                        m.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-            Value::Object(m)
-        })
-        .collect()
-}
-
-fn clever_query_result_to_rows(v: &CsValue) -> anyhow::Result<Vec<Value>> {
+fn clever_query_result_to_rows(v: &CsValue) -> anyhow::Result<Option<Vec<Value>>> {
     match v {
-        CsValue::Array(a) => Ok(a.iter().map(|x| x.to_json()).collect()),
+        CsValue::Array(a) => Ok(Some(a.iter().map(|x| x.to_json()).collect())),
         CsValue::Object(o) => {
             if let Some(CsValue::Array(rows)) = o.get("rows") {
-                Ok(rows.iter().map(|x| x.to_json()).collect())
-            } else {
-                anyhow::bail!("CleverScript QUERY must return {{ rows: [...] }} or a JSON array");
+                return Ok(Some(rows.iter().map(|x| x.to_json()).collect()));
             }
+            // Thin router: { plugin, collection?, query?, limit? } — no rows.
+            if o.contains_key("plugin") {
+                return Ok(None);
+            }
+            anyhow::bail!("CleverScript QUERY must return {{ rows: [...] }}, a JSON array, or {{ plugin: \"sqlite\"|\"redb\", ... }}");
         }
+        CsValue::Null => Ok(None),
         _ => anyhow::bail!("CleverScript QUERY returned an unsupported type"),
     }
 }
 
-/// Run JIT index if needed, load collection from redb (synced from hook JSON), filter, project fields from `.relay.yaml`.
-/// When `server.hooks.query.path` ends with `.cs`, run CleverScript instead (`import … from '@relay/git'`; no redb required).
+fn routing_from_cs(
+    v: &CsValue,
+    default_plugin: &str,
+    default_collection: &str,
+    default_query: Option<&Value>,
+) -> (String, String, Option<Value>, Option<usize>) {
+    let CsValue::Object(o) = v else {
+        return (
+            default_plugin.to_string(),
+            default_collection.to_string(),
+            default_query.cloned(),
+            None,
+        );
+    };
+    let plugin = o
+        .get("plugin")
+        .and_then(|p| match p {
+            CsValue::String(s) if !s.is_empty() => Some(s.as_str()),
+            _ => None,
+        })
+        .unwrap_or(default_plugin)
+        .to_string();
+    let collection = o
+        .get("collection")
+        .and_then(|c| match c {
+            CsValue::String(s) if !s.is_empty() => Some(s.as_str()),
+            _ => None,
+        })
+        .unwrap_or(default_collection)
+        .to_string();
+    let query = o
+        .get("query")
+        .map(|q| q.to_json())
+        .or_else(|| default_query.cloned());
+    let limit = o.get("limit").and_then(|l| match l {
+        CsValue::Number(n) if *n > 0.0 => Some(*n as usize),
+        _ => None,
+    });
+    (plugin, collection, query, limit)
+}
+
+/// Run JIT index if needed, then QUERY via search plugin (default **sqlite**).
+///
+/// When `server.hooks.query.path` ends with `.cs`:
+/// - `{ rows: [...] }` / array — legacy full CS result (compat; prefer plugins).
+/// - `{ plugin: "sqlite"|"redb", collection?, query?, limit? }` — thin router; Rust runs the plugin.
+/// - `null` — fall through to default plugin.
 pub fn execute_query(
     repo_root: &Path,
     repo_name: &str,
     branch: &str,
     query: Option<Value>,
     collection: &str,
+) -> anyhow::Result<Vec<Value>> {
+    execute_query_limited(repo_root, repo_name, branch, query, collection, None)
+}
+
+/// Same as [`execute_query`] with an optional result cap (HTTP/MCP `limit`).
+pub fn execute_query_limited(
+    repo_root: &Path,
+    repo_name: &str,
+    branch: &str,
+    query: Option<Value>,
+    collection: &str,
+    limit: Option<usize>,
 ) -> anyhow::Result<Vec<Value>> {
     let repo_full_path = repo_root.join(format!("{}.git", repo_name));
     let repo = git2::Repository::open_bare(&repo_full_path)?;
@@ -64,6 +106,7 @@ pub fn execute_query(
     }
 
     let export_fields = index_policy::export_fields_for_collection(&relay_cfg, collection);
+    let default_plugin = search_plugins::default_plugin_id(&relay_cfg);
 
     let ctx = HookContext {
         repo_path: repo_full_path.clone(),
@@ -78,6 +121,10 @@ pub fn execute_query(
     let lock = branch_operation_mutex(ctx.repo_path.clone(), ctx.branch.clone());
     let _guard = lock.lock().unwrap();
 
+    if index_policy::has_index_hook(&relay_cfg) {
+        ensure_indexed(&ctx)?;
+    }
+
     if let Some(cs_path) = index_policy::clever_query_hook_path(&relay_cfg) {
         let source_bytes = read_file_from_repo(&repo_full_path, branch, &cs_path)?;
         let source = String::from_utf8_lossy(&source_bytes).into_owned();
@@ -86,64 +133,89 @@ pub fn execute_query(
             "collection": collection,
             "query": query,
             "repo": repo_name,
+            "defaultPlugin": default_plugin,
+            "limit": limit,
         });
         let host = CleverScriptServerHost::host_handle(repo_full_path.clone(), branch.to_string(), false);
         let raw = relay_runtime::run_query_script(&source, host, &qctx, None, None)
             .map_err(|e| anyhow::anyhow!("CleverScript QUERY: {}", e))?;
-        let rows = clever_query_result_to_rows(&raw)?;
-        return Ok(project_rows(rows, export_fields.as_deref()));
+
+        if let Some(rows) = clever_query_result_to_rows(&raw)? {
+            let rows = project_export(rows, export_fields.as_deref());
+            return Ok(apply_limit(rows, limit));
+        }
+
+        let (plugin, coll, q, cs_limit) =
+            routing_from_cs(&raw, default_plugin, collection, query.as_ref());
+        let effective_limit = cs_limit.or(limit);
+        return search_plugins::run_plugin(
+            &plugin,
+            &repo_full_path,
+            branch,
+            &coll,
+            q.as_ref(),
+            export_fields.as_deref(),
+            effective_limit,
+        );
     }
 
-    if index_policy::has_index_hook(&relay_cfg) {
-        ensure_indexed(&ctx)?;
-    }
+    search_plugins::run_plugin(
+        default_plugin,
+        &repo_full_path,
+        branch,
+        collection,
+        query.as_ref(),
+        export_fields.as_deref(),
+        limit,
+    )
+}
 
-    let (json_path, redb_path) = branch_index_paths(&repo_full_path, branch);
-
-    if json_path.exists() {
-        index_store::sync_json_to_redb(&json_path, &redb_path)?;
-    }
-
-    let mut results =
-        index_store::read_collection(&redb_path, collection)?.unwrap_or(Value::Array(vec![]));
-
-    let arr = results
-        .as_array_mut()
-        .ok_or_else(|| anyhow::anyhow!("collection {} is not an array", collection))?;
-
-    if let Some(query_val) = query {
-        if let Some(q_str) = query_val.as_str() {
-            if !q_str.is_empty() {
-                let q_lower = q_str.to_lowercase();
-                arr.retain(|item| {
-                    if let Some(obj) = item.as_object() {
-                        for value in obj.values() {
-                            if let Some(s) = value.as_str() {
-                                if s.to_lowercase().contains(&q_lower) {
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-                    false
-                });
-            }
-        } else if let Some(q_obj) = query_val.as_object() {
-            arr.retain(|item| {
-                if let Some(item_obj) = item.as_object() {
-                    for (k, v) in q_obj {
-                        if item_obj.get(k) != Some(v) {
-                            return false;
-                        }
-                    }
-                    true
-                } else {
-                    false
-                }
-            });
+fn apply_limit(mut rows: Vec<Value>, limit: Option<usize>) -> Vec<Value> {
+    if let Some(n) = limit {
+        if rows.len() > n {
+            rows.truncate(n);
         }
     }
+    rows
+}
 
-    let rows: Vec<Value> = arr.clone();
-    Ok(project_rows(rows, export_fields.as_deref()))
+fn project_export(rows: Vec<Value>, fields: Option<&[String]>) -> Vec<Value> {
+    let Some(field_list) = fields.filter(|f| !f.is_empty()) else {
+        return rows;
+    };
+    rows.into_iter()
+        .map(|row| {
+            let mut m = serde_json::Map::new();
+            if let Some(obj) = row.as_object() {
+                for k in field_list {
+                    if let Some(v) = obj.get(k) {
+                        m.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            Value::Object(m)
+        })
+        .collect()
+}
+
+/// Shared entry for MCP `search_site` / QUERY — always goes through [`execute_query_limited`].
+pub fn execute_search(
+    repo_root: &Path,
+    repo_name: &str,
+    branch: &str,
+    query: Option<Value>,
+    collection: &str,
+) -> anyhow::Result<Vec<Value>> {
+    execute_query_limited(repo_root, repo_name, branch, query, collection, None)
+}
+
+pub fn execute_search_limited(
+    repo_root: &Path,
+    repo_name: &str,
+    branch: &str,
+    query: Option<Value>,
+    collection: &str,
+    limit: Option<usize>,
+) -> anyhow::Result<Vec<Value>> {
+    execute_query_limited(repo_root, repo_name, branch, query, collection, limit)
 }

@@ -15,10 +15,13 @@ pub mod meta_index;
 pub mod index_store;
 pub mod indexing;
 pub mod query;
+pub mod search_plugins;
+pub mod sqlite_index;
 pub mod relay_config_cache;
 pub mod repo;
 pub mod request_headers;
 pub mod resolve;
+pub mod worktree;
 
 #[cfg(test)]
 mod tests;
@@ -31,11 +34,13 @@ pub use branch_policy::{
 pub use get_hook_http::get_hook_json_to_response;
 pub use hooks::{execute_repo_hook, HookContext};
 pub use indexing::{
-    branch_data_dir, branch_hash_short, branch_index_paths, branch_operation_mutex, ensure_indexed,
+    branch_data_dir, branch_hash_short, branch_index_paths, branch_operation_mutex,
+    branch_sqlite_path, ensure_indexed,
 };
 pub use repo::{
     apply_bare_receive_security, apply_bare_receive_security_at_path, bare_repo_names,
     default_branch_from_bare_head, get_branch_commit_info, list_branches, open_repo,
-    read_file_from_repo, read_git_config, read_git_config_from_revision, read_relay_config,
+    open_repo_for_state, read_file_from_repo, read_git_config, read_git_config_from_revision,
+    read_relay_config, repo_names_for_state,
 };
 pub use resolve::git_resolve_and_respond;

@@ -157,6 +157,7 @@ impl Config {
         Ok(Config {
             state: AppState {
                 repo_path,
+                serve_context: crate::types::ServeContext::BareFleet,
                 static_paths,
                 node_fqdn,
                 relay_server_id,
@@ -170,6 +171,26 @@ impl Config {
             tls_key,
             acme_dir,
         })
+    }
+
+    /// App state for desktop `--repo` embedded server (live worktree GET).
+    pub fn desktop_local_state(checkout: PathBuf, repo_name: String) -> AppState {
+        let checked_out_branch = crate::git::worktree::checked_out_branch(&checkout)
+            .unwrap_or_else(|| crate::types::DEFAULT_BRANCH.to_string());
+        AppState {
+            repo_path: checkout.clone(),
+            serve_context: crate::types::ServeContext::LocalWorktree {
+                checkout,
+                repo_name,
+                checked_out_branch,
+            },
+            static_paths: Vec::new(),
+            node_fqdn: Some("localhost".to_string()),
+            relay_server_id: None,
+            authorized_repos: None,
+            features_manifest: None,
+            git_ensure_bare_enabled: false,
+        }
     }
 
     pub fn initialize_repos(&self) {

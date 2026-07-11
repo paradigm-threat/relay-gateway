@@ -26,7 +26,7 @@ pub async fn put_file(
 ) -> impl IntoResponse {
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
     let repo_name = match helpers::repo_from_host_or_default(
-        &state.repo_path,
+        &state,
         state.node_fqdn.as_deref(),
         &headers,
     ) {
@@ -39,8 +39,8 @@ pub async fn put_file(
                 .into_response();
         }
     };
-    let branch = helpers::branch_for_request(&headers, &state.repo_path, Some(repo_name.as_str()));
-    match write_file_to_repo(&state.repo_path, &repo_name, &branch, &decoded, &body) {
+    let branch = helpers::branch_for_request(&headers, &state, Some(repo_name.as_str()));
+    match write_file_to_repo(&state, &repo_name, &branch, &decoded, &body) {
         Ok((commit, branch)) => {
             Json(serde_json::json!({"commit": commit, "branch": branch, "path": decoded}))
                 .into_response()
@@ -66,15 +66,15 @@ pub async fn delete_file(
 ) -> impl IntoResponse {
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
     let repo_name = match helpers::repo_from_host_or_default(
-        &state.repo_path,
+        &state,
         state.node_fqdn.as_deref(),
         &headers,
     ) {
         Some(r) => r,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
-    let branch = helpers::branch_for_request(&headers, &state.repo_path, Some(repo_name.as_str()));
-    match delete_file_in_repo(&state.repo_path, &repo_name, &branch, &decoded) {
+    let branch = helpers::branch_for_request(&headers, &state, Some(repo_name.as_str()));
+    match delete_file_in_repo(&state, &repo_name, &branch, &decoded) {
         Ok((commit, branch)) => {
             Json(serde_json::json!({"commit": commit, "branch": branch, "path": decoded}))
                 .into_response()
@@ -96,13 +96,13 @@ pub enum RepoEditError {
 }
 
 pub fn write_file_to_repo(
-    repo_root: &PathBuf,
+    state: &AppState,
     repo_name: &str,
     branch: &str,
     path: &str,
     content: &[u8],
 ) -> Result<(String, String)> {
-    let repo = match git::open_repo(repo_root, repo_name) {
+    let repo = match git::open_repo_for_state(state, repo_name) {
         Some(r) => r,
         None => {
             return Err(anyhow::anyhow!("Repository not found"));
@@ -253,12 +253,12 @@ pub fn write_file_to_repo(
 }
 
 pub fn delete_file_in_repo(
-    repo_root: &PathBuf,
+    state: &AppState,
     repo_name: &str,
     branch: &str,
     path: &str,
 ) -> Result<(String, String), RepoEditError> {
-    let repo = git::open_repo(repo_root, repo_name).ok_or(RepoEditError::NotFound)?;
+    let repo = git::open_repo_for_state(state, repo_name).ok_or(RepoEditError::NotFound)?;
     let refname = format!("refs/heads/{}", branch);
     let sig = Signature::now("relay", "relay@local").map_err(|e| RepoEditError::Other(e.into()))?;
     let (parent_commit, base_tree) = match repo.find_reference(&refname) {

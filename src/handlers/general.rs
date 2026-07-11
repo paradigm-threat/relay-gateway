@@ -190,12 +190,15 @@ pub async fn post_git_pull(State(state): State<AppState>, headers: HeaderMap) ->
         error: Option<String>,
     }
 
-    let names = git::bare_repo_names(&state.repo_path);
+    let names = git::repo_names_for_state(&state);
 
     let (bare_path, repo_label) = if let Some(n) =
-        helpers::repo_from_host_or_default(&state.repo_path, state.node_fqdn.as_deref(), &headers)
+        helpers::repo_from_host_or_default(&state, state.node_fqdn.as_deref(), &headers)
     {
-        (state.repo_path.join(format!("{}.git", n)), n)
+        match &state.serve_context {
+            crate::types::ServeContext::LocalWorktree { checkout, .. } => (checkout.clone(), n),
+            crate::types::ServeContext::BareFleet => (state.repo_path.join(format!("{}.git", n)), n),
+        }
     } else if names.is_empty() && Repository::open_bare(&state.repo_path).is_ok() {
         let stem = state
             .repo_path
@@ -468,15 +471,15 @@ pub async fn options_capabilities(
     _query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
     let repo_name =
-        helpers::repo_from_host_or_default(&state.repo_path, state.node_fqdn.as_deref(), &headers);
-    let branch = helpers::branch_for_request(&headers, &state.repo_path, repo_name.as_deref());
+        helpers::repo_from_host_or_default(&state, state.node_fqdn.as_deref(), &headers);
+    let branch = helpers::branch_for_request(&headers, &state, repo_name.as_deref());
 
-    let repo_names = git::bare_repo_names(&state.repo_path);
+    let repo_names = git::repo_names_for_state(&state);
     let mut repos_json: Vec<serde_json::Value> = Vec::new();
     let mut relay_config: Option<RelayConfig> = None;
 
     for name in &repo_names {
-        if let Some(repo) = git::open_repo(&state.repo_path, name) {
+        if let Some(repo) = git::open_repo_for_state(&state, name) {
             let mut heads_map = serde_json::Map::new();
             let branches = helpers::list_branches(&repo);
             for b in &branches {
@@ -543,10 +546,10 @@ pub async fn get_root(
         return resp;
     }
     // Apex host (no `{repo}.` prefix): serve **`RELAY_DEFAULT_REPO`** (default `relay-master`) index if present
-    if let Some(repo_name) = helpers::default_http_repo_from_apex(&state.repo_path) {
-        let branch = helpers::branch_for_request(&headers, &state.repo_path, Some(&repo_name));
+    if let Some(repo_name) = helpers::default_http_repo_from_apex(&state) {
+        let branch = helpers::branch_for_request(&headers, &state, Some(&repo_name));
         if let GitResolveResult::Respond(resp) = git::git_resolve_and_respond(
-            &state.repo_path,
+            &state,
             &headers,
             &branch,
             &repo_name,

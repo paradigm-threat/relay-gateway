@@ -34,6 +34,27 @@ pub fn bare_repo_names(root: &PathBuf) -> Vec<String> {
     names
 }
 
+/// Opens a repository for the given app state and repo name.
+pub fn open_repo_for_state(state: &crate::types::AppState, name: &str) -> Option<Repository> {
+    match &state.serve_context {
+        crate::types::ServeContext::BareFleet => open_repo(&state.repo_path, name),
+        crate::types::ServeContext::LocalWorktree {
+            checkout,
+            repo_name,
+            ..
+        } if repo_name == name => Repository::open(checkout).ok(),
+        _ => None,
+    }
+}
+
+/// Repo names visible to HTTP routing for this app state.
+pub fn repo_names_for_state(state: &crate::types::AppState) -> Vec<String> {
+    match &state.serve_context {
+        crate::types::ServeContext::LocalWorktree { repo_name, .. } => vec![repo_name.clone()],
+        crate::types::ServeContext::BareFleet => bare_repo_names(&state.repo_path),
+    }
+}
+
 /// Opens a bare repository by name (without .git suffix)
 pub fn open_repo(root: &PathBuf, name: &str) -> Option<Repository> {
     let p = root.join(format!("{}.git", name));

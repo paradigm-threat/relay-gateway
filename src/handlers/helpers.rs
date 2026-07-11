@@ -40,11 +40,11 @@ pub fn repo_slug_from_host(
 
 /// Resolve bare repo name from request `Host` and configured node FQDN.
 pub fn repo_from_host(
-    root: &PathBuf,
+    state: &crate::types::AppState,
     node_fqdn: Option<&str>,
     headers: &HeaderMap,
 ) -> Option<String> {
-    let names = crate::git::bare_repo_names(root);
+    let names = crate::git::repo_names_for_state(state);
     if names.is_empty() {
         return None;
     }
@@ -67,19 +67,19 @@ fn default_repo_name_for_apex() -> String {
 }
 
 /// When **`Host`** is the node apex (no repo subdomain), serve this bare if present.
-pub fn default_http_repo_from_apex(root: &PathBuf) -> Option<String> {
+pub fn default_http_repo_from_apex(state: &crate::types::AppState) -> Option<String> {
     let name = default_repo_name_for_apex();
-    let names = crate::git::bare_repo_names(root);
+    let names = crate::git::repo_names_for_state(state);
     names.iter().find(|n| *n == &name).map(|_| name)
 }
 
 /// [`repo_from_host`], else apex default (**`RELAY_DEFAULT_REPO`** / **`relay-master`**) when that bare exists.
 pub fn repo_from_host_or_default(
-    root: &PathBuf,
+    state: &crate::types::AppState,
     node_fqdn: Option<&str>,
     headers: &HeaderMap,
 ) -> Option<String> {
-    repo_from_host(root, node_fqdn, headers).or_else(|| default_http_repo_from_apex(root))
+    repo_from_host(state, node_fqdn, headers).or_else(|| default_http_repo_from_apex(state))
 }
 
 /// Resolve the branch name from `X-Relay-Branch` header only, defaults to **main**.
@@ -96,11 +96,10 @@ pub fn branch_from(headers: &HeaderMap) -> String {
     crate::types::DEFAULT_BRANCH.to_string()
 }
 
-/// Branch for a request: optional `X-Relay-Branch`, else bare repo default branch, else **`main`**.
-/// Default branch prefers symbolic `HEAD` when it exists; stale `HEAD` (e.g. `master` after rename) falls back to `main`.
+/// Branch for a request: optional `X-Relay-Branch`, else repo default branch, else **`main`**.
 pub fn branch_for_request(
     headers: &HeaderMap,
-    repo_root: &PathBuf,
+    state: &crate::types::AppState,
     repo_name: Option<&str>,
 ) -> String {
     if let Some(h) = headers
@@ -112,11 +111,25 @@ pub fn branch_for_request(
         }
     }
     if let Some(name) = repo_name {
-        if let Some(b) = crate::git::default_branch_from_bare_head(repo_root, name) {
+        if let Some(b) = default_branch_for_repo(state, name) {
             return b;
         }
     }
     crate::types::DEFAULT_BRANCH.to_string()
+}
+
+fn default_branch_for_repo(state: &crate::types::AppState, name: &str) -> Option<String> {
+    if let crate::types::ServeContext::LocalWorktree {
+        checked_out_branch,
+        repo_name,
+        ..
+    } = &state.serve_context
+    {
+        if repo_name == name {
+            return Some(checked_out_branch.clone());
+        }
+    }
+    crate::git::default_branch_from_bare_head(&state.repo_path, name)
 }
 
 /// Minimal URL percent-decoder wrapper used by handlers.

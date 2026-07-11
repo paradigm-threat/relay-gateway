@@ -64,10 +64,10 @@ pub async fn head_root(
             return head_resp;
         }
     }
-    if let Some(repo_name) = helpers::default_http_repo_from_apex(&state.repo_path) {
-        let branch = helpers::branch_for_request(&headers, &state.repo_path, Some(&repo_name));
+    if let Some(repo_name) = helpers::default_http_repo_from_apex(&state) {
+        let branch = helpers::branch_for_request(&headers, &state, Some(&repo_name));
         if let GitResolveResult::Respond(resp) = git::git_resolve_and_respond(
-            &state.repo_path,
+            &state,
             &headers,
             &branch,
             &repo_name,
@@ -95,8 +95,8 @@ pub async fn head_file(
     let qmap = query.as_ref().map(|q| &q.0);
 
     let repo_name_opt =
-        helpers::repo_from_host_or_default(&state.repo_path, state.node_fqdn.as_deref(), &headers);
-    let branch = helpers::branch_for_request(&headers, &state.repo_path, repo_name_opt.as_deref());
+        helpers::repo_from_host_or_default(&state, state.node_fqdn.as_deref(), &headers);
+    let branch = helpers::branch_for_request(&headers, &state, repo_name_opt.as_deref());
     let repo_name: String;
     if repo_name_opt.is_none() {
         // No repo selected: treat as Git 404 and check static for existence
@@ -121,7 +121,7 @@ pub async fn head_file(
 
     // Resolve via Git - if found, return headers without body
     match git::git_resolve_and_respond(
-        &state.repo_path,
+        &state,
         &headers,
         &branch,
         &repo_name,

@@ -1,7 +1,10 @@
 //! Rust-side `meta.yaml` / `meta.yml` indexing into `index.db.json` (replaces Node `index.mjs` upsert path).
+//! Also ingests catalog `index.json` / timeline `data/events.json` into SQLite for the default search plugin.
 
 use crate::git::hooks::HookContext;
 use crate::git::branch_index_paths;
+use crate::git::indexing::branch_sqlite_path;
+use crate::git::sqlite_index;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Command;
@@ -135,7 +138,81 @@ pub fn sync_meta_yaml_index(ctx: &HookContext) -> anyhow::Result<()> {
     }
 
     std::fs::write(&db_path, serde_json::to_string_pretty(&db)?)?;
+
+    // Keep SQLite in sync for the default search plugin (also picks up catalog indexes).
+    let sqlite_path = branch_sqlite_path(&ctx.repo_path, &ctx.branch);
+    sqlite_index::sync_json_to_sqlite(&db_path, &sqlite_path)?;
+    ingest_catalog_json_indexes(ctx, &sqlite_path)?;
+
     Ok(())
+}
+
+/// Flatten and upsert `index.json` and `data/events.json` when present on the tip.
+pub fn ingest_catalog_json_indexes(ctx: &HookContext, sqlite_path: &Path) -> anyhow::Result<()> {
+    if let Some(bytes) = git_show(&ctx.repo_path, &ctx.new_commit, "index.json") {
+        let v: Value = serde_json::from_slice(&bytes)
+            .map_err(|e| anyhow::anyhow!("index.json: {}", e))?;
+        let docs = sqlite_index::flatten_path_index(&v);
+        if !docs.is_empty() {
+            sqlite_index::replace_collection_docs(
+                sqlite_path,
+                "index",
+                &docs,
+                Some(&ctx.new_commit),
+            )?;
+        }
+    }
+
+    if let Some(bytes) = git_show(&ctx.repo_path, &ctx.new_commit, "data/events.json") {
+        let v: Value = serde_json::from_slice(&bytes)
+            .map_err(|e| anyhow::anyhow!("data/events.json: {}", e))?;
+        let docs = flatten_timeline_events(&v);
+        if !docs.is_empty() {
+            sqlite_index::replace_collection_docs(
+                sqlite_path,
+                "events",
+                &docs,
+                Some(&ctx.new_commit),
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn flatten_timeline_events(root: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    fn walk(node: &Value, out: &mut Vec<Value>) {
+        match node {
+            Value::Array(arr) => {
+                for n in arr {
+                    walk(n, out);
+                }
+            }
+            Value::Object(obj) => {
+                // Root wrappers: { entries: [...], meta, ... }
+                if let Some(entries) = obj.get("entries") {
+                    walk(entries, out);
+                    return;
+                }
+                let has_id = obj.get("id").and_then(|v| v.as_str()).is_some();
+                let has_title = obj
+                    .get("title")
+                    .or_else(|| obj.get("name"))
+                    .and_then(|v| v.as_str())
+                    .is_some();
+                if has_id || has_title {
+                    out.push(Value::Object(obj.clone()));
+                }
+                if let Some(children) = obj.get("children") {
+                    walk(children, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(root, &mut out);
+    out
 }
 
 fn chrono_now_iso() -> String {
@@ -273,5 +350,91 @@ mod tests {
         let err = sync_meta_yaml_index(&ctx).unwrap_err();
         assert!(err.to_string().contains("collections.index"));
         drop(dir);
+    }
+
+    #[test]
+    fn ingest_index_json_into_sqlite() {
+        let dir = tempdir().unwrap();
+        let repo_path = dir.path().join("r.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+        let index_json = br#"{"blog":{"post.md":{"_title":"Portal Research","_keywords":["portal","july"]}}}"#;
+        let index_oid = repo.blob(index_json).unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert("index.json", index_oid, 0o100644).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let commit = repo
+            .commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap()
+            .to_string();
+        let ctx = HookContext {
+            repo_path: repo_path.clone(),
+            old_commit: String::new(),
+            new_commit: commit.clone(),
+            refname: "refs/heads/main".into(),
+            branch: "main".into(),
+            is_verified: true,
+            files: HashMap::new(),
+        };
+        sync_meta_yaml_index(&ctx).unwrap();
+        let sqlite = branch_sqlite_path(&repo_path, "main");
+        assert!(sqlite.exists());
+        let hits = sqlite_index::query_collection(
+            &sqlite,
+            "index",
+            Some(&serde_json::Value::String("portal".into())),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["path"], "blog/post.md");
+        assert_eq!(
+            sqlite_index::read_indexed_head(&sqlite).unwrap().as_deref(),
+            Some(commit.as_str())
+        );
+    }
+
+    #[test]
+    fn ingest_events_json_entries_wrapper() {
+        let dir = tempdir().unwrap();
+        let repo_path = dir.path().join("r.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+        let events = br#"{"entries":[{"id":"evt-1","title":"The Blip","dates":[{"start":-670,"end":1053}],"children":[{"id":"evt-2","title":"Mud Flood","dates":[{"start":1811}]}]}],"meta":{}}"#;
+        let events_oid = repo.blob(events).unwrap();
+        let mut tb_data = repo.treebuilder(None).unwrap();
+        tb_data.insert("events.json", events_oid, 0o100644).unwrap();
+        let data_tid = tb_data.write().unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert("data", data_tid, 0o040000).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let commit = repo
+            .commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap()
+            .to_string();
+        let ctx = HookContext {
+            repo_path: repo_path.clone(),
+            old_commit: String::new(),
+            new_commit: commit,
+            refname: "refs/heads/main".into(),
+            branch: "main".into(),
+            is_verified: true,
+            files: HashMap::new(),
+        };
+        sync_meta_yaml_index(&ctx).unwrap();
+        let sqlite = branch_sqlite_path(&repo_path, "main");
+        let hits = sqlite_index::query_collection(
+            &sqlite,
+            "events",
+            Some(&serde_json::Value::String("blip".into())),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["id"], "evt-1");
     }
 }

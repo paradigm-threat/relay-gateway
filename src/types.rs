@@ -13,10 +13,26 @@ pub const HEADER_BRANCH: &str = "X-Relay-Branch";
 pub const DEFAULT_BRANCH: &str = "main";
 pub const DEFAULT_IPFS_CACHE_ROOT: &str = "/tmp/ipfs-cache";
 
+/// How GET resolves repo content: fleet bare repos vs desktop live checkout.
+#[derive(Clone, Default)]
+pub enum ServeContext {
+    /// Fleet gateway: bare repos under `repo_path` (`name.git`).
+    #[default]
+    BareFleet,
+    /// Desktop `--repo`: serve live working tree, then branch HEAD from checkout git.
+    LocalWorktree {
+        checkout: PathBuf,
+        repo_name: String,
+        /// Branch checked out on disk (`git rev-parse --abbrev-ref HEAD` at session start).
+        checked_out_branch: String,
+    },
+}
+
 #[derive(Clone)]
 pub struct AppState {
-    /// Directory containing bare repos (`name.git`). May also be a single `.git` parent.
+    /// Directory containing bare repos (`name.git`). For `LocalWorktree`, the checkout root.
     pub repo_path: PathBuf,
+    pub serve_context: ServeContext,
     pub static_paths: Vec<PathBuf>,
     /// Node FQDN for HTTP routing: `{repo}.{node_fqdn}` (e.g. `atlanta1.relaygateway.net`).
     /// Set via **`RELAY_PUBLIC_HOSTNAME`** or **`RELAY_NODE_FQDN`**.
@@ -55,6 +71,16 @@ pub struct RelayConfig {
 #[derive(Deserialize, Debug, Default, Serialize, Clone)]
 pub struct ServerConfig {
     pub hooks: Option<std::collections::HashMap<String, HookPath>>,
+    /// Search plugin selection for QUERY / MCP search tools (default: sqlite).
+    #[serde(default)]
+    pub search: Option<SearchConfig>,
+}
+
+#[derive(Deserialize, Debug, Default, Serialize, Clone)]
+pub struct SearchConfig {
+    /// Plugin id: `sqlite` (default) or `redb` (legacy).
+    #[serde(default)]
+    pub plugin: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Default, Serialize, Clone)]

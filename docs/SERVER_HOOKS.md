@@ -49,6 +49,12 @@ server:
       path: hooks/server/pre-receive.cs
     index:
       path: hooks/server/index.cs
+    query:
+      path: hooks/server/query.cs   # thin router → search plugin
+    mcp:
+      path: hooks/server/mcp.cs     # enables POST /api/mcp/:repo
+  search:
+    plugin: sqlite                  # default; optional "redb"
 
 # Git-level infrastructure settings (Rust-enforced)
 git:
@@ -99,7 +105,13 @@ When a commit is pushed via the Git protocol:
 5.  If any step fails, the push is rejected.
 
 ### Index hook (`server.hooks.index`)
-When QUERY needs an up-to-date `index.db.json` / redb mirror, the gateway runs **Rust** indexing of `data/**/meta.yaml` (and `meta.yml`), then optionally runs `server.hooks.index` CleverScript for extra logic. Paths must be `.cs`.
+When QUERY (or MCP search) needs an up-to-date index, the gateway runs **Rust** indexing of `data/**/meta.yaml` into `index.db.json`, syncs **SQLite** `index.db` (default search plugin) and legacy **redb**, ingests catalog `index.json` / `data/events.json` when present, then optionally runs `server.hooks.index` CleverScript for thin extra logic. Paths must be `.cs`. See [`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md).
+
+### QUERY hook (`server.hooks.query`)
+Thin CleverScript router that selects a **search plugin** (`sqlite` default). Do not implement corpus scan/rank in CS. Normative details: [`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md).
+
+### MCP hook (`server.hooks.mcp`)
+When configured (and/or `mcp.yaml` is present), **`POST /api/mcp/:repo`** serves Streamable HTTP JSON-RPC. `search_site` calls the same QUERY plugin path. See [`RELAY_MCP.md`](./RELAY_MCP.md).
 
 ### Dynamic GET (`server.hooks.get`)
 
@@ -111,6 +123,8 @@ When QUERY needs an up-to-date `index.db.json` / redb mirror, the gateway runs *
 4. **HTML embed (shipped).** For markdown blobs, when the client sends **`Accept: text/html`** / **`application/xhtml+xml`** or **`?embed=1`**, the gateway runs this hook with **`embedMarkdownRequest: true`** in **`ctx`**. If the hook returns a mapped **`text/html`** file response, that document is served (with **`Vary: Accept`** when absent). Otherwise the gateway falls back to a minimal HTML shell that loads **`/assets/embed.js`** (see [**`RELAY_EMBED_CLIENT_GET_INTERCEPT.md`**](RELAY_EMBED_CLIENT_GET_INTERCEPT.md)). Static assets must be deployed beside the main SPA.
 
 If a path is missing from the Git tree, the gateway may run `server.hooks.get` CleverScript. The default export receives a JSON **`ctx`** including (when applicable): **`relPath`**, **`branch`**, **`repo`**, **`query`** (string map of query params — use **`queryWidth(ctx)`** for resize width), **`requestHeaders`** (sanitized copy of the request — sensitive names like **`Cookie`** / **`Authorization`** are omitted), **`contentType`**, **`bodyBase64`** (resolved blob when on-tree), **`commitSha`**, **`blobOid`**.
+
+**Desktop local mode:** when the gateway runs embedded in **`relay-client-desktop --repo`**, GET resolution tries the **live working tree** (uncommitted + gitignored) before branch HEAD. That policy is implemented in Rust ([**`DESKTOP_LOCAL_MODE.md`**](DESKTOP_LOCAL_MODE.md)); hooks stay unchanged.
 
 **Image pipeline:** **`queryWidth(ctx, { keys? })`** reads max width from **`ctx.query`** (default keys **`w`**, **`width`**, **`maxWidth`**). **`optimizeRasterFromGetContext(ctx, bytes?, { width })`** requires explicit **`width`**; optional **`bytes`** from **`fetchIpfsBytesFromGetContext`**, else reads the Git blob from **`ctx`**. Returns **`null`** when not a raster or no body. Optional: **`RELAY_IMAGE_CACHE_ROOT`**, **`RELAY_IMAGE_CACHE_MAX_BYTES`**.
 

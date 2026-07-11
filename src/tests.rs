@@ -15,6 +15,7 @@ mod tests {
     fn test_state(repo_path: std::path::PathBuf) -> AppState {
         AppState {
             repo_path,
+            serve_context: ServeContext::BareFleet,
             static_paths: Vec::new(),
             node_fqdn: Some("test.local".to_string()),
             relay_server_id: None,
@@ -348,12 +349,12 @@ server:
         let repo_dir = tempdir().unwrap();
         let repo_path = repo_dir.path().join("repo.git");
         let _ = Repository::init_bare(&repo_path).unwrap();
+        let state = test_state(repo_dir.path().to_path_buf());
         let h = host_header("repo");
-        let selected =
-            helpers::repo_from_host(&repo_dir.path().to_path_buf(), Some("test.local"), &h);
+        let selected = helpers::repo_from_host(&state, Some("test.local"), &h);
         assert_eq!(selected, Some("repo".to_string()));
         assert_eq!(
-            git::bare_repo_names(&repo_dir.path().to_path_buf()),
+            git::repo_names_for_state(&state),
             vec!["repo".to_string()]
         );
     }
@@ -363,9 +364,9 @@ server:
     fn test_repo_from_host_no_repos() {
         let repo_dir = tempdir().unwrap();
         let _ = std::fs::create_dir_all(repo_dir.path());
+        let state = test_state(repo_dir.path().to_path_buf());
         let h = host_header("repo");
-        let selected =
-            helpers::repo_from_host(&repo_dir.path().to_path_buf(), Some("test.local"), &h);
+        let selected = helpers::repo_from_host(&state, Some("test.local"), &h);
         assert_eq!(selected, None);
     }
 
@@ -375,10 +376,10 @@ server:
         let repo_dir = tempdir().unwrap();
         let repo_path = repo_dir.path().join("repo.git");
         let _ = Repository::init_bare(&repo_path).unwrap();
+        let state = test_state(repo_dir.path().to_path_buf());
         let mut h = HeaderMap::new();
         h.insert(HOST, "test.local".parse().unwrap());
-        let selected =
-            helpers::repo_from_host(&repo_dir.path().to_path_buf(), Some("test.local"), &h);
+        let selected = helpers::repo_from_host(&state, Some("test.local"), &h);
         assert_eq!(selected, None);
     }
 
@@ -387,13 +388,10 @@ server:
     fn test_repo_from_host_or_default_apex_relay_master() {
         let repo_dir = tempdir().unwrap();
         let _ = Repository::init_bare(repo_dir.path().join("relay-master.git")).unwrap();
+        let state = test_state(repo_dir.path().to_path_buf());
         let mut h = HeaderMap::new();
         h.insert(HOST, "test.local".parse().unwrap());
-        let selected = helpers::repo_from_host_or_default(
-            &repo_dir.path().to_path_buf(),
-            Some("test.local"),
-            &h,
-        );
+        let selected = helpers::repo_from_host_or_default(&state, Some("test.local"), &h);
         assert_eq!(selected, Some("relay-master".to_string()));
     }
 
@@ -706,6 +704,559 @@ export default function run(ctx) {
         assert_eq!(results[0]["k"].as_f64(), Some(42.0));
     }
 
+    /// CleverScript thin router → sqlite plugin (no rows scanned in CS).
+    #[tokio::test]
+    async fn test_query_cs_routes_to_sqlite_plugin() {
+        let yaml = r#"
+server:
+  hooks:
+    index:
+      path: hooks/server/index.cs
+    query:
+      path: hooks/server/query.cs
+  search:
+    plugin: sqlite
+"#;
+        let repo_dir = tempdir().unwrap();
+        let repo_path = repo_dir.path().join("repo.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("relay", "relay@local").unwrap();
+        let config_oid = repo.blob(yaml.as_bytes()).unwrap();
+        let meta_oid = repo.blob(META_YAML.as_bytes()).unwrap();
+        let index_cs_oid = repo.blob(INDEX_STUB_CS.as_bytes()).unwrap();
+        let query_cs = r#"
+export default function run(ctx) {
+  return { plugin: "sqlite", collection: ctx.collection, query: ctx.query };
+}
+"#;
+        let query_cs_oid = repo.blob(query_cs.as_bytes()).unwrap();
+        let mut tb_t = repo.treebuilder(None).unwrap();
+        tb_t.insert("meta.yaml", meta_oid, 0o100644).unwrap();
+        let t_tid = tb_t.write().unwrap();
+        let mut tb_data = repo.treebuilder(None).unwrap();
+        tb_data.insert("t", t_tid, 0o040000).unwrap();
+        let data_tid = tb_data.write().unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert(".relay.yaml", config_oid, 0o100644).unwrap();
+        tb.insert("data", data_tid, 0o040000).unwrap();
+        let mut tb_server = repo.treebuilder(None).unwrap();
+        tb_server
+            .insert("index.cs", index_cs_oid, 0o100644)
+            .unwrap();
+        tb_server
+            .insert("query.cs", query_cs_oid, 0o100644)
+            .unwrap();
+        let server_tid = tb_server.write().unwrap();
+        let mut tb_hooks = repo.treebuilder(None).unwrap();
+        tb_hooks.insert("server", server_tid, 0o040000).unwrap();
+        let hooks_tid = tb_hooks.write().unwrap();
+        tb.insert("hooks", hooks_tid, 0o040000).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let state = test_state(repo_dir.path().to_path_buf());
+
+        let mut headers = host_header("repo");
+        headers.insert(HEADER_BRANCH, "main".parse().unwrap());
+        headers.insert(ACCEPT, "application/json".parse().unwrap());
+
+        let query_body = serde_json::json!({
+            "collection": "index",
+            "query": "Test"
+        });
+
+        let response = handlers::handle_query(
+            State(state),
+            headers,
+            AxPath("query".to_string()),
+            None,
+            Some(Json(query_body)),
+        )
+        .await;
+
+        let (parts, body) = response.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let json: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(body, usize::MAX).await.unwrap()).unwrap();
+        let results = json["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["title"], "Test Item");
+
+        // SQLite file must exist after QUERY JIT
+        let sqlite = git::branch_sqlite_path(&repo_path, "main");
+        assert!(sqlite.exists(), "expected {}", sqlite.display());
+    }
+
+    #[tokio::test]
+    async fn test_mcp_search_site_uses_query_plugin() {
+        let yaml = r#"
+server:
+  hooks:
+    index:
+      path: hooks/server/index.cs
+    query:
+      path: hooks/server/query.cs
+    mcp:
+      path: hooks/server/mcp.cs
+  search:
+    plugin: sqlite
+"#;
+        let mcp_yaml = r#"
+name: test-repo
+version: "0.1.0"
+tools:
+  search_site:
+    description: Search
+    aliases: [search]
+    via: query
+    collection: index
+  read_article:
+    description: Read
+    aliases: [fetch]
+    via: git_read
+"#;
+        let query_cs = r#"
+export default function run(ctx) {
+  return { plugin: "sqlite", collection: ctx.collection, query: ctx.query };
+}
+"#;
+        let mcp_cs = "export default function run(ctx) { return null; }\n";
+        let repo_dir = tempdir().unwrap();
+        let repo_path = repo_dir.path().join("repo.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("relay", "relay@local").unwrap();
+        let config_oid = repo.blob(yaml.as_bytes()).unwrap();
+        let mcp_yaml_oid = repo.blob(mcp_yaml.as_bytes()).unwrap();
+        let meta_oid = repo.blob(META_YAML.as_bytes()).unwrap();
+        let index_cs_oid = repo.blob(INDEX_STUB_CS.as_bytes()).unwrap();
+        let query_cs_oid = repo.blob(query_cs.as_bytes()).unwrap();
+        let mcp_cs_oid = repo.blob(mcp_cs.as_bytes()).unwrap();
+        let article_oid = repo.blob(b"# Hello article\n").unwrap();
+
+        let mut tb_t = repo.treebuilder(None).unwrap();
+        tb_t.insert("meta.yaml", meta_oid, 0o100644).unwrap();
+        let t_tid = tb_t.write().unwrap();
+        let mut tb_data = repo.treebuilder(None).unwrap();
+        tb_data.insert("t", t_tid, 0o040000).unwrap();
+        let data_tid = tb_data.write().unwrap();
+        let mut tb_server = repo.treebuilder(None).unwrap();
+        tb_server.insert("index.cs", index_cs_oid, 0o100644).unwrap();
+        tb_server.insert("query.cs", query_cs_oid, 0o100644).unwrap();
+        tb_server.insert("mcp.cs", mcp_cs_oid, 0o100644).unwrap();
+        let server_tid = tb_server.write().unwrap();
+        let mut tb_hooks = repo.treebuilder(None).unwrap();
+        tb_hooks.insert("server", server_tid, 0o040000).unwrap();
+        let hooks_tid = tb_hooks.write().unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert(".relay.yaml", config_oid, 0o100644).unwrap();
+        tb.insert("mcp.yaml", mcp_yaml_oid, 0o100644).unwrap();
+        tb.insert("data", data_tid, 0o040000).unwrap();
+        tb.insert("hooks", hooks_tid, 0o040000).unwrap();
+        tb.insert("article.md", article_oid, 0o100644).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let state = test_state(repo_dir.path().to_path_buf());
+
+        let health = handlers::mcp::get_mcp(
+            State(state.clone()),
+            AxPath("repo".to_string()),
+            axum::extract::Query(
+                [("health".to_string(), "1".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+        )
+        .await;
+        let (hp, hb) = health.into_response().into_parts();
+        assert_eq!(hp.status, StatusCode::OK);
+        let hj: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(hb, usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(hj["mcpEnabled"], true);
+
+        let call = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": { "query": "Test" }
+            }
+        });
+        let resp = handlers::mcp::post_mcp(
+            State(state.clone()),
+            AxPath("repo".to_string()),
+            HeaderMap::new(),
+            Some(Json(call)),
+        )
+        .await;
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let json: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(body, usize::MAX).await.unwrap()).unwrap();
+        let text = json["result"]["content"][0]["text"].as_str().unwrap();
+        let inner: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(inner["count"], 1);
+        assert_eq!(inner["results"][0]["title"], "Test Item");
+
+        let read = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "fetch",
+                "arguments": { "path": "article.md" }
+            }
+        });
+        let resp2 = handlers::mcp::post_mcp(
+            State(state),
+            AxPath("repo".to_string()),
+            HeaderMap::new(),
+            Some(Json(read)),
+        )
+        .await;
+        let (p2, b2) = resp2.into_response().into_parts();
+        assert_eq!(p2.status, StatusCode::OK);
+        let j2: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(b2, usize::MAX).await.unwrap()).unwrap();
+        let t2 = j2["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(t2.contains("Hello article"));
+    }
+
+    /// Catalog-style `index.json` + sqlite QUERY (PT-like shape).
+    #[tokio::test]
+    async fn test_query_catalog_index_json_e2e() {
+        let yaml = r#"
+server:
+  hooks:
+    index:
+      path: hooks/server/index.cs
+    query:
+      path: hooks/server/query.cs
+  search:
+    plugin: sqlite
+"#;
+        let index_json = r#"{
+  "blog": {
+    "2026-07-09-july-portal.md": {
+      "_title": "July Portal ID4 Research",
+      "_keywords": ["portal", "july", "research"]
+    }
+  },
+  "cosmos": {
+    "mars/page.md": {
+      "_title": "Mars Analysis",
+      "_keywords": ["mars", "wotw"]
+    }
+  }
+}"#;
+        let query_cs = r#"
+export default function run(ctx) {
+  return { plugin: "sqlite", collection: ctx.collection, query: ctx.query };
+}
+"#;
+        let repo_dir = tempdir().unwrap();
+        let repo_path = repo_dir.path().join("repo.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("relay", "relay@local").unwrap();
+        let config_oid = repo.blob(yaml.as_bytes()).unwrap();
+        let index_oid = repo.blob(index_json.as_bytes()).unwrap();
+        let index_cs_oid = repo.blob(INDEX_STUB_CS.as_bytes()).unwrap();
+        let query_cs_oid = repo.blob(query_cs.as_bytes()).unwrap();
+        let mut tb_server = repo.treebuilder(None).unwrap();
+        tb_server.insert("index.cs", index_cs_oid, 0o100644).unwrap();
+        tb_server.insert("query.cs", query_cs_oid, 0o100644).unwrap();
+        let server_tid = tb_server.write().unwrap();
+        let mut tb_hooks = repo.treebuilder(None).unwrap();
+        tb_hooks.insert("server", server_tid, 0o040000).unwrap();
+        let hooks_tid = tb_hooks.write().unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert(".relay.yaml", config_oid, 0o100644).unwrap();
+        tb.insert("index.json", index_oid, 0o100644).unwrap();
+        tb.insert("hooks", hooks_tid, 0o040000).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let state = test_state(repo_dir.path().to_path_buf());
+
+        let mut headers = host_header("repo");
+        headers.insert(HEADER_BRANCH, "main".parse().unwrap());
+        headers.insert(ACCEPT, "application/json".parse().unwrap());
+
+        let response = handlers::handle_query(
+            State(state),
+            headers,
+            AxPath("query".to_string()),
+            None,
+            Some(Json(serde_json::json!({
+                "collection": "index",
+                "query": "portal july",
+                "limit": 5
+            }))),
+        )
+        .await;
+        let (parts, body) = response.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK, "QUERY failed");
+        let json: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(body, usize::MAX).await.unwrap()).unwrap();
+        let results = json["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["path"], "blog/2026-07-09-july-portal.md");
+    }
+
+    #[tokio::test]
+    async fn test_mcp_json_match_site_claims() {
+        let yaml = r#"
+server:
+  hooks:
+    mcp:
+      path: hooks/server/mcp.cs
+"#;
+        let mcp_yaml = r#"
+tools:
+  get_site_claims:
+    via: json_match
+    source: site-claims.json
+"#;
+        let claims = r#"[{"id":"c1","claim":"Mud flood is recent","topics":["mud","flood"]},{"id":"c2","claim":"Other"}]"#;
+        let mcp_cs = "export default function run(ctx) { return null; }\n";
+        let repo_dir = tempdir().unwrap();
+        let repo_path = repo_dir.path().join("repo.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("relay", "relay@local").unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert(".relay.yaml", repo.blob(yaml.as_bytes()).unwrap(), 0o100644)
+            .unwrap();
+        tb.insert("mcp.yaml", repo.blob(mcp_yaml.as_bytes()).unwrap(), 0o100644)
+            .unwrap();
+        tb.insert(
+            "site-claims.json",
+            repo.blob(claims.as_bytes()).unwrap(),
+            0o100644,
+        )
+        .unwrap();
+        let mut tb_server = repo.treebuilder(None).unwrap();
+        tb_server
+            .insert("mcp.cs", repo.blob(mcp_cs.as_bytes()).unwrap(), 0o100644)
+            .unwrap();
+        let server_tid = tb_server.write().unwrap();
+        let mut tb_hooks = repo.treebuilder(None).unwrap();
+        tb_hooks.insert("server", server_tid, 0o040000).unwrap();
+        tb.insert("hooks", tb_hooks.write().unwrap(), 0o040000).unwrap();
+        let tree = repo.find_tree(tb.write().unwrap()).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let state = test_state(repo_dir.path().to_path_buf());
+
+        let call = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "get_site_claims",
+                "arguments": { "query": "mud flood" }
+            }
+        });
+        let resp = handlers::mcp::post_mcp(
+            State(state),
+            AxPath("repo".to_string()),
+            HeaderMap::new(),
+            Some(Json(call)),
+        )
+        .await;
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let json: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(body, usize::MAX).await.unwrap()).unwrap();
+        let text = json["result"]["content"][0]["text"].as_str().unwrap();
+        let inner: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(inner["count"], 1);
+        assert_eq!(inner["claims"][0]["id"], "c1");
+    }
+
+    #[tokio::test]
+    async fn test_mcp_initialize_list_delete_and_path_guard() {
+        let mcp_yaml = r#"
+name: harden
+version: "0.2.0"
+tools:
+  search_site:
+    aliases: [search]
+    via: query
+    collection: index
+  read_article:
+    aliases: [fetch]
+    via: git_read
+  get_event_dates:
+    via: events_lookup
+    source: data/events.json
+  research_status:
+    via: research_status
+    collection: index
+"#;
+        let events = r#"{"entries":[{"id":"evt-blip","title":"The Blip","dates":[{"start":-670,"end":1053}]}]}"#;
+        let mcp_cs = "export default function run(ctx) { return null; }\n";
+        let query_cs = r#"export default function run(ctx) { return { plugin: "sqlite", collection: ctx.collection, query: ctx.query }; }"#;
+        let index_json = r#"{"a.md":{"_title":"Portal","_keywords":["portal"]}}"#;
+        let yaml2 = r#"
+server:
+  hooks:
+    index:
+      path: hooks/server/index.cs
+    query:
+      path: hooks/server/query.cs
+    mcp:
+      path: hooks/server/mcp.cs
+  search:
+    plugin: sqlite
+"#;
+
+        let repo_dir = tempdir().unwrap();
+        let repo_path = repo_dir.path().join("repo.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("relay", "relay@local").unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert(".relay.yaml", repo.blob(yaml2.as_bytes()).unwrap(), 0o100644)
+            .unwrap();
+        tb.insert("mcp.yaml", repo.blob(mcp_yaml.as_bytes()).unwrap(), 0o100644)
+            .unwrap();
+        tb.insert("index.json", repo.blob(index_json.as_bytes()).unwrap(), 0o100644)
+            .unwrap();
+        let mut tb_data = repo.treebuilder(None).unwrap();
+        tb_data
+            .insert("events.json", repo.blob(events.as_bytes()).unwrap(), 0o100644)
+            .unwrap();
+        tb.insert("data", tb_data.write().unwrap(), 0o040000).unwrap();
+        let mut tb_server = repo.treebuilder(None).unwrap();
+        tb_server
+            .insert("mcp.cs", repo.blob(mcp_cs.as_bytes()).unwrap(), 0o100644)
+            .unwrap();
+        tb_server
+            .insert("query.cs", repo.blob(query_cs.as_bytes()).unwrap(), 0o100644)
+            .unwrap();
+        tb_server
+            .insert("index.cs", repo.blob(INDEX_STUB_CS.as_bytes()).unwrap(), 0o100644)
+            .unwrap();
+        let mut tb_hooks = repo.treebuilder(None).unwrap();
+        tb_hooks
+            .insert("server", tb_server.write().unwrap(), 0o040000)
+            .unwrap();
+        tb.insert("hooks", tb_hooks.write().unwrap(), 0o040000).unwrap();
+        let tree = repo.find_tree(tb.write().unwrap()).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let state = test_state(repo_dir.path().to_path_buf());
+
+        let init = handlers::mcp::post_mcp(
+            State(state.clone()),
+            AxPath("repo".to_string()),
+            HeaderMap::new(),
+            Some(Json(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}
+            }))),
+        )
+        .await;
+        let (ip, ib) = init.into_response().into_parts();
+        assert_eq!(ip.status, StatusCode::OK);
+        let ij: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(ib, usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(ij["result"]["serverInfo"]["name"], "harden");
+
+        let list = handlers::mcp::post_mcp(
+            State(state.clone()),
+            AxPath("repo".to_string()),
+            HeaderMap::new(),
+            Some(Json(serde_json::json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/list"
+            }))),
+        )
+        .await;
+        let (lp, lb) = list.into_response().into_parts();
+        assert_eq!(lp.status, StatusCode::OK);
+        let lj: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(lb, usize::MAX).await.unwrap()).unwrap();
+        let tools = lj["result"]["tools"].as_array().unwrap();
+        assert!(tools.len() >= 4);
+        let fetch = tools.iter().find(|t| t["name"] == "fetch").unwrap();
+        assert!(fetch["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x == "path"));
+
+        let bad = handlers::mcp::post_mcp(
+            State(state.clone()),
+            AxPath("repo".to_string()),
+            HeaderMap::new(),
+            Some(Json(serde_json::json!({
+                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": { "name": "fetch", "arguments": { "path": "../secret" } }
+            }))),
+        )
+        .await;
+        let (bp, bb) = bad.into_response().into_parts();
+        assert_eq!(bp.status, StatusCode::OK);
+        let bj: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(bb, usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(bj["result"]["isError"], true);
+
+        let ev = handlers::mcp::post_mcp(
+            State(state.clone()),
+            AxPath("repo".to_string()),
+            HeaderMap::new(),
+            Some(Json(serde_json::json!({
+                "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": { "name": "get_event_dates", "arguments": { "eventId": "evt-blip", "refYear": 2026 } }
+            }))),
+        )
+        .await;
+        let (ep, eb) = ev.into_response().into_parts();
+        assert_eq!(ep.status, StatusCode::OK);
+        let ej: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(eb, usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(ej["result"]["isError"], false);
+        let et = ej["result"]["content"][0]["text"].as_str().unwrap();
+        let einner: serde_json::Value = serde_json::from_str(et).unwrap();
+        assert_eq!(einner["projectSignedYear"], -670);
+        assert!(einner["elapsed"]["calendarYears"].as_i64().unwrap() > 2000);
+
+        let del = handlers::mcp::delete_mcp(State(state), AxPath("repo".to_string())).await;
+        assert_eq!(del.into_response().status(), StatusCode::NO_CONTENT);
+    }
+
+    /// Optional: set RELAY_QUERY_E2E_BARE to a bare `*.git` path (e.g. PT sample fixture).
+    #[test]
+    fn optional_external_bare_query_e2e() {
+        let Ok(bare) = std::env::var("RELAY_QUERY_E2E_BARE") else {
+            return;
+        };
+        let bare = std::path::PathBuf::from(bare);
+        assert!(bare.exists(), "missing bare {}", bare.display());
+        let parent = bare.parent().unwrap();
+        let name = bare
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap()
+            .to_string();
+        let rows = git::query::execute_query_limited(
+            parent,
+            &name,
+            "main",
+            Some(serde_json::Value::String("portal".into())),
+            "index",
+            Some(10),
+        )
+        .expect("QUERY against external bare");
+        assert!(
+            !rows.is_empty(),
+            "expected hits for portal in {}",
+            bare.display()
+        );
+    }
+
     /// Regression: `server.hooks.index.branches` excludes current branch → empty results (no JIT).
     #[tokio::test]
     async fn test_query_branch_allowlist_excludes_current_branch() {
@@ -871,5 +1422,60 @@ server:
                 None => std::env::remove_var("RELAY_NODE_ROLE"),
             }
         }
+    }
+
+    /// Local worktree: uncommitted gitignored file served before HEAD miss.
+    #[tokio::test]
+    async fn local_worktree_serves_gitignored_before_head() {
+        use crate::config::Config;
+        use crate::git::worktree::read_worktree_file;
+        use git2::Repository;
+
+        let dir = tempdir().unwrap();
+        let checkout = dir.path().join("repo");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&checkout)
+            .output()
+            .unwrap();
+        std::fs::write(checkout.join(".gitignore"), "local-only.txt\n").unwrap();
+        std::fs::write(checkout.join("tracked.txt"), b"committed").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "tracked.txt", ".gitignore"])
+            .current_dir(&checkout)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&checkout)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap();
+        std::fs::write(checkout.join("local-only.txt"), b"worktree-secret").unwrap();
+
+        assert!(read_worktree_file(&checkout, "local-only.txt").is_some());
+
+        let state = Config::desktop_local_state(checkout.clone(), "repo".into());
+        let mut headers = host_header("repo");
+        headers.insert(
+            crate::types::HEADER_BRANCH,
+            "main".parse().unwrap(),
+        );
+        let r = git::git_resolve_and_respond(
+            &state,
+            &headers,
+            "main",
+            "repo",
+            "local-only.txt",
+            None,
+        );
+        let GitResolveResult::Respond(resp) = r else {
+            panic!("expected worktree file");
+        };
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

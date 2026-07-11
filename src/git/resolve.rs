@@ -17,9 +17,10 @@ use crate::git::ipfs::{
     is_asset_like_path, manifest_cid_for_path, parse_manifest_bytes, parse_pointer_bytes,
     resolve_ipfs_pointer, AssetsManifest, IpfsResolveOptions, MANIFEST_PATH,
 };
-use crate::git::repo::{read_file_from_repo, read_relay_config};
+use crate::git::repo::{open_repo_for_state, read_file_from_repo, read_relay_config};
 use crate::git::open_repo;
-use crate::types::{GitResolveResult, HEADER_BRANCH, HEADER_REPO};
+use crate::git::worktree::{read_worktree_file, worktree_file_response};
+use crate::types::{AppState, GitResolveResult, ServeContext, HEADER_BRANCH, HEADER_REPO};
 use git2::Repository;
 
 fn load_assets_manifest(repo: &Repository, commit: &git2::Commit) -> Option<AssetsManifest> {
@@ -199,14 +200,14 @@ fn want_relay_embed_from_request(
 }
 
 pub fn git_resolve_and_respond(
-    repo_root: &PathBuf,
+    state: &AppState,
     headers: &HeaderMap,
     branch: &str,
     repo_name: &str,
     decoded: &str,
     query: Option<&HashMap<String, String>>,
 ) -> GitResolveResult {
-    let repo = match open_repo(repo_root, repo_name) {
+    let repo = match open_repo_for_state(state, repo_name) {
         Some(r) => r,
         None => {
             error!("open repo error: repo not found");
@@ -240,6 +241,21 @@ pub fn git_resolve_and_respond(
     // Empty path -> delegate to dynamic GET (`server.hooks.get` CleverScript) after Git miss
     if rel.is_empty() {
         return GitResolveResult::NotFound(rel.to_string());
+    }
+
+    if let ServeContext::LocalWorktree {
+        checkout,
+        checked_out_branch,
+        ..
+    } = &state.serve_context
+    {
+        if branch == checked_out_branch {
+            if let Some(bytes) = read_worktree_file(checkout, rel) {
+                return GitResolveResult::Respond(worktree_file_response(
+                    branch, repo_name, rel, bytes,
+                ));
+            }
+        }
     }
 
     let path_obj = std::path::Path::new(rel);
@@ -458,6 +474,19 @@ mod tests {
     use std::io::Cursor;
     use tempfile::tempdir;
 
+    fn bare_fleet_state(root: PathBuf) -> AppState {
+        AppState {
+            repo_path: root,
+            serve_context: ServeContext::BareFleet,
+            static_paths: Vec::new(),
+            node_fqdn: None,
+            relay_server_id: None,
+            authorized_repos: None,
+            features_manifest: None,
+            git_ensure_bare_enabled: false,
+        }
+    }
+
     fn wide_png_bytes() -> Vec<u8> {
         let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
             ImageBuffer::from_pixel(220, 2, Rgba([40u8, 2u8, 99u8, 255u8]));
@@ -519,7 +548,8 @@ export default function run(ctx) {
         let mut q = HashMap::new();
         q.insert("w".into(), "64".into());
         let headers = HeaderMap::new();
-        let r = git_resolve_and_respond(&root, &headers, "main", "img", "pixel.png", Some(&q));
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &headers, "main", "img", "pixel.png", Some(&q));
         let GitResolveResult::Respond(resp) = r else {
             panic!("expected Respond, got non-Respond variant");
         };
@@ -545,7 +575,8 @@ export default function run(ctx) {
         let mut q = HashMap::new();
         q.insert("w".into(), "64".into());
         let headers = HeaderMap::new();
-        let r = git_resolve_and_respond(&root, &headers, "main", "img", "pixel.png", Some(&q));
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &headers, "main", "img", "pixel.png", Some(&q));
         let GitResolveResult::Respond(resp) = r else {
             panic!("expected Respond");
         };
@@ -565,7 +596,8 @@ export default function run(ctx) {
     async fn raster_without_w_serves_raw_png() {
         let (_dir, root) = bare_img_repo(false);
         let headers = HeaderMap::new();
-        let r = git_resolve_and_respond(&root, &headers, "main", "img", "pixel.png", None);
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &headers, "main", "img", "pixel.png", None);
         let GitResolveResult::Respond(resp) = r else {
             panic!("expected Respond");
         };
@@ -587,11 +619,19 @@ export default function run(ctx) {
         let mut q = HashMap::new();
         q.insert("w".into(), "0".into());
         let headers = HeaderMap::new();
-        let r = git_resolve_and_respond(&root, &headers, "main", "img", "pixel.png", Some(&q));
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &headers, "main", "img", "pixel.png", Some(&q));
         let GitResolveResult::Respond(resp) = r else {
             panic!("expected Respond");
         };
         let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let ct = parts
+            .headers
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.contains("png"), "zero width should skip resize, got {ct:?}");
         assert_eq!(parts.status, StatusCode::OK);
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         assert!(bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]));
@@ -642,7 +682,8 @@ export default function run(ctx, next) {
         let (_dir, root) = bare_md_repo(false);
         let mut headers = HeaderMap::new();
         headers.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
-        let r = git_resolve_and_respond(&root, &headers, "main", "doc", "readme.md", None);
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &headers, "main", "doc", "readme.md", None);
         let GitResolveResult::Respond(resp) = r else {
             panic!("expected Respond");
         };
@@ -659,7 +700,8 @@ export default function run(ctx, next) {
         let (_dir, root) = bare_md_repo(true);
         let mut headers = HeaderMap::new();
         headers.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
-        let r = git_resolve_and_respond(&root, &headers, "main", "doc", "readme.md", None);
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &headers, "main", "doc", "readme.md", None);
         let GitResolveResult::Respond(resp) = r else {
             panic!("expected Respond");
         };
@@ -693,7 +735,8 @@ export default function run(ctx, next) {
         let mut q = HashMap::new();
         q.insert("embed".into(), "1".into());
         let headers = HeaderMap::new();
-        let r = git_resolve_and_respond(&root, &headers, "main", "doc", "readme.md", Some(&q));
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &headers, "main", "doc", "readme.md", Some(&q));
         let GitResolveResult::Respond(resp) = r else {
             panic!("expected Respond");
         };
@@ -718,7 +761,8 @@ export default function run(ctx, next) {
     async fn markdown_without_html_accept_serves_raw() {
         let (_dir, root) = bare_md_repo(false);
         let headers = HeaderMap::new();
-        let r = git_resolve_and_respond(&root, &headers, "main", "doc", "readme.md", None);
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &headers, "main", "doc", "readme.md", None);
         let GitResolveResult::Respond(resp) = r else {
             panic!("expected Respond");
         };
@@ -744,7 +788,8 @@ export default function run(ctx, next) {
         let mut q = HashMap::new();
         q.insert("embed".into(), "1".into());
         let headers = HeaderMap::new();
-        let r = git_resolve_and_respond(&root, &headers, "main", "doc", "readme.md", Some(&q));
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &headers, "main", "doc", "readme.md", Some(&q));
         let GitResolveResult::Respond(resp) = r else {
             panic!("expected Respond");
         };

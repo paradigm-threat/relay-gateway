@@ -281,4 +281,35 @@ mod tests {
         assert_eq!(b.name.as_deref(), Some("cached"));
         assert!(state().lock().unwrap().configs.contains_key(&key));
     }
+
+    #[test]
+    fn hook_source_cache_returns_same_source_twice() {
+        clear_for_tests();
+        let dir = tempdir().unwrap();
+        let repo_path = dir.path().join("r.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+        let hook = "export default function run(c) { return true; }\n";
+        let hook_oid = repo.blob(hook.as_bytes()).unwrap();
+        let mut tb_srv = repo.treebuilder(None).unwrap();
+        tb_srv.insert("pre-commit.cs", hook_oid, 0o100644).unwrap();
+        let srv_tid = tb_srv.write().unwrap();
+        let mut tb_hooks = repo.treebuilder(None).unwrap();
+        tb_hooks.insert("server", srv_tid, 0o040000).unwrap();
+        let hooks_tid = tb_hooks.write().unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert("hooks", hooks_tid, 0o040000).unwrap();
+        let tree = repo.find_tree(tb.write().unwrap()).unwrap();
+        let commit = repo
+            .commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap()
+            .to_string();
+
+        let a = read_hook_source_cached(&repo_path, &commit, "hooks/server/pre-commit.cs")
+            .expect("first");
+        let b = read_hook_source_cached(&repo_path, &commit, "hooks/server/pre-commit.cs")
+            .expect("second");
+        assert_eq!(a, b);
+        assert!(a.contains("return true"));
+    }
 }

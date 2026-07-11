@@ -263,6 +263,67 @@ server:
     }
 
     #[test]
+    fn execute_pre_commit_reads_hook_from_new_commit_not_branch_tip() {
+        let dir = tempdir().unwrap();
+        let repo_path = dir.path().join("r.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+
+        let hook_pass = "export default function run(c) { return true; }\n";
+        let hook_fail = "export default function run(c) { return false; }\n";
+
+        fn tree_with_hook(repo: &Repository, hook: &str) -> git2::Oid {
+            let hook_oid = repo.blob(hook.as_bytes()).unwrap();
+            let mut tb_srv = repo.treebuilder(None).unwrap();
+            tb_srv.insert("pre-commit.cs", hook_oid, 0o100644).unwrap();
+            let srv_tid = tb_srv.write().unwrap();
+            let mut tb_hooks = repo.treebuilder(None).unwrap();
+            tb_hooks.insert("server", srv_tid, 0o040000).unwrap();
+            let hooks_tid = tb_hooks.write().unwrap();
+            let cfg_oid = repo.blob(
+                r#"
+server:
+  hooks:
+    pre-commit:
+      path: hooks/server/pre-commit.cs
+"#
+                .as_bytes(),
+            )
+            .unwrap();
+            let mut tb = repo.treebuilder(None).unwrap();
+            tb.insert(".relay.yaml", cfg_oid, 0o100644).unwrap();
+            tb.insert("hooks", hooks_tid, 0o040000).unwrap();
+            tb.write().unwrap()
+        }
+
+        let tree_a = repo.find_tree(tree_with_hook(&repo, hook_pass)).unwrap();
+        let commit_a = repo
+            .commit(Some("refs/heads/main"), &sig, &sig, "a", &tree_a, &[])
+            .unwrap();
+
+        let tree_b = repo.find_tree(tree_with_hook(&repo, hook_fail)).unwrap();
+        let commit_b = repo
+            .commit(Some("HEAD"), &sig, &sig, "b", &tree_b, &[&repo.find_commit(commit_a).unwrap()])
+            .unwrap();
+
+        // Branch tip still at A; candidate PUT commit is B with failing hook.
+        let ctx = HookContext {
+            repo_path: repo_path.clone(),
+            old_commit: commit_a.to_string(),
+            new_commit: commit_b.to_string(),
+            refname: "refs/heads/main".into(),
+            branch: "main".into(),
+            is_verified: true,
+            files: HashMap::new(),
+        };
+
+        assert!(
+            execute_repo_hook(&ctx, "pre-commit").unwrap() == false,
+            "must load hook source from new_commit, not branch tip"
+        );
+    }
+
+    #[test]
     fn execute_pre_commit_missing_hook_rejected_in_desktop_mode() {
         let yaml = "server:\n  hooks: {}\n";
         let cs = "export default function run(c) { return true; }\n";

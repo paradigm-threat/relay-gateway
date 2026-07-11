@@ -24,8 +24,8 @@ pub async fn handle_get_file(
     info!(decoded = %decoded, "decoded path");
 
     let repo_name_opt =
-        helpers::repo_from_host_or_default(&state.repo_path, state.node_fqdn.as_deref(), &headers);
-    let branch = helpers::branch_for_request(&headers, &state.repo_path, repo_name_opt.as_deref());
+        helpers::repo_from_host_or_default(&state, state.node_fqdn.as_deref(), &headers);
+    let branch = helpers::branch_for_request(&headers, &state, repo_name_opt.as_deref());
     let repo_name: String;
     if repo_name_opt.is_none() {
         if let Some(resp) = try_static(&state, &decoded).await {
@@ -81,7 +81,7 @@ pub async fn handle_get_file(
     info!(%branch, "resolved branch");
 
     let git_result = git::git_resolve_and_respond(
-        &state.repo_path,
+        &state,
         &headers,
         &branch,
         &repo_name,

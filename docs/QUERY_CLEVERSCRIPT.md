@@ -1,6 +1,53 @@
 # CleverScript QUERY hooks
 
-When `.relay.yaml` sets **`server.hooks.query.path`** to a file ending in **`.cs`**, the relay-gateway runs that source with **relay-runtime** (CleverScript) for each QUERY request instead of reading the embedded **redb** index only.
+When `.relay.yaml` sets **`server.hooks.query.path`** to a file ending in **`.cs`**, the relay-gateway runs that source with **relay-runtime** (CleverScript) for each QUERY request.
+
+## Preferred contract: thin plugin router
+
+CleverScript must **only route**. Heavy search/index work is a **Rust search plugin** (default **`sqlite`**).
+
+```js
+export default function run(ctx) {
+  return {
+    plugin: "sqlite",       // or "redb" (legacy)
+    collection: ctx.collection,
+    query: ctx.query
+  };
+}
+```
+
+```yaml
+server:
+  hooks:
+    query:
+      path: hooks/server/query.cs
+    index:
+      path: hooks/server/index.cs
+  search:
+    plugin: sqlite
+```
+
+**Do not** in CleverScript: scan `index.json`, rank hits, open SQLite, or rebuild indexes.
+
+### Return shapes
+
+| Return | Behavior |
+|--------|----------|
+| `{ plugin, collection?, query?, limit? }` | Rust runs the named plugin |
+| `null` | Fall through to `server.search.plugin` (default sqlite) |
+| `{ rows: [...] }` or a JSON array | Legacy full CS result (compat only; avoid for new repos) |
+
+## Default database: SQLite
+
+On index / JIT QUERY, the gateway builds **`.relay_data/branches/<hash>/index.db`**:
+
+- Syncs `data/**/meta.yaml` → `index.db.json` → SQLite (+ legacy redb)
+- Ingests catalog **`index.json`** (flattened paths) into collection `index`
+- Ingests **`data/events.json`** into collection `events`
+
+String QUERY uses FTS (AND of terms). Object QUERY uses exact field match.
+
+Legacy **`redb`** remains available via `plugin: "redb"` / `server.search.plugin: redb`.
 
 ## Configuration
 
@@ -9,24 +56,22 @@ server:
   hooks:
     query:
       path: hooks/server/query.cs
-    # Optional: branch allowlist for QUERY (overrides index-only allowlist when set)
-    # branches: [ "main" ]
+    # branches: [ "main" ]   # optional QUERY allowlist
 ```
 
-If **`server.hooks.query.branches`** is omitted, QUERY branch policy falls back to **`server.hooks.index.branches`** (same as before).
+If **`server.hooks.query.branches`** is omitted, QUERY branch policy falls back to **`server.hooks.index.branches`**.
 
-## Script contract
+## Script context
 
-- **Default export** must be a function. The first parameter receives a **context** object (JSON): `branch`, `collection`, `query` (from the QUERY body), `repo` (bare repo name).
-- **Return value:** either **`{ rows: [ ... ] }`** or a **top-level array**. Each row is serialized to JSON for CSV/XML/JSON responses.
-- **Git file reads:** use **`import { readFile } from '@relay/git'`** (and optionally **`readFileBase64`**) to read paths from the current branch in the bare repo. The module **`@relay/image`** is **not** available in QUERY hooks (unknown specifier). There is **no** global **`Relay`** (`Relay` is **`null`**).
+- First parameter: `branch`, `collection`, `query`, `repo`, `defaultPlugin`
+- Git reads: `import { readFile } from '@relay/git'` (routing only — prefer plugins for search)
+- **`@relay/image`** is not available
 
-**Migration:** replace **`Relay.git.readFile`** with the import above.
+## MCP
 
-## Redb path
-
-If **`server.hooks.query.path`** is unset or does **not** end with `.cs`, QUERY uses the **index hook → `index.db.json` → redb** path (after Rust sync of `data/**/meta.yaml` when `server.hooks.index` is configured).
+`search_site` on **`POST /api/mcp/:repo`** calls the same [`execute_search`](../src/git/query.rs) path. See [`RELAY_MCP.md`](./RELAY_MCP.md).
 
 ## Related
 
-- [ATLANTA3_QUERY_ROLLOUT.md](./ATLANTA3_QUERY_ROLLOUT.md) — staged deployment on one production node.
+- [ATLANTA3_QUERY_ROLLOUT.md](./ATLANTA3_QUERY_ROLLOUT.md) — staged deployment
+- [REPODB_PLAN.md](./REPODB_PLAN.md) — per-branch `.relay_data` layout

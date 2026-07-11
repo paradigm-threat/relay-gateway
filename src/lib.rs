@@ -2,19 +2,24 @@ pub mod authorized_repos;
 pub mod catalog_policy;
 pub mod cli;
 pub mod config;
+pub mod dispatch;
 pub mod git;
 pub mod handlers;
 pub mod mesh_events;
 pub mod mesh_role;
 pub mod notify;
 pub mod peer_hook;
+pub mod router;
 pub mod transpiler;
 pub mod types;
 
 #[cfg(test)]
 mod tests;
 
+pub use dispatch::{dispatch_request, dispatch_request_blocking};
 pub use handlers::helpers;
+pub use router::build_router;
 pub use types::{
-    AppState, GitResolveResult, DEFAULT_BRANCH, DEFAULT_IPFS_CACHE_ROOT, HEADER_BRANCH, HEADER_REPO,
+    AppState, GitResolveResult, ServeContext, DEFAULT_BRANCH, DEFAULT_IPFS_CACHE_ROOT,
+    HEADER_BRANCH, HEADER_REPO,
 };
