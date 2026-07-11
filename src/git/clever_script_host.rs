@@ -74,8 +74,9 @@ fn git_exports(repo_root: PathBuf, branch: String) -> CsValue {
 
 /// `@relay/search/sqlite` / `@relay/search/redb`: callable `search(opts)` runs the Rust plugin.
 ///
-/// `opts` is the QUERY `ctx` (or a subset): `{ collection?, query?, limit? }`.
-/// Returns `{ rows: [...] }` for the existing CleverScript QUERY result path.
+/// `opts` is the QUERY `ctx` (or a subset): `{ collection?, query?, limit?, config? }`.
+/// `config` defaults to repo-root `search.yaml` when present (used at index time; QUERY uses tip).
+/// Returns `{ rows: [...] }` for the CleverScript QUERY result path.
 fn search_plugin_exports(repo_root: PathBuf, branch: String, plugin: &'static str) -> CsValue {
     let search = {
         let repo_root = repo_root.clone();
@@ -95,6 +96,12 @@ fn search_plugin_exports(repo_root: PathBuf, branch: String, plugin: &'static st
                 CsValue::Number(n) if *n > 0.0 => Some(*n as usize),
                 _ => None,
             });
+            // Optional override path — validated to exist in the tip when provided.
+            if let Some(cfg_path) = cs_obj_str(opts, "config") {
+                if crate::git::repo::read_file_from_repo(&repo_root, &branch, cfg_path).is_err() {
+                    return Err(format!("search config not found in git tip: {cfg_path}"));
+                }
+            }
             let rows = search_plugins::run_plugin(
                 plugin,
                 &repo_root,

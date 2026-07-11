@@ -15,6 +15,7 @@ pub mod meta_index;
 pub mod index_store;
 pub mod indexing;
 pub mod query;
+pub mod search_config;
 pub mod search_plugins;
 pub mod sqlite_index;
 pub mod relay_config_cache;
@@ -37,6 +38,7 @@ pub use indexing::{
     branch_data_dir, branch_hash_short, branch_index_paths, branch_operation_mutex,
     branch_sqlite_path, ensure_indexed,
 };
+pub use index_policy::has_index_hook;
 pub use repo::{
     apply_bare_receive_security, apply_bare_receive_security_at_path, bare_repo_names,
     default_branch_from_bare_head, get_branch_commit_info, list_branches, open_repo,

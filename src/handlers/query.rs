@@ -76,7 +76,7 @@ pub async fn handle_query(
     let accept = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok());
     let response_format = negotiate_query_format(accept);
 
-    match crate::git::query::execute_query_limited(
+    match crate::git::query::execute_query_outcome(
         &state.repo_path,
         &repo_name,
         &branch,
@@ -84,12 +84,12 @@ pub async fn handle_query(
         &collection_storage,
         limit,
     ) {
-        Ok(rows) => match response_format {
+        Ok(outcome) => match response_format {
             QueryResponseFormat::Json => {
-                (StatusCode::OK, Json(serde_json::json!({ "results": rows }))).into_response()
+                (StatusCode::OK, Json(outcome.to_json_envelope())).into_response()
             }
             fmt => {
-                let (body, content_type) = serialize_query_results(fmt, &rows);
+                let (body, content_type) = serialize_query_results(fmt, &outcome.results);
                 match Response::builder()
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, content_type)

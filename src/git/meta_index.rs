@@ -147,9 +147,62 @@ pub fn sync_meta_yaml_index(ctx: &HookContext) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Flatten and upsert `index.json` and `data/events.json` when present on the tip.
+/// Flatten and upsert `index.json` and `data/events.json` when present on the tip,
+/// respecting optional `search.yaml` merge/replace and field lists.
 pub fn ingest_catalog_json_indexes(ctx: &HookContext, sqlite_path: &Path) -> anyhow::Result<()> {
-    if let Some(bytes) = git_show(&ctx.repo_path, &ctx.new_commit, "index.json") {
+    use crate::git::search_config::{self, IngestMode, SearchSource};
+    use crate::git::repo::read_relay_config;
+
+    let repo = git2::Repository::open_bare(&ctx.repo_path).ok();
+    let relay = repo
+        .as_ref()
+        .and_then(|r| read_relay_config(r, &ctx.new_commit))
+        .unwrap_or_default();
+    let cfg = search_config::load_search_config(&ctx.repo_path, &ctx.new_commit, &relay, None);
+
+    // index sources
+    if let Some(coll) = cfg.collection("index") {
+        let id_f = coll.id_fields.as_deref();
+        let fts_f = coll.fts_fields.as_deref();
+        for src in &coll.sources {
+            match src {
+                SearchSource::PathIndex { path, mode } => {
+                    if let Some(bytes) = git_show(&ctx.repo_path, &ctx.new_commit, path) {
+                        let v: Value = serde_json::from_slice(&bytes)
+                            .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+                        let docs = sqlite_index::flatten_path_index(&v);
+                        if docs.is_empty() {
+                            continue;
+                        }
+                        match mode {
+                            IngestMode::Merge => {
+                                sqlite_index::merge_collection_docs_with_fields(
+                                    sqlite_path,
+                                    "index",
+                                    &docs,
+                                    Some(&ctx.new_commit),
+                                    id_f,
+                                    fts_f,
+                                )?;
+                            }
+                            IngestMode::Replace => {
+                                sqlite_index::replace_collection_docs_with_fields(
+                                    sqlite_path,
+                                    "index",
+                                    &docs,
+                                    Some(&ctx.new_commit),
+                                    id_f,
+                                    fts_f,
+                                )?;
+                            }
+                        }
+                    }
+                }
+                SearchSource::MetaYaml { .. } => {}
+                SearchSource::EventsJson { .. } => {}
+            }
+        }
+    } else if let Some(bytes) = git_show(&ctx.repo_path, &ctx.new_commit, "index.json") {
         let v: Value = serde_json::from_slice(&bytes)
             .map_err(|e| anyhow::anyhow!("index.json: {}", e))?;
         let docs = sqlite_index::flatten_path_index(&v);
@@ -163,7 +216,44 @@ pub fn ingest_catalog_json_indexes(ctx: &HookContext, sqlite_path: &Path) -> any
         }
     }
 
-    if let Some(bytes) = git_show(&ctx.repo_path, &ctx.new_commit, "data/events.json") {
+    if let Some(coll) = cfg.collection("events") {
+        let id_f = coll.id_fields.as_deref();
+        let fts_f = coll.fts_fields.as_deref();
+        for src in &coll.sources {
+            if let SearchSource::EventsJson { path, mode } = src {
+                if let Some(bytes) = git_show(&ctx.repo_path, &ctx.new_commit, path) {
+                    let v: Value = serde_json::from_slice(&bytes)
+                        .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+                    let docs = flatten_timeline_events(&v);
+                    if docs.is_empty() {
+                        continue;
+                    }
+                    match mode {
+                        IngestMode::Merge => {
+                            sqlite_index::merge_collection_docs_with_fields(
+                                sqlite_path,
+                                "events",
+                                &docs,
+                                Some(&ctx.new_commit),
+                                id_f,
+                                fts_f,
+                            )?;
+                        }
+                        IngestMode::Replace => {
+                            sqlite_index::replace_collection_docs_with_fields(
+                                sqlite_path,
+                                "events",
+                                &docs,
+                                Some(&ctx.new_commit),
+                                id_f,
+                                fts_f,
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
+    } else if let Some(bytes) = git_show(&ctx.repo_path, &ctx.new_commit, "data/events.json") {
         let v: Value = serde_json::from_slice(&bytes)
             .map_err(|e| anyhow::anyhow!("data/events.json: {}", e))?;
         let docs = flatten_timeline_events(&v);

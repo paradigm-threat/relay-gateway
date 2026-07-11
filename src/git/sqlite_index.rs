@@ -7,6 +7,7 @@ use crate::git::indexing::branch_data_dir;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
+use tracing::info;
 
 /// `.relay_data/branches/<hash>/index.db`
 pub fn sqlite_db_path(repo_path: &Path, branch: &str) -> PathBuf {
@@ -68,7 +69,30 @@ pub fn read_indexed_head(db_path: &Path) -> anyhow::Result<Option<String>> {
     Ok(v)
 }
 
-fn doc_id_for(doc: &Value, fallback_index: usize) -> String {
+/// Number of docs in a collection (0 if DB missing).
+pub fn count_collection_docs(db_path: &Path, collection: &str) -> anyhow::Result<u64> {
+    if !db_path.exists() {
+        return Ok(0);
+    }
+    let conn = Connection::open(db_path)?;
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM docs WHERE collection = ?1",
+        params![collection],
+        |r| r.get(0),
+    )?;
+    Ok(n as u64)
+}
+
+fn doc_id_for(doc: &Value, fallback_index: usize, id_fields: Option<&[String]>) -> String {
+    if let Some(fields) = id_fields {
+        for k in fields {
+            if let Some(s) = doc.get(k).and_then(|v| v.as_str()) {
+                if !s.is_empty() {
+                    return s.to_string();
+                }
+            }
+        }
+    }
     if let Some(s) = doc.get("path").and_then(|v| v.as_str()) {
         return s.to_string();
     }
@@ -81,8 +105,22 @@ fn doc_id_for(doc: &Value, fallback_index: usize) -> String {
     format!("row-{fallback_index}")
 }
 
-fn search_text_for(doc: &Value) -> String {
+fn search_text_for(doc: &Value, fts_fields: Option<&[String]>) -> String {
     let mut parts: Vec<String> = Vec::new();
+    if let Some(fields) = fts_fields {
+        for key in fields {
+            if let Some(s) = doc.get(key).and_then(|v| v.as_str()) {
+                parts.push(s.to_string());
+            } else if let Some(arr) = doc.get(key).and_then(|v| v.as_array()) {
+                for k in arr {
+                    if let Some(s) = k.as_str() {
+                        parts.push(s.to_string());
+                    }
+                }
+            }
+        }
+        return parts.join(" ");
+    }
     for key in ["title", "_title", "path", "name", "description", "summary"] {
         if let Some(s) = doc.get(key).and_then(|v| v.as_str()) {
             parts.push(s.to_string());
@@ -102,7 +140,6 @@ fn search_text_for(doc: &Value) -> String {
     if let Some(s) = doc.get("searchText").and_then(|v| v.as_str()) {
         parts.push(s.to_string());
     }
-    // Flatten remaining string fields for simple contains-style FTS.
     if let Some(obj) = doc.as_object() {
         for (k, v) in obj {
             if k.starts_with('_') && k != "_title" && k != "_keywords" && k != "_meta_dir" {
@@ -118,7 +155,67 @@ fn search_text_for(doc: &Value) -> String {
     parts.join(" ")
 }
 
-fn replace_collection(conn: &Connection, collection: &str, docs: &[Value]) -> anyhow::Result<()> {
+fn insert_doc(
+    conn: &Connection,
+    collection: &str,
+    doc: &Value,
+    index: usize,
+    id_fields: Option<&[String]>,
+    fts_fields: Option<&[String]>,
+) -> anyhow::Result<()> {
+    let doc_id = doc_id_for(doc, index, id_fields);
+    let json = serde_json::to_string(doc)?;
+    let search_text = search_text_for(doc, fts_fields);
+    conn.execute(
+        "INSERT INTO docs(collection, doc_id, json, search_text) VALUES (?1, ?2, ?3, ?4)",
+        params![collection, doc_id, json, search_text],
+    )?;
+    let id: i64 = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO docs_fts(rowid, search_text) VALUES (?1, ?2)",
+        params![id, search_text],
+    )?;
+    Ok(())
+}
+
+fn upsert_doc(
+    conn: &Connection,
+    collection: &str,
+    doc: &Value,
+    index: usize,
+    id_fields: Option<&[String]>,
+    fts_fields: Option<&[String]>,
+) -> anyhow::Result<()> {
+    let doc_id = doc_id_for(doc, index, id_fields);
+    let json = serde_json::to_string(doc)?;
+    let search_text = search_text_for(doc, fts_fields);
+    if let Ok(old_id) = conn.query_row(
+        "SELECT id FROM docs WHERE collection = ?1 AND doc_id = ?2",
+        params![collection, doc_id],
+        |r| r.get::<_, i64>(0),
+    ) {
+        let _ = conn.execute("DELETE FROM docs_fts WHERE rowid = ?1", params![old_id]);
+        conn.execute(
+            "UPDATE docs SET json = ?1, search_text = ?2 WHERE id = ?3",
+            params![json, search_text, old_id],
+        )?;
+        conn.execute(
+            "INSERT INTO docs_fts(rowid, search_text) VALUES (?1, ?2)",
+            params![old_id, search_text],
+        )?;
+    } else {
+        insert_doc(conn, collection, doc, index, id_fields, fts_fields)?;
+    }
+    Ok(())
+}
+
+fn replace_collection(
+    conn: &Connection,
+    collection: &str,
+    docs: &[Value],
+    id_fields: Option<&[String]>,
+    fts_fields: Option<&[String]>,
+) -> anyhow::Result<()> {
     conn.execute(
         "DELETE FROM docs_fts WHERE rowid IN (SELECT id FROM docs WHERE collection = ?1)",
         params![collection],
@@ -128,18 +225,20 @@ fn replace_collection(conn: &Connection, collection: &str, docs: &[Value]) -> an
         params![collection],
     )?;
     for (i, doc) in docs.iter().enumerate() {
-        let doc_id = doc_id_for(doc, i);
-        let json = serde_json::to_string(doc)?;
-        let search_text = search_text_for(doc);
-        conn.execute(
-            "INSERT INTO docs(collection, doc_id, json, search_text) VALUES (?1, ?2, ?3, ?4)",
-            params![collection, doc_id, json, search_text],
-        )?;
-        let id: i64 = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO docs_fts(rowid, search_text) VALUES (?1, ?2)",
-            params![id, search_text],
-        )?;
+        insert_doc(conn, collection, doc, i, id_fields, fts_fields)?;
+    }
+    Ok(())
+}
+
+fn merge_collection(
+    conn: &Connection,
+    collection: &str,
+    docs: &[Value],
+    id_fields: Option<&[String]>,
+    fts_fields: Option<&[String]>,
+) -> anyhow::Result<()> {
+    for (i, doc) in docs.iter().enumerate() {
+        upsert_doc(conn, collection, doc, i, id_fields, fts_fields)?;
     }
     Ok(())
 }
@@ -160,7 +259,8 @@ pub fn sync_json_to_sqlite(json_path: &Path, db_path: &Path) -> anyhow::Result<(
                 Value::Array(a) => a.clone(),
                 _ => continue,
             };
-            replace_collection(&tx, name, &docs)?;
+            replace_collection(&tx, name, &docs, None, None)?;
+            info!(collection = %name, docs = docs.len(), "sqlite sync_json replace");
         }
     }
 
@@ -176,20 +276,62 @@ pub fn sync_json_to_sqlite(json_path: &Path, db_path: &Path) -> anyhow::Result<(
     Ok(())
 }
 
-/// Upsert a single collection from an in-memory document list (e.g. flattened `index.json`).
+/// Replace a single collection from an in-memory document list.
 pub fn replace_collection_docs(
     db_path: &Path,
     collection: &str,
     docs: &[Value],
     indexed_head: Option<&str>,
 ) -> anyhow::Result<()> {
+    replace_collection_docs_with_fields(db_path, collection, docs, indexed_head, None, None)
+}
+
+pub fn replace_collection_docs_with_fields(
+    db_path: &Path,
+    collection: &str,
+    docs: &[Value],
+    indexed_head: Option<&str>,
+    id_fields: Option<&[String]>,
+    fts_fields: Option<&[String]>,
+) -> anyhow::Result<()> {
     let conn = open_db(db_path)?;
     let tx = conn.unchecked_transaction()?;
-    replace_collection(&tx, collection, docs)?;
+    replace_collection(&tx, collection, docs, id_fields, fts_fields)?;
     if let Some(head) = indexed_head {
         set_meta(&tx, "indexed_head", head)?;
     }
     tx.commit()?;
+    info!(
+        collection = %collection,
+        docs = docs.len(),
+        head = indexed_head.unwrap_or(""),
+        "sqlite replace_collection"
+    );
+    Ok(())
+}
+
+/// Merge/upsert docs into a collection without wiping other rows.
+pub fn merge_collection_docs_with_fields(
+    db_path: &Path,
+    collection: &str,
+    docs: &[Value],
+    indexed_head: Option<&str>,
+    id_fields: Option<&[String]>,
+    fts_fields: Option<&[String]>,
+) -> anyhow::Result<()> {
+    let conn = open_db(db_path)?;
+    let tx = conn.unchecked_transaction()?;
+    merge_collection(&tx, collection, docs, id_fields, fts_fields)?;
+    if let Some(head) = indexed_head {
+        set_meta(&tx, "indexed_head", head)?;
+    }
+    tx.commit()?;
+    info!(
+        collection = %collection,
+        docs = docs.len(),
+        head = indexed_head.unwrap_or(""),
+        "sqlite merge_collection"
+    );
     Ok(())
 }
 
@@ -298,9 +440,8 @@ pub fn query_collection(
             }
         }
         _ => {
-            let mut stmt = conn.prepare(
-                "SELECT json FROM docs WHERE collection = ?1 LIMIT ?2",
-            )?;
+            let mut stmt =
+                conn.prepare("SELECT json FROM docs WHERE collection = ?1 LIMIT ?2")?;
             let iter = stmt.query_map(params![collection, lim as i64], |r| {
                 let json: String = r.get(0)?;
                 Ok(json)
@@ -324,16 +465,12 @@ pub fn flatten_path_index(root: &Value) -> Vec<Value> {
         let Some(obj) = node.as_object() else {
             return;
         };
-        // Leaf entry: has _keywords / _title / _updated without nested path children as maps of maps
         let looks_like_entry = obj.contains_key("_keywords")
             || obj.contains_key("_title")
             || obj.contains_key("_updated");
         let has_nested = obj.values().any(|v| {
             v.as_object()
-                .map(|o| {
-                    o.keys()
-                        .any(|k| !k.starts_with('_'))
-                })
+                .map(|o| o.keys().any(|k| !k.starts_with('_')))
                 .unwrap_or(false)
         });
 
@@ -356,7 +493,6 @@ pub fn flatten_path_index(root: &Value) -> Vec<Value> {
                 } else {
                     format!("{prefix}/{k}")
                 };
-                // If child is a leaf file entry
                 let child_leaf = child.contains_key("_keywords")
                     || child.contains_key("_title")
                     || child.contains_key("_updated");
@@ -408,6 +544,7 @@ mod tests {
 
         sync_json_to_sqlite(&json_path, &db_path).unwrap();
         assert_eq!(read_indexed_head(&db_path).unwrap().as_deref(), Some("abc"));
+        assert_eq!(count_collection_docs(&db_path, "index").unwrap(), 2);
 
         let hits = query_collection(
             &db_path,
@@ -419,18 +556,38 @@ mod tests {
         .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0]["title"], "Mud Flood");
+    }
 
-        let eq = query_collection(
+    #[test]
+    fn merge_preserves_other_docs() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        replace_collection_docs(
             &db_path,
             "index",
-            Some(&json!({ "title": "Other" })),
-            Some(&["title".into()]),
+            &[json!({ "title": "Meta", "_meta_dir": "data/a", "path": "data/a" })],
+            Some("h1"),
+        )
+        .unwrap();
+        merge_collection_docs_with_fields(
+            &db_path,
+            "index",
+            &[json!({ "_title": "FromIndex", "path": "blog/x.md" })],
+            Some("h2"),
+            Some(&["path".into()]),
+            Some(&["_title".into(), "title".into()]),
+        )
+        .unwrap();
+        assert_eq!(count_collection_docs(&db_path, "index").unwrap(), 2);
+        let hits = query_collection(
+            &db_path,
+            "index",
+            Some(&Value::String("FromIndex".into())),
+            None,
             None,
         )
         .unwrap();
-        assert_eq!(eq.len(), 1);
-        assert!(eq[0].get("_meta_dir").is_none());
-        assert_eq!(eq[0]["title"], "Other");
+        assert_eq!(hits.len(), 1);
     }
 
     #[test]

@@ -107,7 +107,7 @@ fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
 
-        // Special handling for post-receive (Auto-Push)
+        // Special handling for post-receive (Auto-Push + index refresh)
         if hook_name == "post-receive" {
             let repo_slug = relay_server::notify::normalize_repo_slug(
                 ctx.repo_path
@@ -127,6 +127,21 @@ fn main() -> anyhow::Result<()> {
                 sid.as_deref(),
                 node.as_deref(),
             );
+            // Warm SQLite index after validated push (same path as QUERY JIT).
+            if let Ok(repo) = git2::Repository::open_bare(&ctx.repo_path) {
+                if let Some(cfg) = relay_server::git::read_relay_config(&repo, &ctx.new_commit) {
+                    if relay_server::git::has_index_hook(&cfg) {
+                        let lock = relay_server::git::branch_operation_mutex(
+                            ctx.repo_path.clone(),
+                            ctx.branch.clone(),
+                        );
+                        let _guard = lock.lock().unwrap();
+                        if let Err(e) = relay_server::git::ensure_indexed(&ctx) {
+                            error!("post-receive ensure_indexed failed: {}", e);
+                        }
+                    }
+                }
+            }
             if let Err(e) = handle_auto_push(&ctx) {
                 error!("Auto-push failed: {}", e);
             }

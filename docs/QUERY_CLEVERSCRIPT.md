@@ -51,15 +51,49 @@ export default function run(ctx) {
 
 ## Default database: SQLite
 
-On index / JIT QUERY, the gateway builds **`.relay_data/branches/<hash>/index.db`**:
+On index / JIT QUERY / **post-receive**, the gateway builds **`.relay_data/branches/<hash>/index.db`**:
 
 - Syncs `data/**/meta.yaml` → `index.db.json` → SQLite (+ legacy redb)
-- Ingests catalog **`index.json`** (flattened paths) into collection `index`
-- Ingests **`data/events.json`** into collection `events`
+- Ingests catalog sources from **`search.yaml`** (or builtins): `index.json`, `data/events.json`
+- QUERY JSON envelope includes `status`, `indexFresh`, `docCount`, `indexedHead`, `tookMs`
+
+### `search.yaml` (recommended)
+
+Repo-root declarative config (auto-loaded; override with `search({ ...ctx, config: "other.yaml" })`):
+
+```yaml
+plugin: sqlite
+collections:
+  index:
+    sources:
+      - type: meta_yaml
+        glob: data/**/meta.yaml
+      - type: path_index
+        path: index.json
+        mode: merge          # merge|replace
+    idFields: [path, _meta_dir, id]
+    ftsFields: [_title, title, _keywords, keywords, description]
+  events:
+    sources:
+      - type: events_json
+        path: data/events.json
+    idFields: [id]
+    ftsFields: [title, keywords, name]
+```
+
+Without `search.yaml`, builtins still ingest meta.yaml + `index.json` (replace) + `data/events.json`.
 
 String QUERY uses FTS (AND of terms). Object QUERY uses exact field match.
 
 Legacy **`redb`** remains available via `@relay/search/redb` or `plugin: "redb"` / `server.search.plugin: redb`.
+
+## Probe
+
+```bash
+node scripts/validate-relay-query.mjs https://dfw1.relaygateway.net paradigm-threat-files venus
+```
+
+Asserts `status != not_indexed`, `docCount > 0`, and prints `indexFresh` / `tookMs`.
 
 ## Configuration
 

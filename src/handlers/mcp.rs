@@ -1,8 +1,8 @@
 //! Streamable HTTP / JSON-RPC MCP adapter.
-//! Search tools call [`crate::git::query::execute_search_limited`] — no duplicate search stack.
+//! Search tools call [`crate::git::query::execute_search_outcome`] — no duplicate search stack.
 
 use crate::git::index_policy;
-use crate::git::query::execute_search_limited;
+use crate::git::query::{execute_search_limited, execute_search_outcome};
 use crate::git::repo::{read_file_from_repo, read_relay_config};
 use crate::git::{get_branch_commit_info, open_repo};
 use crate::types::AppState;
@@ -334,7 +334,7 @@ fn call_tool(
                     .get("limit")
                     .and_then(|v| v.as_u64())
                     .map(|n| n.clamp(1, 500) as usize);
-                let rows = execute_search_limited(
+                let outcome = execute_search_outcome(
                     &state.repo_path,
                     repo_name,
                     branch,
@@ -342,12 +342,7 @@ fn call_tool(
                     collection,
                     limit,
                 )?;
-                Ok(json!({
-                    "query": q,
-                    "collection": collection,
-                    "count": rows.len(),
-                    "results": rows,
-                }))
+                Ok(outcome.to_json_envelope())
             }
             "git_read" => {
                 let raw = arguments
