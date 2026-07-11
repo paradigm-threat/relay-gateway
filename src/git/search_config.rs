@@ -44,6 +44,18 @@ pub enum SearchSource {
         #[serde(default = "default_replace_mode")]
         mode: IngestMode,
     },
+    /// Walk tip tree (markdown/files) into flat path docs — no committed index.json.
+    PathTree {
+        #[serde(default = "default_replace_mode")]
+        mode: IngestMode,
+    },
+    /// Build timeline events from `content/**/*.md` — no committed data/events.json.
+    ContentEvents {
+        #[serde(default = "default_content_root")]
+        root: String,
+        #[serde(default = "default_replace_mode")]
+        mode: IngestMode,
+    },
 }
 
 fn default_meta_glob() -> String {
@@ -54,6 +66,9 @@ fn default_index_json() -> String {
 }
 fn default_events_json() -> String {
     "data/events.json".into()
+}
+fn default_content_root() -> String {
+    "content".into()
 }
 fn default_replace_mode() -> IngestMode {
     IngestMode::Replace

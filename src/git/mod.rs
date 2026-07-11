@@ -1,4 +1,5 @@
 pub mod binary_policy;
+pub mod catalog_build;
 pub mod branch_features;
 pub mod branch_policy;
 pub mod ipfs;
