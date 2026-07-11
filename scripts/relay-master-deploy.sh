@@ -6,7 +6,7 @@
 #   ./scripts/relay-master-deploy.sh --target linode-atlanta2 --install-only
 #   ./scripts/relay-master-deploy.sh --target spot-dfw1 --install-only --build
 #
-# Targets: spot-dfw1 | linode-atlanta2
+# Targets: spot-dfw1 | spot-lon1 | spot-hkg1 | linode-atlanta2
 #
 # Steps: terraform apply (unless --install-only) → SSH → pack tarball → install.sh →
 #        Vercel apex + wildcard DNS → install-caddy-tls → reconfigure-features (Piper) → peer-clone PT repos
@@ -22,7 +22,7 @@ SKIP_TERRAFORM=0
 SKIP_DNS=0
 SKIP_CADDY=0
 SKIP_SEED=0
-PEER_SOURCE="${RELAY_PEER_CLONE_SOURCE:-atlanta2.relaygateway.net}"
+PEER_SOURCE="${RELAY_PEER_CLONE_SOURCE:-dfw1.relaygateway.net}"
 CADDY_EMAIL="${CADDY_EMAIL:-hostmaster@relaygateway.net}"
 ENV_FILE="${RELAY_FLEET_ENV_FILE:-$ROOT/relay.env}"
 DNS_DIR="$ROOT/terraform/shared-dns/scripts"
@@ -30,7 +30,7 @@ TERRAFORM="${TERRAFORM:-terraform}"
 
 usage() {
   sed -n '1,35p' <<'EOF'
-Usage: ./scripts/relay-master-deploy.sh --target <spot-dfw1|linode-atlanta2> [flags]
+Usage: ./scripts/relay-master-deploy.sh --target <spot-dfw1|spot-lon1|spot-hkg1|linode-atlanta2> [flags]
 
 Flags:
   --install-only     Skip terraform apply; read IP from terraform output / DNS
@@ -66,17 +66,43 @@ done
 
 stack_dir() {
   case "$1" in
-    spot-dfw1) echo "$ROOT/terraform/rackspace-spot-vm" ;;
+    spot-dfw1|spot-lon1|spot-hkg1) echo "$ROOT/terraform/rackspace-spot-vm" ;;
     linode-atlanta2) echo "$ROOT/terraform/linode-relay" ;;
-    *) echo "Unknown --target: $1 (use spot-dfw1 or linode-atlanta2)" >&2; return 1 ;;
+    *) echo "Unknown --target: $1 (use spot-dfw1|spot-lon1|spot-hkg1 or linode-atlanta2)" >&2; return 1 ;;
   esac
 }
 
 default_ssh_user() {
   case "$1" in
-    spot-dfw1) echo "ubuntu" ;;
+    spot-dfw1|spot-lon1|spot-hkg1) echo "ubuntu" ;;
     linode-atlanta2) echo "ari" ;;
   esac
+}
+
+spot_node_slug() {
+  case "$1" in
+    spot-dfw1) echo "dfw1" ;;
+    spot-lon1) echo "lon1" ;;
+    spot-hkg1) echo "hkg1" ;;
+    *) echo "" ;;
+  esac
+}
+
+spot_ip_override() {
+  case "$1" in
+    spot-dfw1) echo "${SPOT_DFW1_IP:-}" ;;
+    spot-lon1) echo "${SPOT_LON1_IP:-}" ;;
+    spot-hkg1) echo "${SPOT_HKG1_IP:-}" ;;
+    *) echo "" ;;
+  esac
+}
+
+spot_tfvars_file() {
+  local target="$1" slug
+  slug="$(spot_node_slug "$target")"
+  [[ -n "$slug" ]] || return 0
+  local f="$ROOT/terraform/rackspace-spot-vm/${slug}.tfvars"
+  [[ -f "$f" ]] && echo "$f"
 }
 
 vercel_token_from_cli() {
@@ -95,14 +121,30 @@ tf_output() {
 resolve_node_meta() {
   local target="$1" dir fqdn ip relay_id ssh_user node_slug
   dir="$(stack_dir "$target")"
+  case "$target" in
+    spot-*) node_slug="$(spot_node_slug "$target")" ;;
+    linode-atlanta2) node_slug="atlanta2" ;;
+    *) node_slug="" ;;
+  esac
   fqdn="$(tf_output "$dir" fqdn)"
   relay_id="$(tf_output "$dir" relay_server_id)"
   ssh_user="$(tf_output "$dir" ssh_user)"
   ip="$(tf_output "$dir" public_ip)"
   [[ -n "$ssh_user" ]] || ssh_user="$(default_ssh_user "$target")"
-  node_slug="${fqdn%%.*}"
+  [[ -n "$node_slug" ]] || node_slug="${fqdn%%.*}"
   [[ -n "$fqdn" ]] || fqdn="${node_slug}.relaygateway.net"
   [[ -n "$relay_id" ]] || relay_id="relay-${node_slug}"
+  # Per-target env wins over shared terraform.tfvars (one file holds dfw1 IP only).
+  ip="$(spot_ip_override "$target")"
+  [[ "$target" == linode-atlanta2 ]] && ip="${LINODE_ATLANTA2_IP:-$ip}"
+  local tfvars
+  tfvars="$(spot_tfvars_file "$target" || true)"
+  if [[ -z "$ip" && -n "$tfvars" ]]; then
+    ip="$(grep -E '^public_ip_override\s*=' "$tfvars" | sed -n 's/.*=\s*"\([^"]*\)".*/\1/p' | head -1)"
+  fi
+  if [[ -z "$ip" && -f "$dir/terraform.tfvars" ]]; then
+    ip="$(grep -E '^public_ip_override\s*=' "$dir/terraform.tfvars" | sed -n 's/.*=\s*"\([^"]*\)".*/\1/p' | head -1)"
+  fi
   if [[ -z "$ip" ]]; then
     ip="$(dig +short "$fqdn" 2>/dev/null | head -1 || true)"
   fi
@@ -110,12 +152,22 @@ resolve_node_meta() {
   echo "$dir|$fqdn|$ip|$relay_id|$ssh_user|$node_slug"
 }
 
+load_vercel_dns_creds() {
+  # Prefer relay.env token (team-scoped); fall back to Vercel CLI auth.json.
+  if [[ -f "$ENV_FILE" ]]; then
+    # shellcheck disable=SC1090
+    set +u; source "$ENV_FILE" 2>/dev/null || true; set -u
+  fi
+  if [[ -z "${VERCEL_API_TOKEN:-}" ]]; then
+    export VERCEL_API_TOKEN="$(vercel_token_from_cli || true)"
+  fi
+  export VERCEL_TEAM_ID="${VERCEL_TEAM_ID:-team_bB1RJkslury9ynlawD5kmMdG}"
+}
+
 upsert_dns() {
   local fqdn="$1" ip="$2" node_slug="$3"
-  export VERCEL_API_TOKEN="$(vercel_token_from_cli || true)"
-  [[ -n "${VERCEL_API_TOKEN:-}" ]] || VERCEL_API_TOKEN="${VERCEL_API_TOKEN:-}"
-  [[ -n "${VERCEL_API_TOKEN:-}" ]] || { echo "[deploy] Skip DNS: no VERCEL_API_TOKEN" >&2; return 0; }
-  export VERCEL_TEAM_ID="${VERCEL_TEAM_ID:-team_bB1RJkslury9ynlawD5kmMdG}"
+  load_vercel_dns_creds
+  [[ -n "${VERCEL_API_TOKEN:-}" ]] || { echo "[deploy] Skip DNS: no VERCEL_API_TOKEN (set in $ENV_FILE or vercel login)" >&2; return 0; }
   "$DNS_DIR/vercel-dns-upsert.sh" "$fqdn" "$ip"
   "$DNS_DIR/vercel-dns-wildcard.sh" "$node_slug" "$ip"
 }
@@ -150,7 +202,13 @@ echo "[deploy] target=$TARGET fqdn=$FQDN ip=$IP ssh=$SSH_USER"
 
 if [[ "$INSTALL_ONLY" != 1 ]]; then
   echo "[deploy] terraform apply in $TF_DIR"
-  (cd "$TF_DIR" && "$TERRAFORM" init -input=false && "$TERRAFORM" apply -auto-approve -input=false)
+  TFVARS_FILE="$(spot_tfvars_file "$TARGET" || true)"
+  if [[ -n "$TFVARS_FILE" ]]; then
+    echo "[deploy] using -var-file=$(basename "$TFVARS_FILE")"
+    (cd "$TF_DIR" && "$TERRAFORM" init -input=false && "$TERRAFORM" apply -auto-approve -input=false -var-file="$TFVARS_FILE")
+  else
+    (cd "$TF_DIR" && "$TERRAFORM" init -input=false && "$TERRAFORM" apply -auto-approve -input=false)
+  fi
   IFS='|' read -r TF_DIR FQDN IP RELAY_ID SSH_USER NODE_SLUG < <(resolve_node_meta "$TARGET")
   SSH_TARGET="${SSH_USER}@${IP}"
 fi
@@ -169,42 +227,73 @@ fi
 echo "[deploy] upload tarball"
 "${SCP[@]}" "$TGZ" "${SSH_TARGET}:/tmp/relay-linode-deploy.tgz"
 
-# Mesh secrets from laptop relay.env
+# Mesh secrets from laptop relay.env (also loaded for DNS in upsert_dns)
 MESH_VARS=()
-if [[ -f "$ENV_FILE" ]]; then
-  # shellcheck disable=SC1090
-  set +u; source "$ENV_FILE" 2>/dev/null || true; set -u
-fi
+load_vercel_dns_creds
 for v in RELAY_MASTER_MESH_SECRET RELAY_PEER_SECRET RELAY_MASTER_TRUST_ROOT \
   RELAY_MASTER_CATALOG_GIT_URL RELAY_MASTER_PEER_LIST RELAY_MASTER_CATALOG_PATH; do
   [[ -n "${!v:-}" ]] && MESH_VARS+=("$v=${!v}")
 done
 
-RELAY_MASTER_PEER_LIST="${RELAY_MASTER_PEER_LIST:-atlanta2.relaygateway.net;dfw1.relaygateway.net}"
-MESH_EXPORT="RELAY_PUBLIC_HOSTNAME=${FQDN} RELAY_SERVER_ID=${RELAY_ID} RELAY_MASTER_PEER_LIST=${RELAY_MASTER_PEER_LIST}"
+RELAY_MASTER_PEER_LIST="${RELAY_MASTER_PEER_LIST:-dfw1.relaygateway.net;lon1.relaygateway.net;hkg1.relaygateway.net}"
+# Ensure this spot master is in the mesh list.
+if [[ "$TARGET" == spot-* ]]; then
+  _mesh_self="${NODE_SLUG}.relaygateway.net"
+  case ";${RELAY_MASTER_PEER_LIST};" in
+    *";${_mesh_self};"*) ;;
+    *) RELAY_MASTER_PEER_LIST="${RELAY_MASTER_PEER_LIST};${_mesh_self}" ;;
+  esac
+  unset _mesh_self
+fi
+
+write_remote_env() {
+  local dest="$1" v val
+  {
+    printf 'RELAY_PUBLIC_HOSTNAME=%q\n' "$FQDN"
+    printf 'RELAY_SERVER_ID=%q\n' "$RELAY_ID"
+    printf 'RELAY_MASTER_PEER_LIST=%q\n' "$RELAY_MASTER_PEER_LIST"
+    for kv in "${MESH_VARS[@]}"; do
+      v="${kv%%=*}"
+      val="${kv#*=}"
+      printf '%s=%q\n' "$v" "$val"
+    done
+  } >"$dest"
+  chmod 600 "$dest"
+}
 
 echo "[deploy] install.sh install"
+ENV_LOCAL="$(mktemp)"
+write_remote_env "$ENV_LOCAL"
+"${SCP[@]}" "$ENV_LOCAL" "${SSH_TARGET}:/tmp/relay-install.env"
+rm -f "$ENV_LOCAL"
+
 if [[ "$SSH_USER" == "root" ]]; then
-  "${SSH[@]}" "$SSH_TARGET" bash -s <<REMOTE
+  "${SSH[@]}" "$SSH_TARGET" bash -s <<'REMOTE'
 set -euo pipefail
+set -a
+# shellcheck disable=SC1091
+source /tmp/relay-install.env
+set +a
 cd /root && rm -rf .relay-deploy-staging && mkdir .relay-deploy-staging && cd .relay-deploy-staging
 tar xzf /root/relay-linode-deploy.tgz 2>/dev/null || tar xzf /tmp/relay-linode-deploy.tgz
 export RELAY_BIN_SOURCE=/root/.relay-deploy-staging RELAY_INSTALL_NONINTERACTIVE=1 RELAY_SKIP_VERCEL_DNS=1
-${MESH_EXPORT}
-${MESH_VARS[*]:+export ${MESH_VARS[*]}}
-./install.sh install
+if [[ -f /opt/relay/state/features.json ]]; then ./install.sh update; else ./install.sh install; fi
+rm -f /tmp/relay-install.env
 REMOTE
 else
-  "${SSH[@]}" "$SSH_TARGET" sudo bash -s <<REMOTE
+  "${SSH[@]}" "$SSH_TARGET" sudo bash -s <<'REMOTE'
 set -euo pipefail
+cp -f /tmp/relay-install.env /root/relay-install.env
+set -a
+# shellcheck disable=SC1091
+source /root/relay-install.env
+set +a
 cp -f /tmp/relay-linode-deploy.tgz /root/relay-linode-deploy.tgz
 cd /root && rm -rf .relay-deploy-staging && mkdir .relay-deploy-staging && cd .relay-deploy-staging
 tar xzf /root/relay-linode-deploy.tgz
 export RELAY_BIN_SOURCE=/root/.relay-deploy-staging RELAY_INSTALL_NONINTERACTIVE=1 RELAY_SKIP_VERCEL_DNS=1
-${MESH_EXPORT}
-${MESH_VARS[*]:+export ${MESH_VARS[*]}}
-./install.sh install
-rm -f /tmp/relay-linode-deploy.tgz
+if [[ -f /opt/relay/state/features.json ]]; then ./install.sh update; else ./install.sh install; fi
+rm -f /tmp/relay-linode-deploy.tgz /root/relay-install.env
 REMOTE
 fi
 
@@ -228,7 +317,7 @@ export RELAY_INSTALL_NONINTERACTIVE=1 RELAY_FEAT_PIPER=1 RELAY_FEAT_TRANSLATION=
 rm -f /tmp/relay-feat.tgz
 REMOTE
 
-if [[ "$SKIP_SEED" != 1 && "$TARGET" == spot-dfw1* ]]; then
+if [[ "$SKIP_SEED" != 1 && "$TARGET" == spot-* ]]; then
   echo "[deploy] peer-clone PT repos from ${PEER_SOURCE}"
   REPOS=(paradigm-threat-files paradigm-threat-timeline paradigm-threat-site)
   for repo in "${REPOS[@]}"; do

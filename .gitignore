@@ -88,5 +88,8 @@ terraform/rackspace-spot/
 
 # Per-stack secrets (use *.example)
 terraform/rackspace-spot-vm/terraform.tfvars
+terraform/rackspace-spot-vm/dfw1.tfvars
+terraform/rackspace-spot-vm/lon1.tfvars
+terraform/rackspace-spot-vm/hkg1.tfvars
 terraform/linode-relay/terraform.tfvars
 terraform/linode-relay/stacks/*/terraform.tfvars

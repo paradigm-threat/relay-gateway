@@ -31,5 +31,5 @@ resource "null_resource" "spot_vm" {
 
 data "external" "vm" {
   depends_on = [null_resource.spot_vm]
-  program    = ["bash", "-c", "SPOT_VM_STATE_FILE='${local.state_file}' exec '${path.module}/scripts/spot-vm-read-state.sh'"]
+  program    = ["bash", "${path.module}/scripts/spot-vm-read-state.sh"]
 }

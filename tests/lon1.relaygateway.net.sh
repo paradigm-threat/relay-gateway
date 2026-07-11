@@ -13,7 +13,7 @@ NODE="lon1"
 MIRROR="${RELAY_TEST_MIRROR:-paradigm-threat-files}"
 MIRROR_HOST="${MIRROR}.${NODE}.relaygateway.net"
 TIMEOUT="${RELAY_VALIDATE_CURL_TIMEOUT:-25}"
-IP_EXPECT="${SPOT_LON1_IP:-134.213.138.234}"
+IP_EXPECT="${SPOT_LON1_IP:-134.213.138.182}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fail=0

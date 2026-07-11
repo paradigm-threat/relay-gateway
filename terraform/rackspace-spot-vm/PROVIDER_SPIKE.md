@@ -17,7 +17,11 @@ Rackspace has stated Terraform/spotctl/API support for VM Cloudspaces is **plann
 2. **`terraform apply`** — triggers provisioner; **`data.external`** reads state for outputs.
 3. **`relay-master-deploy.sh --target spot-dfw1`** — same Linode path after IP is known: tarball, **`install.sh`**, Vercel DNS, Caddy, Piper.
 
-Until API lands: create **VM Cloudspace** in Spot UI (1× **`gp.vs1.medium-dfw`**, bid **0.005**), set **`public_ip_override`** in **`terraform.tfvars`**, then:
+**OS:** use Spot VM image **`ubuntu2404`** (Ubuntu 24.04). K8s worker nodes on **`relay-network-cheapest`** are **Ubuntu 20.04** — the Linode-style **`relay-linode-deploy.tgz`** binary requires **glibc ≥ 2.32** and will not start there.
+
+Until API lands: create **VM Cloudspace** in Spot UI (1× **`gp.vs1.medium-dfw`**, bid **0.005**, **`ubuntu2404`**), set **`public_ip_override`** in **`terraform.tfvars`**, then:
+
+**London (`spot-lon1`):** prefer **`ch.vs1.medium-lon`** (same 2 vCPU / 3.75 GB; ~3× cheaper market than `gp.vs1.medium-lon`). Per-target tfvars: **`lon1.tfvars`** (see **`lon1.tfvars.example`**).
 
 ```bash
 ./scripts/relay-master-deploy.sh --target spot-dfw1 --install-only

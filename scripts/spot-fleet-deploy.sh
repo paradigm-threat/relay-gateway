@@ -11,7 +11,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 export SPOT_DFW1_IP="${SPOT_DFW1_IP:-174.143.201.10}"
-export SPOT_LON1_IP="${SPOT_LON1_IP:-134.213.138.234}"
+export SPOT_LON1_IP="${SPOT_LON1_IP:-134.213.138.182}"
 export SPOT_HKG1_IP="${SPOT_HKG1_IP:-203.60.2.11}"
 
 BUILD=0

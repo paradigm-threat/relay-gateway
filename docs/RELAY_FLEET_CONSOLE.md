@@ -46,6 +46,7 @@ Edit paths in **`scripts/relay-local-repos.map`**. Legacy **atlanta2** may still
 | **`hosts`** | Print resolved fleet, SSH user, identity path. |
 | **`ssh-check`** | Parallel **`ssh … true`**; fails if any host fails. |
 | **`status`** | Parallel **`POST https://<host>/api/config`**; prints **`relay_server_id`**, **`catalog_forge_sync_ok`**, **`authorized_repos`** summary. |
+| **`health`** | Per-host HTTP **QUERY** smoke via **`scripts/validate-relay-query.mjs`** (default repos **`paradigm-threat-files`**, **`paradigm-threat-timeline`**, query **`venus`**). Optional **`--mcp`** also runs **`validate-relay-mcp.mjs`**. Override with **`RELAY_FLEET_HEALTH_REPOS`**, **`RELAY_FLEET_HEALTH_QUERY`**. Requires local **`node`**. |
 | **`drift`** | **`git -C $RELAY_MASTER_CATALOG_PATH rev-parse HEAD`** per host (default path **`/opt/relay/src/relay-master`**); flags mismatches. |
 | **`update`** | **`relay-linode-redeploy-seed.sh`** per host with **`RELAY_REDEPLOY_SKIP_SEED=1`**, then **`systemctl restart relay-gateway relay-git-daemon`**. |
 | **`deploy-all`** | Same as **`update`** (**`relay-linode-redeploy-seed.sh`** …). **`./scripts/deploy-all-masters.sh`** wraps **`relay-fleet.sh --build deploy-all`** (always repacks — use **`relay-fleet.sh deploy-all`** alone only if you intend to reuse an existing tarball). |
@@ -70,6 +71,8 @@ cd relay-gateway
 ./scripts/relay-fleet.sh hosts
 ./scripts/relay-fleet.sh ssh-check
 ./scripts/relay-fleet.sh status --only=atlanta3.relaygateway.net
+./scripts/relay-fleet.sh health
+./scripts/relay-fleet.sh health --mcp
 ./scripts/relay-fleet.sh drift
 # Rebuild tarball + push to whole fleet (preferred flag order):
 ./scripts/relay-fleet.sh --build deploy-all

@@ -1,9 +1,8 @@
-# Copy to terraform.tfvars (gitignored)
-
+# Per-target tfvars (copy *.tfvars.example → *.tfvars; gitignored):
+#   dfw1.tfvars  — spot-dfw1 (gp.vs1.medium-dfw)
+#   lon1.tfvars  — spot-lon1 (ch.vs1.medium-lon; cheaper London market)
+#   hkg1.tfvars  — spot-hkg1 (gp.vs1.medium-hkg)
+#
 # rackspace_spot_token = "REPLACE"   # or export RXTSPOT_TOKEN
-
-# server_class = "gp.vs1.medium-dfw"
-# bid_price    = 0.005
-
-# If VM already exists (Spot UI): set IP and use relay-master-deploy --install-only
-# public_ip_override = "174.143.201.221"
+#
+# If VM already exists (Spot UI / MCP): set public_ip_override and use --install-only

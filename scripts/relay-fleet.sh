@@ -42,6 +42,7 @@ Subcommands:
   hosts               Print fleet hosts, SSH user, identity path
   ssh-check           Parallel SSH probe (fails if any host fails)
   status              POST https://<host>/api/config per host (parallel)
+  health              QUERY (+ optional MCP) smoke per host via validate-relay-*.mjs
   drift               Compare catalog git HEAD across fleet
   update              relay-linode-redeploy-seed per host (RELAY_REDEPLOY_SKIP_SEED=1)
   deploy-all          Same as update (canonical fleet deploy entry)
@@ -66,6 +67,8 @@ reclone-repo flags:
 Examples:
   ./scripts/relay-fleet.sh ssh-check
   ./scripts/relay-fleet.sh status --only=atlanta3.relaygateway.net
+  ./scripts/relay-fleet.sh health
+  ./scripts/relay-fleet.sh health --mcp
   ./scripts/relay-fleet.sh --build deploy-all
   ./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net --build update
   ./scripts/relay-fleet.sh features-set --only=atlanta3.relaygateway.net --piper=0 --npm-pkgs=
@@ -220,6 +223,51 @@ cmd_status() {
   done
   for pid in $(jobs -p); do
     wait "$pid" || fail=1
+  done
+  [[ "$fail" -eq 0 ]] || exit 1
+}
+
+# QUERY/MCP smoke against live HTTPS apex. Repos default to PT files + timeline.
+# Optional: health --mcp   also run validate-relay-mcp.mjs per host/repo
+# Env: RELAY_FLEET_HEALTH_REPOS="paradigm-threat-files paradigm-threat-timeline"
+#      RELAY_FLEET_HEALTH_QUERY=venus
+cmd_health() {
+  source_env
+  parse_hosts_to_array
+  local with_mcp=0 arg
+  for arg in "$@"; do
+    case "$arg" in
+      --mcp) with_mcp=1 ;;
+      -h|--help) echo "usage: relay-fleet.sh health [--mcp]"; return 0 ;;
+      *) die "health: unknown arg: $arg (try --mcp)" ;;
+    esac
+  done
+  local q_script="$ROOT/scripts/validate-relay-query.mjs"
+  local m_script="$ROOT/scripts/validate-relay-mcp.mjs"
+  [[ -f "$q_script" ]] || die "missing $q_script"
+  command -v node >/dev/null || die "node required for health (validate-relay-query.mjs)"
+  local repos="${RELAY_FLEET_HEALTH_REPOS:-paradigm-threat-files paradigm-threat-timeline}"
+  local q="${RELAY_FLEET_HEALTH_QUERY:-venus}"
+  local h repo fail=0 base
+  for h in "${FLEET_HOSTS[@]}"; do
+    base="https://${h}"
+    echo "[relay-fleet] health begin $h"
+    for repo in $repos; do
+      echo "  QUERY $repo q=$q"
+      if ! node "$q_script" "$base" "$repo" "$q"; then
+        echo "[relay-fleet] health FAIL QUERY $h $repo"
+        fail=1
+      fi
+      if [[ "$with_mcp" -eq 1 ]]; then
+        [[ -f "$m_script" ]] || die "missing $m_script"
+        echo "  MCP $repo"
+        if ! node "$m_script" "$base" "$repo"; then
+          echo "[relay-fleet] health FAIL MCP $h $repo"
+          fail=1
+        fi
+      fi
+    done
+    echo "[relay-fleet] health end $h"
   done
   [[ "$fail" -eq 0 ]] || exit 1
 }
@@ -495,6 +543,7 @@ case "$SUB" in
   hosts) cmd_hosts ;;
   ssh-check) cmd_ssh_check ;;
   status) cmd_status ;;
+  health) cmd_health "$@" ;;
   drift) cmd_drift ;;
   update) cmd_update ;;
   deploy-all) cmd_deploy_all ;;

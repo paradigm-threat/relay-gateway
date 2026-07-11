@@ -1,0 +1,9 @@
+# Copy to lon1.tfvars (gitignored) for spot-lon1 deploys.
+
+relay_node         = "lon1"
+region             = "uk-lon-1"
+cloudspace_name    = "relay-network-lon"
+server_class       = "ch.vs1.medium-lon"
+bid_price          = 0.01
+vm_pool_name       = "dc16291b-e19d-4f3a-880e-7eb721a07e12"
+public_ip_override = "134.213.138.182"
