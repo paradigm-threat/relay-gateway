@@ -58,6 +58,26 @@ fn resolve_commit_oid(repo: &Repository, rev: &str) -> Option<String> {
     Some(commit.id().to_string())
 }
 
+/// Quarantine-safe OID resolve for `pre-receive` (inherits `GIT_QUARANTINE_PATH` / object dir).
+fn resolve_commit_oid_git(repo_path: &Path, rev: &str) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["rev-parse", "--verify", &format!("{}^{{commit}}", rev)])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?;
+    let oid = s.trim();
+    if oid.len() == 40 && oid.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(oid.to_string())
+    } else {
+        None
+    }
+}
+
 fn load_relay_config_from_tree(repo: &Repository, rev: &str) -> Option<crate::types::RelayConfig> {
     let obj = repo.revparse_single(rev).ok()?;
     let commit = obj.peel_to_commit().ok()?;
@@ -120,12 +140,18 @@ pub fn read_relay_config_cached(repo: &Repository, rev: &str) -> Option<crate::t
 }
 
 /// Parsed `.relay.yaml` via `git show` (quarantine-safe during `pre-receive`), cached by commit OID.
+///
+/// Prefer `git` CLI over libgit2 for resolve + read: during `pre-receive`, new objects live in the
+/// quarantine directory that subprocess `git` inherits, while `Repository::open_bare` often cannot
+/// see them — which previously surfaced as a false "missing .relay.yaml" reject.
 pub fn read_relay_config_at_path_cached(
     repo_path: &Path,
     rev: &str,
 ) -> Option<crate::types::RelayConfig> {
-    let repo = Repository::open_bare(repo_path).ok()?;
-    let commit = resolve_commit_oid(&repo, rev)?;
+    let commit = resolve_commit_oid_git(repo_path, rev).or_else(|| {
+        let repo = Repository::open_bare(repo_path).ok()?;
+        resolve_commit_oid(&repo, rev)
+    })?;
     let key = ConfigKey {
         repo: repo_key(repo_path),
         commit: commit.clone(),
@@ -137,7 +163,10 @@ pub fn read_relay_config_at_path_cached(
         }
     }
 
-    let cfg = load_relay_config_git_show(repo_path, rev)?;
+    let cfg = load_relay_config_git_show(repo_path, rev).or_else(|| {
+        let repo = Repository::open_bare(repo_path).ok()?;
+        load_relay_config_from_tree(&repo, rev)
+    })?;
 
     if cache_enabled() {
         if let Ok(mut s) = state().lock() {
