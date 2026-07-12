@@ -249,6 +249,7 @@ fi
 write_remote_env() {
   local dest="$1" v val
   {
+    printf 'RELAY_MERGE_MESH_ENV=1\n'
     printf 'RELAY_PUBLIC_HOSTNAME=%q\n' "$FQDN"
     printf 'RELAY_SERVER_ID=%q\n' "$RELAY_ID"
     printf 'RELAY_MASTER_PEER_LIST=%q\n' "$RELAY_MASTER_PEER_LIST"

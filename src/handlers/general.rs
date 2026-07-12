@@ -751,3 +751,112 @@ pub async fn post_ensure_bare(
             .into_response(),
     }
 }
+
+/// `POST /api/index/warm/:repo` — JIT-warm SQLite index for a bare repo branch (default `main`).
+pub async fn post_index_warm(
+    State(state): State<AppState>,
+    AxPath(repo): AxPath<String>,
+) -> impl IntoResponse {
+    #[derive(Serialize)]
+    struct WarmResponse {
+        ok: bool,
+        repo: String,
+        branch: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tip: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    }
+
+    let slug = match crate::peer_hook::validate_repo_slug(&repo) {
+        Ok(s) => s,
+        Err(msg) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(WarmResponse {
+                    ok: false,
+                    repo,
+                    branch: crate::types::DEFAULT_BRANCH.to_string(),
+                    tip: None,
+                    error: Some(msg.to_string()),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let branch = crate::types::DEFAULT_BRANCH.to_string();
+    let root = state.repo_path.clone();
+    let slug_out = slug.clone();
+    let branch_out = branch.clone();
+    let join = tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let bare = root.join(format!("{}.git", slug));
+        if !bare.is_dir() {
+            return Err(format!("bare repository {}.git not found", slug));
+        }
+        let repo = git2::Repository::open_bare(&bare).map_err(|e| e.to_string())?;
+        let refname = format!("refs/heads/{}", branch);
+        let tip = repo
+            .refname_to_id(&refname)
+            .map_err(|_| format!("branch {} not found", branch))?
+            .to_string();
+        let ctx = git::HookContext {
+            repo_path: bare,
+            old_commit: String::new(),
+            new_commit: tip.clone(),
+            refname: format!("refs/heads/{}", branch),
+            branch: branch.clone(),
+            is_verified: true,
+            files: Default::default(),
+        };
+        if let Some(cfg) = git::read_relay_config(&repo, &tip) {
+            if git::has_index_hook(&cfg) {
+                let lock = git::branch_operation_mutex(ctx.repo_path.clone(), branch.clone());
+                let _guard = lock.lock().unwrap();
+                git::ensure_indexed(&ctx).map_err(|e| e.to_string())?;
+            } else {
+                return Err("repo has no index hook".into());
+            }
+        } else {
+            return Err("no .relay.yaml at tip".into());
+        }
+        Ok(tip)
+    })
+    .await;
+
+    match join {
+        Ok(Ok(tip)) => (
+            StatusCode::OK,
+            Json(WarmResponse {
+                ok: true,
+                repo: slug_out.clone(),
+                branch: branch_out.clone(),
+                tip: Some(tip),
+                error: None,
+            }),
+        )
+            .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::CONFLICT,
+            Json(WarmResponse {
+                ok: false,
+                repo: slug_out.clone(),
+                branch: branch_out.clone(),
+                tip: None,
+                error: Some(e),
+            }),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(WarmResponse {
+                ok: false,
+                repo: slug_out.clone(),
+                branch: branch_out.clone(),
+                tip: None,
+                error: Some("internal task join failed".into()),
+            }),
+        )
+            .into_response(),
+    }
+}

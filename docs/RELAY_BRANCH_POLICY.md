@@ -14,6 +14,7 @@
 - **`*` rule**: typically `requireSigned: true`, `allowUnsigned: false`, and **`allowedKeys`** (SSH public key lines).
 - **`develop`** (or similar): `allowUnsigned: true` for unsigned commits on that branch only.
 - **Governance**: if `.relay.yaml` changes, the commit must still verify with the **parent’s** allowlist when the parent branch rule required signatures (so new keys are added only by already-trusted signers).
+- **Privileged sections** (`git.origins`, `notifyMode`, `autoPush`, `branchRules` / keys, `server.hooks`): when the diff touches these, the commit must be signed by a key in the parent’s **`adminKeys`** (not merely **`allowedKeys`**). Repos cannot disable this floor. See **[`RELAY_BRANCH_POLICY_OPERATOR.md`](./RELAY_BRANCH_POLICY_OPERATOR.md)** and **[`RELAY_CATALOG_RESCUE.md`](./RELAY_CATALOG_RESCUE.md)**.
 
 ## Verification
 

@@ -34,7 +34,7 @@ PIPER_CACHE_TTL_SECONDS="${RELAY_FEAT_PIPER_CACHE_TTL_SECONDS:-86400}"
 PIPER_CACHE_MAX_FILES="${RELAY_FEAT_PIPER_CACHE_MAX_FILES:-1000}"
 
 # Semicolon-separated FQDNs; used when RELAY_MASTER_PEER_LIST is unset (non-interactive) or when the operator accepts the interactive default (Enter).
-DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-atlanta2.relaygateway.net;atlanta3.relaygateway.net;jp-osa.relaygateway.net}"
+DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-dfw1.relaygateway.net;lon1.relaygateway.net;hkg1.relaygateway.net}"
 
 log() { echo "[relay-install] $*" >&2; }
 die() { echo "[relay-install] ERROR: $*" >&2; exit 1; }
@@ -605,6 +605,7 @@ After=network.target
 Type=simple
 User=relay
 Group=relay
+EnvironmentFile=-$INSTALL/relay.env
 ExecStart=/usr/bin/git daemon --reuseaddr --base-path=$INSTALL/data --export-all --informative-errors --enable=receive-pack --port=$GIT_PORT $INSTALL/data
 Restart=always
 RestartSec=3
@@ -1046,6 +1047,48 @@ append_relay_env_git_ensure_bare_default() {
   echo "RELAY_GIT_ENSURE_BARE_ENABLED=1" >>"$f"
 }
 
+# Set or replace KEY=VALUE in relay.env.
+upsert_relay_env_var() {
+  local f="$1" key="$2" val="$3"
+  touch "$f"
+  if grep -q "^${key}=" "$f" 2>/dev/null; then
+    local tmp
+    tmp="$(mktemp)"
+    grep -v "^${key}=" "$f" >"$tmp" || true
+    printf '%s=%s\n' "$key" "$val" >>"$tmp"
+    mv "$tmp" "$f"
+  else
+    printf '%s=%s\n' "$key" "$val" >>"$f"
+  fi
+}
+
+# Merge mesh peer list + secrets from install environment (fleet redeploy / relay-master-deploy).
+merge_relay_env_mesh_from_env() {
+  local f="$INSTALL/relay.env"
+  touch "$f"
+  local merge="${RELAY_MERGE_MESH_ENV:-0}"
+  local peers="${RELAY_MASTER_PEER_LIST:-}"
+  local peer_secret="${RELAY_PEER_SECRET:-}"
+  local mesh_secret="${RELAY_MASTER_MESH_SECRET:-}"
+
+  if [[ -n "$peers" ]]; then
+    if [[ "$merge" == "1" ]] || ! grep -q '^RELAY_MASTER_PEER_LIST=' "$f" 2>/dev/null; then
+      upsert_relay_env_var "$f" RELAY_MASTER_PEER_LIST "$peers"
+    fi
+  fi
+  if [[ -n "$peer_secret" ]]; then
+    if [[ "$merge" == "1" ]] || ! grep -q '^RELAY_PEER_SECRET=' "$f" 2>/dev/null; then
+      upsert_relay_env_var "$f" RELAY_PEER_SECRET "$peer_secret"
+    fi
+  fi
+  if [[ -n "$mesh_secret" ]]; then
+    if [[ "$merge" == "1" ]] || ! grep -q '^RELAY_MASTER_MESH_SECRET=' "$f" 2>/dev/null; then
+      upsert_relay_env_var "$f" RELAY_MASTER_MESH_SECRET "$mesh_secret"
+    fi
+  fi
+  lock_relay_env_permissions
+}
+
 do_install() {
   need_root
   if [[ -f "$FEATURES_JSON" ]] && [[ "${RELAY_INSTALL_FRESH:-}" != "1" ]]; then
@@ -1082,6 +1125,7 @@ do_install() {
   append_relay_env_server_id
   append_relay_env_peer_list
   append_relay_env_git_ensure_bare_default
+  merge_relay_env_mesh_from_env
   lock_relay_env_permissions
   systemctl enable relay-gateway relay-git-daemon
   systemctl restart relay-git-daemon relay-gateway
@@ -1110,6 +1154,7 @@ do_update() {
     install_piper_artifacts "$piper_voices" "$piper_default_voice"
   fi
   refresh_features_inventory
+  merge_relay_env_mesh_from_env
   systemctl restart relay-git-daemon relay-gateway
   maybe_enable_reconcile_timer
   systemctl try-restart relay-tts-piper 2>/dev/null || true
@@ -1167,6 +1212,7 @@ do_repair() {
     fi
   fi
   refresh_features_inventory
+  merge_relay_env_mesh_from_env
   lock_relay_env_permissions
   systemctl restart relay-git-daemon relay-gateway
   maybe_enable_reconcile_timer

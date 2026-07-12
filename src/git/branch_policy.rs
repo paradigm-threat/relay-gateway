@@ -594,7 +594,30 @@ fn enforce_single_commit_with_catalog(
     }
 
     if let Some(parent) = first_parent(repo_path, commit) {
-        if relay_yaml_changed(repo_path, &parent, commit) {
+        if crate::git::privileged_policy::privileged_relay_yaml_changed(repo_path, &parent, commit) {
+            let parent_git =
+                read_git_config_from_revision(repo_path, &parent).ok_or_else(|| {
+                    format!(
+                        "commit {}: parent {} has no readable .relay.yaml for admin check",
+                        commit, parent
+                    )
+                })?;
+            let parent_rules = parent_git.branch_rules.ok_or_else(|| {
+                format!(
+                    "commit {}: parent has no branchRules for admin check",
+                    commit
+                )
+            })?;
+            let parent_rule = resolve_branch_rule(branch, &parent_rules).ok_or_else(|| {
+                format!(
+                    "commit {}: parent policy does not cover branch {:?}",
+                    commit, branch
+                )
+            })?;
+            let parent_rule = apply_catalog_branch_flags(&parent_rule, catalog, branch);
+            let admin_rule = crate::git::privileged_policy::admin_rule_from_parent(&parent_rule)?;
+            verify_commit_for_rule(repo_path, commit, &admin_rule, catalog)?;
+        } else if relay_yaml_changed(repo_path, &parent, commit) {
             let parent_git =
                 read_git_config_from_revision(repo_path, &parent).ok_or_else(|| {
                     format!(
@@ -666,6 +689,7 @@ mod tests {
         BranchRule {
             require_signed: req,
             allowed_keys: None,
+            admin_keys: None,
             allowed_key_fingerprints: None,
             allow_unsigned: uns,
         }

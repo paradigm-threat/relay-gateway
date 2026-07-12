@@ -9,6 +9,7 @@ pub mod mesh_events;
 pub mod mesh_role;
 pub mod notify;
 pub mod peer_hook;
+pub mod peer_notify;
 pub mod router;
 pub mod transpiler;
 pub mod types;

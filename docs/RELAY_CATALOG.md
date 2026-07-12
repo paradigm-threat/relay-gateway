@@ -68,6 +68,8 @@ Auxiliary branches (`comments`, `dev`) are not publish branches.
 
 Set **`RELAY_MASTER_CATALOG_PATH`** to a `relay-master` checkout. Pre-receive loads `catalog/repos/<slug>.json` and merges catalog signing with `.relay.yaml` branch rules.
 
+**Tip apply (rescue):** when **`relay-master`** `main` moves, gateway **catalog apply** reclones/removes bare mirrors under **`RELAY_REPO_PATH`** per **`relay-catalog.json`**. Operator runbook: **[`RELAY_CATALOG_RESCUE.md`](./RELAY_CATALOG_RESCUE.md)**.
+
 ## Branch features
 
 ### `comments`

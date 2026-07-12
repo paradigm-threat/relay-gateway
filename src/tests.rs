@@ -1486,6 +1486,8 @@ server:
             peer: "peer.example".into(),
             branch: "main".into(),
             new_sha: None,
+            via: vec![],
+            hops_remaining: None,
         };
         let r = handlers::post_peer_hook(State(state), HeaderMap::new(), Json(body)).await;
         let (parts, _) = r.into_response().into_parts();
@@ -1530,6 +1532,8 @@ server:
             peer: "peer.example".into(),
             branch: "main".into(),
             new_sha: None,
+            via: vec![],
+            hops_remaining: None,
         };
         let r = handlers::post_peer_hook(State(state), headers, Json(body)).await;
         let (parts, _) = r.into_response().into_parts();

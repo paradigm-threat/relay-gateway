@@ -145,6 +145,25 @@ fn main() -> anyhow::Result<()> {
             if let Err(e) = handle_auto_push(&ctx) {
                 error!("Auto-push failed: {}", e);
             }
+
+            let repo_slug = relay_server::notify::normalize_repo_slug(
+                ctx.repo_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown.git"),
+            );
+            if relay_server::git::catalog_apply::is_relay_master_slug(&repo_slug) {
+                relay_server::git::catalog_apply::handle_relay_master_post_receive(&ctx);
+            } else if let Ok(repo) = git2::Repository::open_bare(&ctx.repo_path) {
+                if let Some(cfg) = relay_server::git::read_relay_config(&repo, &ctx.new_commit) {
+                    relay_server::peer_notify::notify_after_push(
+                        &repo_slug,
+                        &ctx.branch,
+                        &ctx.new_commit,
+                        &cfg,
+                    );
+                }
+            }
         }
     }
 

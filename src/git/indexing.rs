@@ -110,3 +110,29 @@ pub fn ensure_indexed(ctx: &HookContext) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// Async index warm after peer-fetch / catalog apply (errors logged only).
+pub fn spawn_ensure_indexed(repo_path: PathBuf, branch: String, tip_sha: String) {
+    std::thread::spawn(move || {
+        let ctx = HookContext {
+            repo_path: repo_path.clone(),
+            old_commit: String::new(),
+            new_commit: tip_sha.clone(),
+            refname: format!("refs/heads/{}", branch),
+            branch: branch.clone(),
+            is_verified: true,
+            files: Default::default(),
+        };
+        if let Ok(repo) = git2::Repository::open_bare(&repo_path) {
+            if let Some(cfg) = crate::git::read_relay_config(&repo, &tip_sha) {
+                if crate::git::has_index_hook(&cfg) {
+                    let lock = branch_operation_mutex(repo_path, branch);
+                    let _guard = lock.lock().unwrap();
+                    if let Err(e) = ensure_indexed(&ctx) {
+                        tracing::warn!(error = %e, "spawn_ensure_indexed failed");
+                    }
+                }
+            }
+        }
+    });
+}

@@ -87,6 +87,48 @@ fn git_show(repo: &Path, commit: &str, path: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+fn git_path_last_commit_times(repo: &Path, commit: &str) -> Result<HashMap<String, String>, String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .arg("log")
+        .arg("--no-renames")
+        .arg("--name-only")
+        .arg("--pretty=format:%cI")
+        .arg(commit)
+        .output()
+        .map_err(|e| format!("git log path times: {}", e))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git log path times failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+
+    let mut current_date = String::new();
+    let mut by_path = HashMap::new();
+    for raw in String::from_utf8_lossy(&out.stdout).lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.len() >= 20
+            && line.as_bytes().get(4) == Some(&b'-')
+            && line.as_bytes().get(7) == Some(&b'-')
+            && line.as_bytes().get(10) == Some(&b'T')
+        {
+            current_date = line.to_string();
+            continue;
+        }
+        if !current_date.is_empty() {
+            by_path
+                .entry(line.to_string())
+                .or_insert_with(|| current_date.clone());
+        }
+    }
+    Ok(by_path)
+}
+
 fn path_excluded(path: &str) -> bool {
     let parts: Vec<&str> = path.split('/').collect();
     for (i, p) in parts.iter().enumerate() {
@@ -138,9 +180,35 @@ fn blog_updated_iso(path: &str) -> Option<String> {
     Some(format!("{}T12:00:00Z", &m[1]))
 }
 
+fn path_content_kind(path: &str) -> &'static str {
+    let normalized = path.trim_start_matches('/');
+    if !normalized.ends_with(".md") || normalized.ends_with(".auto.md") {
+        return "exclude";
+    }
+
+    let basename = normalized.rsplit('/').next().unwrap_or(normalized);
+    if basename == "page.md"
+        || basename.eq_ignore_ascii_case("readme.md")
+        || normalized.starts_with("docs/")
+    {
+        return "exclude";
+    }
+    if normalized.starts_with("blog/") {
+        return "blog";
+    }
+    if normalized.contains("/investigations/") {
+        return "investigation";
+    }
+    if basename.trim_end_matches(".md").contains("investigation") {
+        return "investigation";
+    }
+    "article"
+}
+
 /// Flat path-catalog docs (leaf shape compatible with flatten_path_index).
 pub fn build_path_tree_docs(repo: &Path, commit: &str) -> Result<Vec<Value>, String> {
     let paths = git_ls_tree(repo, commit)?;
+    let path_times = git_path_last_commit_times(repo, commit).unwrap_or_default();
     let mut docs = Vec::new();
     for path in paths {
         if path_excluded(&path) {
@@ -203,8 +271,21 @@ pub fn build_path_tree_docs(repo: &Path, commit: &str) -> Result<Vec<Value>, Str
             doc.insert("title".into(), Value::String(basename));
         }
 
-        if let Some(iso) = blog_updated_iso(&path) {
-            doc.insert("_updated".into(), Value::String(iso));
+        doc.insert(
+            "content_kind".into(),
+            Value::String(path_content_kind(&path).to_string()),
+        );
+
+        if ext == ".md" {
+            if let Some(published) = blog_updated_iso(&path) {
+                doc.insert("_originalPublishedAt".into(), Value::String(published.clone()));
+                doc.insert(
+                    "_updated".into(),
+                    Value::String(path_times.get(&path).cloned().unwrap_or(published)),
+                );
+            } else if let Some(updated) = path_times.get(&path) {
+                doc.insert("_updated".into(), Value::String(updated.clone()));
+            }
         }
 
         docs.push(Value::Object(doc));
@@ -716,6 +797,48 @@ mod tests {
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0]["path"], "cosmos/venus/page.md");
         assert_eq!(docs[0]["_title"], "Venus");
+        assert_eq!(docs[0]["content_kind"], "exclude");
+        assert!(docs[0]["_updated"].as_str().is_some());
+    }
+
+    #[test]
+    fn path_tree_excludes_readme_from_content_kind() {
+        let (_dir, repo, commit) = commit_files(&[("README.md", "# Readme\n\nHello\n")]);
+        let docs = build_path_tree_docs(&repo, &commit).unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0]["content_kind"], "exclude");
+    }
+
+    #[test]
+    fn path_tree_adds_content_kind_and_dates() {
+        let (_dir, repo, commit) = commit_files(&[
+            ("cosmos/mars.md", "# Mars\n\nHello\n"),
+            (
+                "events/false_flag/investigations/tonkin-investigation.md",
+                "# Tonkin\n\nHello\n",
+            ),
+            ("blog/2026-07-04-roundup.md", "# Roundup\n\nHello\n"),
+            ("cosmos/mars.png", "not really an image"),
+        ]);
+        let docs = build_path_tree_docs(&repo, &commit).unwrap();
+
+        let by_path = |path: &str| docs.iter().find(|d| d["path"] == path).unwrap();
+        let article = by_path("cosmos/mars.md");
+        assert_eq!(article["content_kind"], "article");
+        assert!(article["_updated"].as_str().is_some());
+
+        let investigation = by_path("events/false_flag/investigations/tonkin-investigation.md");
+        assert_eq!(investigation["content_kind"], "investigation");
+        assert!(investigation["_updated"].as_str().is_some());
+
+        let blog = by_path("blog/2026-07-04-roundup.md");
+        assert_eq!(blog["content_kind"], "blog");
+        assert_eq!(blog["_originalPublishedAt"], "2026-07-04T12:00:00Z");
+        assert!(blog["_updated"].as_str().is_some());
+
+        let asset = by_path("cosmos/mars.png");
+        assert_eq!(asset["content_kind"], "exclude");
+        assert!(asset["_updated"].is_null());
     }
 
     #[test]

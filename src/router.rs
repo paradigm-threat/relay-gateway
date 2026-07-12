@@ -38,6 +38,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/git/ensure-bare/:repo",
             post(handlers::post_ensure_bare),
         )
+        .route("/api/index/warm/:repo", post(handlers::post_index_warm))
         .route("/git-pull", post(handlers::post_git_pull))
         .route("/hooks/peer", post(handlers::post_peer_hook))
         .route("/hooks/mesh-event", post(handlers::post_mesh_event))

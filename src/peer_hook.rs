@@ -66,6 +66,12 @@ pub struct PeerHookBody {
     /// When set, if `refs/heads/{branch}` already points here, skip fetch (idempotent notify).
     #[serde(default)]
     pub new_sha: Option<String>,
+    /// Hosts already notified (loop guard for ring hop-forward).
+    #[serde(default)]
+    pub via: Vec<String>,
+    /// Remaining ring hops after this fetch (decremented per hop).
+    #[serde(default)]
+    pub hops_remaining: Option<u32>,
 }
 
 fn default_branch() -> String {
@@ -422,9 +428,12 @@ pub async fn post_peer_hook(
     let root = state.repo_path.clone();
     let authorized = state.authorized_repos.clone();
     let sid = state.relay_server_id.clone();
+    let node_fqdn = state.node_fqdn.clone();
     let repo_err = body.repo.clone();
     let peer_err = body.peer.clone();
     let branch_err = body.branch.clone();
+    let via = body.via.clone();
+    let hops_remaining = body.hops_remaining;
 
     let res = tokio::task::spawn_blocking(move || {
         let cfg = authorized.as_deref();
@@ -461,6 +470,42 @@ pub async fn post_peer_hook(
                         state.relay_server_id.clone(),
                         state.node_fqdn.clone(),
                     );
+                    let bare = state.repo_path.join(format!("{}.git", r.repo));
+                    if crate::git::catalog_apply::is_relay_master_slug(&r.repo) {
+                        crate::git::catalog_apply::handle_relay_master_peer_fetch(
+                            &bare,
+                            r.before.as_deref(),
+                            sha,
+                            &r.branch,
+                            &via,
+                            hops_remaining,
+                        );
+                    } else {
+                        crate::git::spawn_ensure_indexed(
+                            bare.clone(),
+                            r.branch.clone(),
+                            sha.clone(),
+                        );
+                        if let Some(git) =
+                            crate::peer_notify::git_config_from_bare_tip(&bare, &r.branch, sha)
+                        {
+                            let mut next_via = via.clone();
+                            if let Some(self_host) = node_fqdn.as_deref() {
+                                next_via.push(self_host.to_string());
+                            }
+                            let next_hops = hops_remaining.map(|h| h.saturating_sub(1));
+                            if next_hops.unwrap_or(0) > 0 {
+                                crate::peer_notify::spawn_hop_forward(
+                                    r.repo.clone(),
+                                    r.branch.clone(),
+                                    sha.clone(),
+                                    git,
+                                    next_via,
+                                    next_hops,
+                                );
+                            }
+                        }
+                    }
                 }
             }
             (StatusCode::OK, Json(r)).into_response()

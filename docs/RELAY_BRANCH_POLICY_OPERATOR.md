@@ -33,6 +33,32 @@ From **`relay-gateway/`** after **`cargo build --release --bin relay-branch-poli
 
 Signing: if **`branchRules`** require SSH-signed commits, **`git verify-commit`** must succeed locally (same as on masters). When **`RELAY_MASTER_CATALOG_PATH`** is set and the repo has **`signing_keys_source: catalog`** in [`catalog/repos/<repo>.json`](../../relay-master/catalog/repos/), keys come from the catalog record (verify = active + disabled; authorize = active only). Repo **`allowedKeys`** still apply during migration (`signing_keys_source: repo`). See [`RELAY_CATALOG.md`](./RELAY_CATALOG.md).
 
+## Admin vs editor keys (`adminKeys`)
+
+| Key field | Who | What it gates |
+|-----------|-----|----------------|
+| **`allowedKeys`** | Editors | Normal commits and content changes on protected branches. |
+| **`adminKeys`** | Network / repo admins | **Privileged** **`.relay.yaml`** diffs: **`git.origins`**, **`notifyMode`**, **`autoPush`**, **`branchRules`** / key lists, **`server.hooks`**. Relay enforces a **floor** — repos cannot shrink this set. |
+
+Privileged changes require a signature from **`adminKeys`** on the **parent** tip’s branch rule (see [`src/git/privileged_policy.rs`](../src/git/privileged_policy.rs)).
+
+**Cold admin key:** store a backup SSH public line in **`adminKeys`** (offline or separate machine) on every repo that enables admins. If the sole online admin key is lost, recovery is **[catalog rescue](./RELAY_CATALOG_RESCUE.md)** only — not GitLab, not email reset.
+
+Example:
+
+```yaml
+git:
+  branchRules:
+    default:
+      requireSigned: true
+      allowUnsigned: false
+      allowedKeys:
+        - "ssh-ed25519 AAAA... editor"
+      adminKeys:
+        - "ssh-ed25519 AAAA... primary-admin"
+        - "ssh-ed25519 AAAA... cold-backup-admin"
+```
+
 **Catalog PRs (`relay-master`):** require forge approval; commits signed with **active** keys; run **`scripts/check-catalog-pr-signing-keys.sh`** before merge.
 
 ## Unblocking options

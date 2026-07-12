@@ -18,8 +18,9 @@
 **Local git remotes (developer laptop):** add **`git://dfw1|lon1|hkg1.relaygateway.net:9418/<repo>.git`** to every checkout listed in **`relay-master/catalog/repos/`**:
 
 ```bash
-./scripts/relay-local-remotes.sh --all   # ensure-bare on fleet + add remotes + probe
-git push dfw1 main                     # example; use signed commits where .relay.yaml requires it
+./scripts/relay-local-remotes.sh --all   # ensure-bare + fleet remotes + push defaults + probe
+git push                                 # default → dfw1 (first mesh origin); mesh propagates via notify
+git push gitlab main                     # optional GitLab backup (origin renamed to gitlab)
 ```
 
 Edit paths in **`scripts/relay-local-repos.map`**. Legacy **atlanta2** may still use old bare names (e.g. **`snesology.git`**); catalog name **`snesology-library`** is what Spot masters use.
@@ -82,13 +83,61 @@ cd relay-gateway
 ./scripts/relay-fleet.sh reclone-repo paradigm-threat-files --peer=atlanta3.relaygateway.net --only=jp-osa.relaygateway.net
 ```
 
+## Mesh tip-notify (`git.origins`)
+
+Relay mesh is **relay↔relay only** (no GitLab integration in the product path). Per-repo **`.relay.yaml`** can declare an ordered ring:
+
+```yaml
+git:
+  notifyMode: next   # next (default) | all
+  origins:
+    - name: dfw1
+      kind: relay
+      host: dfw1.relaygateway.net
+      fetch: true
+      notify: true
+    - name: lon1
+      kind: relay
+      host: lon1.relaygateway.net
+      notify: true
+```
+
+| Field | Meaning |
+|-------|---------|
+| **`notifyMode: next`** | After validated **`post-receive`**, notify **one** next relay in the ring (wrap). Peer-fetch hop-forwards with **`via`** / **`hops_remaining`** loop guard. |
+| **`notifyMode: all`** | Fan-out tip-notify to every eligible origin (excluding self). |
+| **`kind: relay`** | Only relay peers participate in mesh notify. |
+| **`host`** | Must appear in server **`RELAY_MASTER_PEER_LIST`** when that list is non-empty. |
+| **`notify: false`** | Exclude from notify ring (still allow fetch if configured elsewhere). |
+
+If **`git.origins`** omits relays, notify targets fall back to **`RELAY_MASTER_PEER_LIST`** (minus self). Legacy **`git.autoPush.originList`** remains optional push shorthand to **`git://`** peers.
+
+**Index warm:** peer-fetch and catalog apply spawn async **`ensure_indexed`**; operators can also **`POST /api/index/warm/:repo`** (default branch **`main`**).
+
+**Catalog rescue:** signed **`relay-master`** tip → rm/reclone bare mirrors — **[`RELAY_CATALOG_RESCUE.md`](./RELAY_CATALOG_RESCUE.md)**.
+
+## Pre-deploy checklist
+
+From **`relay-gateway/`** on the operator laptop:
+
+```bash
+./scripts/pre-deploy-check.sh          # cargo test + release build + pack + tarball verify
+./scripts/relay-fleet.sh ssh-check     # SSH to fleet
+./scripts/relay-fleet.sh --build deploy-all
+./scripts/relay-fleet.sh status
+./scripts/relay-fleet.sh health
+./scripts/relay-fleet.sh drift         # relay-master tips aligned
+```
+
+After deploy, smoke mesh tip-notify: signed push to a repo with **`git.origins`** configured; confirm peer **`journalctl -u relay-gateway`** shows `peer notify delivered` on the next hop. Catalog apply: signed **`relay-master`** push with a catalog entry change; confirm Slack audit and bare mirror update on receiving master.
+
 ## Related
 
 - **[`RELAY_BRANCH_POLICY_OPERATOR.md`](./RELAY_BRANCH_POLICY_OPERATOR.md)** — `.relay.yaml` **pre-receive** policy, why forge vs fleet differ, **`relay-branch-policy-check`** validation.
 - **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** — full install / DNS / secrets.
 - **[`.cursor/rules/relay-production-ops.mdc`](../.cursor/rules/relay-production-ops.mdc)** — SSH, autossh, tarball flow.
 - **[`OPERATOR_BARE_REPO_RESET.md`](./OPERATOR_BARE_REPO_RESET.md)** — catalog sync, peer fetch, **`ensure-bare`**.
-- **[`RELAY_FLEET_GIT_CONSENSUS_PLAN.md`](./RELAY_FLEET_GIT_CONSENSUS_PLAN.md)** — (plan) priority authority, auto-reconcile bare tips, UI confirmation model.
+- **[`RELAY_CATALOG_RESCUE.md`](./RELAY_CATALOG_RESCUE.md)** — lost admin / mirror replace via signed **`relay-master`** tip.
 
 ## Follow-ups (mesh health)
 

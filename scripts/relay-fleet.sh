@@ -306,9 +306,21 @@ EOS
 
 default_tgz() { echo "$ROOT/target/relay-linode-deploy.tgz"; }
 
+write_mesh_install_env() {
+  local dest="$1"
+  [[ -n "${RELAY_MASTER_PEER_LIST:-}${RELAY_PEER_SECRET:-}${RELAY_MASTER_MESH_SECRET:-}" ]] || return 1
+  {
+    printf 'RELAY_MERGE_MESH_ENV=1\n'
+    [[ -n "${RELAY_MASTER_PEER_LIST:-}" ]] && printf 'RELAY_MASTER_PEER_LIST="%s"\n' "$RELAY_MASTER_PEER_LIST"
+    [[ -n "${RELAY_PEER_SECRET:-}" ]] && printf 'RELAY_PEER_SECRET=%s\n' "$RELAY_PEER_SECRET"
+    [[ -n "${RELAY_MASTER_MESH_SECRET:-}" ]] && printf 'RELAY_MASTER_MESH_SECRET=%s\n' "$RELAY_MASTER_MESH_SECRET"
+  } >"$dest"
+  chmod 600 "$dest"
+}
+
 # Run install.sh repair|reconfigure-features from a fresh tarball extract (install.sh is not shipped under /opt/relay/bin).
 run_remote_install_cmd() {
-  local h="$1" mode="$2" feat_env_local="${3:-}" tgz staging rf_remote
+  local h="$1" mode="$2" feat_env_local="${3:-}" tgz staging rf_remote mesh_env=""
   tgz="$(default_tgz)"
   if [[ ! -f "$tgz" ]]; then
     log "packing tarball for remote $mode …"
@@ -321,26 +333,37 @@ run_remote_install_cmd() {
   if [[ -n "$feat_env_local" && -f "$feat_env_local" ]]; then
     "${SCP_BATCH[@]}" "$feat_env_local" "$(ssh_target "$h"):/tmp/${staging}.feat.env"
   fi
+  mesh_env="$(mktemp)"
+  if write_mesh_install_env "$mesh_env"; then
+    "${SCP_BATCH[@]}" "$mesh_env" "$(ssh_target "$h"):/tmp/${staging}.mesh.env"
+  else
+    rm -f "$mesh_env"
+    mesh_env=""
+  fi
   "${SSH_BATCH[@]}" "$(ssh_target "$h")" bash -s "$staging" "$rf_remote" "$mode" <<'EOS'
 set -euo pipefail
 ST="$1" TGZ="$2" MODE="$3"
 FEAT="/tmp/${ST}.feat.env"
+MESH="/tmp/${ST}.mesh.env"
 sudo rm -rf "/tmp/$ST"
 sudo mkdir "/tmp/$ST"
 sudo tar xzf "$TGZ" -C "/tmp/$ST"
 sudo rm -f "$TGZ"
 export RELAY_BIN_SOURCE="/tmp/$ST"
 export RELAY_INSTALL_NONINTERACTIVE=1
-if [[ -f "$FEAT" ]]; then
-  sudo chmod 600 "$FEAT" || true
-  # shellcheck disable=SC1090
-  sudo bash -c "set -a; . \"$FEAT\"; set +a; export RELAY_INSTALL_NONINTERACTIVE=1 RELAY_BIN_SOURCE=\"$RELAY_BIN_SOURCE\"; cd \"$RELAY_BIN_SOURCE\" && ./install.sh \"$MODE\""
-  sudo rm -f "$FEAT"
-else
-  sudo bash -c "export RELAY_INSTALL_NONINTERACTIVE=1 RELAY_BIN_SOURCE=\"$RELAY_BIN_SOURCE\"; cd \"$RELAY_BIN_SOURCE\" && ./install.sh \"$MODE\""
-fi
+sudo bash -c "
+  set -euo pipefail
+  set -a
+  [[ -f \"$MESH\" ]] && . \"$MESH\"
+  [[ -f \"$FEAT\" ]] && . \"$FEAT\"
+  set +a
+  export RELAY_INSTALL_NONINTERACTIVE=1 RELAY_BIN_SOURCE=\"$RELAY_BIN_SOURCE\"
+  cd \"$RELAY_BIN_SOURCE\" && ./install.sh \"$MODE\"
+"
+sudo rm -f "$FEAT" "$MESH"
 sudo rm -rf "/tmp/$ST"
 EOS
+  [[ -n "$mesh_env" && -f "$mesh_env" ]] && rm -f "$mesh_env"
 }
 
 cmd_update() {

@@ -83,8 +83,54 @@ pub struct SearchConfig {
     pub plugin: Option<String>,
 }
 
+#[derive(Deserialize, Debug, Default, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum NotifyMode {
+    #[default]
+    Next,
+    All,
+}
+
+#[derive(Deserialize, Debug, Serialize, Clone, PartialEq)]
+pub struct GitOrigin {
+    pub name: Option<String>,
+    /// `relay` (mesh peer) is the supported product path.
+    #[serde(default = "default_origin_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub fetch: Option<bool>,
+    #[serde(default)]
+    pub notify: Option<bool>,
+}
+
+impl Default for GitOrigin {
+    fn default() -> Self {
+        Self {
+            name: None,
+            kind: default_origin_kind(),
+            host: None,
+            url: None,
+            fetch: None,
+            notify: None,
+        }
+    }
+}
+
+fn default_origin_kind() -> String {
+    "relay".to_string()
+}
+
 #[derive(Deserialize, Debug, Default, Serialize, Clone)]
 pub struct GitConfig {
+    /// Mesh tip-notify: `next` (ring) or `all` (fan-out). Default `next`.
+    #[serde(rename = "notifyMode", default)]
+    pub notify_mode: NotifyMode,
+    #[serde(default)]
+    pub origins: Option<Vec<GitOrigin>>,
     #[serde(rename = "autoPush")]
     pub auto_push: Option<AutoPushConfig>,
     #[serde(rename = "branchRules")]
@@ -113,6 +159,9 @@ pub struct BranchRule {
     pub require_signed: Option<bool>,
     #[serde(rename = "allowedKeys")]
     pub allowed_keys: Option<Vec<String>>,
+    /// SSH pub lines that may sign privileged `.relay.yaml` changes (origins, branchRules, …).
+    #[serde(rename = "adminKeys")]
+    pub admin_keys: Option<Vec<String>>,
     #[serde(rename = "allowedKeyFingerprints")]
     pub allowed_key_fingerprints: Option<Vec<String>>,
     #[serde(rename = "allowUnsigned")]

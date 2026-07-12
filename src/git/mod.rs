@@ -1,3 +1,4 @@
+pub mod catalog_apply;
 pub mod binary_policy;
 pub mod catalog_build;
 pub mod branch_features;
@@ -11,6 +12,8 @@ pub mod hooks;
 pub mod image_cache;
 pub mod image_transform;
 pub mod index_policy;
+pub mod origins;
+pub mod privileged_policy;
 pub mod markdown_html;
 pub mod meta_index;
 pub mod index_store;
@@ -37,7 +40,7 @@ pub use get_hook_http::get_hook_json_to_response;
 pub use hooks::{execute_repo_hook, HookContext};
 pub use indexing::{
     branch_data_dir, branch_hash_short, branch_index_paths, branch_operation_mutex,
-    branch_sqlite_path, ensure_indexed,
+    branch_sqlite_path, ensure_indexed, spawn_ensure_indexed,
 };
 pub use index_policy::has_index_hook;
 pub use repo::{
