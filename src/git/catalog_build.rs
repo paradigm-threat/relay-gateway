@@ -129,19 +129,25 @@ fn git_path_last_commit_times(repo: &Path, commit: &str) -> Result<HashMap<Strin
     Ok(by_path)
 }
 
-fn path_excluded(path: &str) -> bool {
+fn path_excluded(path: &str, scoped_root: Option<&str>) -> bool {
     let parts: Vec<&str> = path.split('/').collect();
+    let under_scoped_root = scoped_root
+        .map(|r| {
+            let root = r.trim_matches('/');
+            path == root || path.starts_with(&format!("{}/", root))
+        })
+        .unwrap_or(false);
     for (i, p) in parts.iter().enumerate() {
         if EXCLUDE_DIRS.contains(p) {
             return true;
         }
-        // skip hidden segments except allowing nothing under .git already covered
-        if p.starts_with('.') && i == 0 {
+        // skip hidden top-level segments unless indexing an explicit dot-root prefix
+        if p.starts_with('.') && i == 0 && !under_scoped_root {
             return true;
         }
     }
     let basename = parts.last().copied().unwrap_or("");
-    EXCLUDE_FILES.contains(&basename) || basename.starts_with('.')
+    EXCLUDE_FILES.contains(&basename) || (!under_scoped_root && basename.starts_with('.'))
 }
 
 fn ext_of(path: &str) -> String {
@@ -207,11 +213,26 @@ fn path_content_kind(path: &str) -> &'static str {
 
 /// Flat path-catalog docs (leaf shape compatible with flatten_path_index).
 pub fn build_path_tree_docs(repo: &Path, commit: &str) -> Result<Vec<Value>, String> {
+    build_path_tree_docs_scoped(repo, commit, None)
+}
+
+/// Like [`build_path_tree_docs`] but optionally limits to `root/` (e.g. `.relay/chat/channels`).
+pub fn build_path_tree_docs_scoped(
+    repo: &Path,
+    commit: &str,
+    root: Option<&str>,
+) -> Result<Vec<Value>, String> {
+    let scoped_root = root.map(|r| r.trim_matches('/').to_string());
     let paths = git_ls_tree(repo, commit)?;
     let path_times = git_path_last_commit_times(repo, commit).unwrap_or_default();
     let mut docs = Vec::new();
     for path in paths {
-        if path_excluded(&path) {
+        if let Some(ref prefix) = scoped_root {
+            if path != *prefix && !path.starts_with(&format!("{}/", prefix)) {
+                continue;
+            }
+        }
+        if path_excluded(&path, scoped_root.as_deref()) {
             continue;
         }
         let ext = ext_of(&path);
@@ -785,6 +806,28 @@ mod tests {
             .commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
             .unwrap();
         (dir, repo_path, oid.to_string())
+    }
+
+    #[test]
+    fn path_tree_scoped_root_indexes_dot_relay_chat() {
+        let (_dir, repo, commit) = commit_files(&[
+            (
+                ".relay/chat/channels/general/2026-07-13T14-00-00-000Z_00000001_SEED00001.md",
+                "---\nschema: paradigm.chat.v1\n---\nHello chat\n",
+            ),
+            ("README.md", "# Readme\n\nHello\n"),
+        ]);
+        let docs = build_path_tree_docs_scoped(
+            &repo,
+            &commit,
+            Some(".relay/chat/channels"),
+        )
+        .unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(
+            docs[0]["path"],
+            ".relay/chat/channels/general/2026-07-13T14-00-00-000Z_00000001_SEED00001.md"
+        );
     }
 
     #[test]

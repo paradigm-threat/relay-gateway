@@ -183,7 +183,7 @@ fn apply_collection_docs(
 
 /// Ingest catalog sources from `search.yaml` (JSON blobs and/or tip-tree builders).
 pub fn ingest_catalog_json_indexes(ctx: &HookContext, sqlite_path: &Path) -> anyhow::Result<()> {
-    use crate::git::catalog_build::{build_content_events_docs, build_path_tree_docs};
+    use crate::git::catalog_build::{build_content_events_docs, build_path_tree_docs_scoped};
     use crate::git::repo::read_relay_config;
     use crate::git::search_config::{self, SearchSource};
 
@@ -239,9 +239,13 @@ pub fn ingest_catalog_json_indexes(ctx: &HookContext, sqlite_path: &Path) -> any
                         any = true;
                     }
                 }
-                SearchSource::PathTree { mode } => {
-                    let docs = build_path_tree_docs(&ctx.repo_path, &ctx.new_commit)
-                        .map_err(|e| anyhow::anyhow!("path_tree: {e}"))?;
+                SearchSource::PathTree { root, mode } => {
+                    let docs = build_path_tree_docs_scoped(
+                        &ctx.repo_path,
+                        &ctx.new_commit,
+                        root.as_deref(),
+                    )
+                    .map_err(|e| anyhow::anyhow!("path_tree: {e}"))?;
                     apply_collection_docs(
                         sqlite_path,
                         coll_name,

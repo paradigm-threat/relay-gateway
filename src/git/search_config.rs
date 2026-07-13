@@ -46,6 +46,9 @@ pub enum SearchSource {
     },
     /// Walk tip tree (markdown/files) into flat path docs — no committed index.json.
     PathTree {
+        /// When set, only paths under this prefix are indexed (allows `.relay/…` roots).
+        #[serde(default)]
+        root: Option<String>,
         #[serde(default = "default_replace_mode")]
         mode: IngestMode,
     },
