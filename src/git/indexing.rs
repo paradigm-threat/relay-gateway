@@ -1,6 +1,10 @@
+use crate::git::chat_index;
 use crate::git::hooks::{execute_repo_hook, HookContext};
 use crate::git::index_store;
 use crate::git::meta_index;
+use crate::git::repo::read_relay_config;
+use crate::git::search_config;
+use crate::git::search_plugins::{self, PLUGIN_CHAT};
 use crate::git::sqlite_index;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -84,7 +88,32 @@ pub fn ensure_indexed(ctx: &HookContext) -> anyhow::Result<()> {
         indexed_head = read_json_indexed_head(&json_path);
     }
 
+    let relay = git2::Repository::open_bare(&ctx.repo_path)
+        .ok()
+        .and_then(|r| read_relay_config(&r, &ctx.new_commit))
+        .unwrap_or_default();
+    let search = search_config::load_search_config(
+        &ctx.repo_path,
+        &ctx.new_commit,
+        &relay,
+        None,
+    );
+    let plugin = search
+        .plugin
+        .as_deref()
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| search_plugins::default_plugin_id(&relay));
+    let chat_root = search
+        .root
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(chat_index::DEFAULT_CHAT_ROOT);
+
     if indexed_head == ctx.new_commit {
+        if plugin == PLUGIN_CHAT {
+            // Tip may already be marked indexed from path_tree; still ensure chat_comments.
+            chat_index::ensure_chat_indexed(ctx, chat_root)?;
+        }
         debug!(
             "Branch {} is up to date (head: {})",
             ctx.branch, ctx.new_commit
@@ -98,6 +127,14 @@ pub fn ensure_indexed(ctx: &HookContext) -> anyhow::Result<()> {
         "Branch {} is stale ({} != {}). Running JIT indexing...",
         ctx.branch, indexed_head, ctx.new_commit
     );
+
+    if plugin == PLUGIN_CHAT {
+        // Thin CS index hook (may call `@relay/search/chat` index); skip path_tree.
+        let _ = execute_repo_hook(ctx, "index");
+        chat_index::ensure_chat_indexed(ctx, chat_root)?;
+        debug!("JIT chat indexing completed for branch {}", ctx.branch);
+        return Ok(());
+    }
 
     let result = execute_repo_hook(ctx, "index");
     result?;

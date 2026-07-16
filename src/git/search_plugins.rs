@@ -1,5 +1,6 @@
 //! Named QUERY search plugins. CleverScript imports `@relay/search/*` (or returns a plugin id); Rust executes.
 
+use crate::git::chat_index;
 use crate::git::index_store;
 use crate::git::indexing::{branch_index_paths, branch_sqlite_path};
 use crate::git::sqlite_index;
@@ -9,6 +10,7 @@ use std::path::Path;
 
 pub const PLUGIN_SQLITE: &str = "sqlite";
 pub const PLUGIN_REDB: &str = "redb";
+pub const PLUGIN_CHAT: &str = "chat";
 
 /// Resolve default plugin id from `.relay.yaml` `server.search.plugin` (default: sqlite).
 pub fn default_plugin_id(cfg: &RelayConfig) -> &str {
@@ -47,6 +49,12 @@ pub fn run_plugin(
                 .ok_or_else(|| anyhow::anyhow!("collection {} is not an array", collection))?;
             filter_redb_array(arr, query);
             let rows: Vec<Value> = arr.clone();
+            Ok(project_rows(rows, fields))
+        }
+        PLUGIN_CHAT => {
+            let _ = collection; // chat plugin uses `chat_comments` table
+            let db = branch_sqlite_path(repo_full_path, branch);
+            let rows = chat_index::query_chat(&db, query, limit)?;
             Ok(project_rows(rows, fields))
         }
         other => anyhow::bail!("unknown search plugin: {other}"),

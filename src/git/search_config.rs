@@ -11,6 +11,9 @@ pub const DEFAULT_SEARCH_YAML: &str = "search.yaml";
 pub struct SearchFileConfig {
     #[serde(default)]
     pub plugin: Option<String>,
+    /// Chat plugin root under tip (default `.relay/chat/channels`).
+    #[serde(default)]
+    pub root: Option<String>,
     #[serde(default)]
     pub collections: HashMap<String, SearchCollectionConfig>,
 }
@@ -118,6 +121,7 @@ impl SearchFileConfig {
         );
         Self {
             plugin: Some("sqlite".into()),
+            root: None,
             collections,
         }
     }

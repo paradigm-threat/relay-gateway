@@ -6,7 +6,9 @@ use crate::git::ipfs::{
     IpfsPointer, IpfsResolveOptions, IpfsResolveSource, ASSET_ERROR_HEADER,
 };
 use crate::git::repo::read_file_from_repo;
-use crate::git::search_plugins::{self, PLUGIN_REDB, PLUGIN_SQLITE};
+use crate::git::chat_index;
+use crate::git::hooks::HookContext;
+use crate::git::search_plugins::{self, PLUGIN_CHAT, PLUGIN_REDB, PLUGIN_SQLITE};
 use axum::http::HeaderMap;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -26,6 +28,7 @@ pub const RELAY_IPFS_MODULE: &str = "@relay/ipfs";
 pub const RELAY_MD_MODULE: &str = "@relay/md";
 pub const RELAY_SEARCH_SQLITE_MODULE: &str = "@relay/search/sqlite";
 pub const RELAY_SEARCH_REDB_MODULE: &str = "@relay/search/redb";
+pub const RELAY_SEARCH_CHAT_MODULE: &str = "@relay/search/chat";
 
 fn git_exports(repo_root: PathBuf, branch: String) -> CsValue {
     let read = {
@@ -72,11 +75,14 @@ fn git_exports(repo_root: PathBuf, branch: String) -> CsValue {
     CsValue::Object(git)
 }
 
-/// `@relay/search/sqlite` / `@relay/search/redb`: callable `search(opts)` runs the Rust plugin.
+/// `@relay/search/sqlite` / `@relay/search/redb` / `@relay/search/chat`:
+/// callable `search(opts)` runs the Rust plugin.
 ///
 /// `opts` is the QUERY `ctx` (or a subset): `{ collection?, query?, limit?, config? }`.
 /// `config` defaults to repo-root `search.yaml` when present (used at index time; QUERY uses tip).
 /// Returns `{ rows: [...] }` for the CleverScript QUERY result path.
+///
+/// Chat also exports `index(ctx)` for thin index hooks (`old_commit` / `new_commit` / `branch`).
 fn search_plugin_exports(repo_root: PathBuf, branch: String, plugin: &'static str) -> CsValue {
     let search = {
         let repo_root = repo_root.clone();
@@ -90,7 +96,11 @@ fn search_plugin_exports(repo_root: PathBuf, branch: String, plugin: &'static st
                     ))
                 }
             };
-            let collection = cs_obj_str(opts, "collection").unwrap_or("index");
+            let collection = cs_obj_str(opts, "collection").unwrap_or(if plugin == PLUGIN_CHAT {
+                "chat"
+            } else {
+                "index"
+            });
             let query = opts.get("query").map(|q| q.to_json());
             let limit = opts.get("limit").and_then(|l| match l {
                 CsValue::Number(n) if *n > 0.0 => Some(*n as usize),
@@ -125,6 +135,55 @@ fn search_plugin_exports(repo_root: PathBuf, branch: String, plugin: &'static st
     m.insert("search".to_string(), search_fn.clone());
     m.insert("default".to_string(), search_fn);
     m.insert("plugin".to_string(), CsValue::String(plugin.to_string()));
+    if plugin == PLUGIN_CHAT {
+        let index = {
+            let repo_root = repo_root.clone();
+            let branch = branch.clone();
+            Rc::new(move |args: &[CsValue]| -> Result<CsValue, String> {
+                let opts = match args.first() {
+                    Some(CsValue::Object(o)) => o,
+                    _ => {
+                        return Err(
+                            "@relay/search/chat index requires an options object (index ctx)"
+                                .into(),
+                        )
+                    }
+                };
+                let new_commit = cs_obj_str(opts, "new_commit")
+                    .or_else(|| cs_obj_str(opts, "newCommit"))
+                    .unwrap_or("")
+                    .to_string();
+                if new_commit.is_empty() {
+                    return Err("@relay/search/chat index requires new_commit".into());
+                }
+                let old_commit = cs_obj_str(opts, "old_commit")
+                    .or_else(|| cs_obj_str(opts, "oldCommit"))
+                    .unwrap_or("")
+                    .to_string();
+                let br = cs_obj_str(opts, "branch").unwrap_or(branch.as_str()).to_string();
+                let root = cs_obj_str(opts, "root")
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| {
+                        chat_index::chat_root_from_search_yaml(&repo_root, &new_commit)
+                    });
+                let ctx = HookContext {
+                    repo_path: repo_root.clone(),
+                    old_commit,
+                    new_commit,
+                    refname: format!("refs/heads/{}", br),
+                    branch: br,
+                    is_verified: true,
+                    files: Default::default(),
+                };
+                chat_index::ensure_chat_indexed(&ctx, &root).map_err(|e| e.to_string())?;
+                Ok(CsValue::Null)
+            })
+        };
+        m.insert(
+            "index".to_string(),
+            CsValue::NativeFn(NativeFnClosure(index)),
+        );
+    }
     CsValue::Object(m)
 }
 
@@ -830,6 +889,7 @@ pub struct CleverScriptServerHost {
     git_exports: CsValue,
     search_sqlite_exports: CsValue,
     search_redb_exports: CsValue,
+    search_chat_exports: CsValue,
     image_exports: Option<CsValue>,
     ipfs_exports: Option<CsValue>,
     md_exports: Option<CsValue>,
@@ -849,6 +909,8 @@ impl CleverScriptServerHost {
             search_plugin_exports(repo_root.clone(), branch.clone(), PLUGIN_SQLITE);
         let search_redb_exports =
             search_plugin_exports(repo_root.clone(), branch.clone(), PLUGIN_REDB);
+        let search_chat_exports =
+            search_plugin_exports(repo_root.clone(), branch.clone(), PLUGIN_CHAT);
         let (image_exports, image_disk_cache) = if include_image {
             let dc = Arc::new(ImageDiskCache::from_env());
             (
@@ -878,6 +940,7 @@ impl CleverScriptServerHost {
             git_exports,
             search_sqlite_exports,
             search_redb_exports,
+            search_chat_exports,
             image_exports,
             ipfs_exports,
             md_exports,
@@ -913,6 +976,7 @@ impl Host for CleverScriptServerHost {
             RELAY_GIT_MODULE => Ok(self.git_exports.clone()),
             RELAY_SEARCH_SQLITE_MODULE => Ok(self.search_sqlite_exports.clone()),
             RELAY_SEARCH_REDB_MODULE => Ok(self.search_redb_exports.clone()),
+            RELAY_SEARCH_CHAT_MODULE => Ok(self.search_chat_exports.clone()),
             RELAY_IMAGE_MODULE => self
                 .image_exports
                 .as_ref()

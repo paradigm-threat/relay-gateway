@@ -54,7 +54,7 @@ fn clever_query_result_to_rows(v: &CsValue) -> anyhow::Result<Option<Vec<Value>>
             if o.contains_key("plugin") {
                 return Ok(None);
             }
-            anyhow::bail!("CleverScript QUERY must return {{ rows: [...] }}, a JSON array, {{ plugin: \"sqlite\"|\"redb\", ... }}, or call search() from @relay/search/sqlite");
+            anyhow::bail!("CleverScript QUERY must return {{ rows: [...] }}, a JSON array, {{ plugin: \"sqlite\"|\"redb\"|\"chat\", ... }}, or call search() from @relay/search/*");
         }
         CsValue::Null => Ok(None),
         _ => anyhow::bail!("CleverScript QUERY returned an unsupported type"),

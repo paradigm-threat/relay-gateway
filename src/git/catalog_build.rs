@@ -264,6 +264,11 @@ pub fn build_path_tree_docs_scoped(
                         Value::Array(kw.into_iter().map(Value::String).collect()),
                     );
                 }
+                // Chat comments: embed body + frontmatter so QUERY can serve posts
+                // without one HTTP GET (and CORS preflight) per file.
+                if path.contains("/.relay/chat/") || path.starts_with(".relay/chat/") {
+                    enrich_chat_comment_doc(&mut doc, &text);
+                }
             }
         } else if is_hooks_cs {
             if let Some(text) = git_show(repo, commit, &path) {
@@ -326,6 +331,57 @@ fn strip_frontmatter(content: &str) -> (&str, Option<&str>) {
         return (body, Some(fm));
     }
     (content, None)
+}
+
+const CHAT_BODY_MAX_CHARS: usize = 8_192;
+
+/// Attach paradigm.chat.v1 fields + body for QUERY-hydrated chat UIs.
+fn enrich_chat_comment_doc(doc: &mut Map<String, Value>, text: &str) {
+    let (body, fm) = strip_frontmatter(text);
+    let body_trim = body.trim();
+    let body_capped: String = body_trim.chars().take(CHAT_BODY_MAX_CHARS).collect();
+    doc.insert("body".into(), Value::String(body_capped));
+    if !doc.contains_key("_title") && !body_trim.is_empty() {
+        let preview: String = body_trim.chars().take(120).collect();
+        doc.insert("_title".into(), Value::String(preview.clone()));
+        doc.insert("title".into(), Value::String(preview));
+    }
+    let Some(fm) = fm else {
+        return;
+    };
+    let Ok(map) = serde_yaml::from_str::<serde_yaml::Mapping>(fm) else {
+        return;
+    };
+    for (k, v) in map {
+        let Some(key) = k.as_str() else {
+            continue;
+        };
+        match key {
+            "schema" | "id" | "channel" | "author" | "created" | "source" => {
+                if let Some(s) = yaml_to_string(&v) {
+                    doc.insert(key.into(), Value::String(s));
+                }
+            }
+            "anonymous" | "signed" => {
+                if let Some(b) = v.as_bool() {
+                    doc.insert(key.into(), Value::Bool(b));
+                } else if let Some(s) = v.as_str() {
+                    doc.insert(key.into(), Value::Bool(s == "true" || s == "1"));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn yaml_to_string(v: &serde_yaml::Value) -> Option<String> {
+    match v {
+        serde_yaml::Value::String(s) => Some(s.clone()),
+        serde_yaml::Value::Number(n) => Some(n.to_string()),
+        serde_yaml::Value::Bool(b) => Some(b.to_string()),
+        serde_yaml::Value::Null => None,
+        other => other.as_str().map(|s| s.to_string()),
+    }
 }
 
 fn first_header(content: &str) -> Option<String> {
@@ -813,7 +869,7 @@ mod tests {
         let (_dir, repo, commit) = commit_files(&[
             (
                 ".relay/chat/channels/general/2026-07-13T14-00-00-000Z_00000001_SEED00001.md",
-                "---\nschema: paradigm.chat.v1\n---\nHello chat\n",
+                "---\nschema: paradigm.chat.v1\nid: SEED00001\nchannel: general\nauthor: relay-bootstrap\nanonymous: false\ncreated: 2026-07-13T14:00:00.000Z\nsource: web\nsigned: false\n---\nHello chat\n",
             ),
             ("README.md", "# Readme\n\nHello\n"),
         ]);
@@ -828,6 +884,12 @@ mod tests {
             docs[0]["path"],
             ".relay/chat/channels/general/2026-07-13T14-00-00-000Z_00000001_SEED00001.md"
         );
+        assert_eq!(docs[0]["schema"], "paradigm.chat.v1");
+        assert_eq!(docs[0]["id"], "SEED00001");
+        assert_eq!(docs[0]["channel"], "general");
+        assert_eq!(docs[0]["author"], "relay-bootstrap");
+        assert_eq!(docs[0]["anonymous"], false);
+        assert_eq!(docs[0]["body"], "Hello chat");
     }
 
     #[test]
