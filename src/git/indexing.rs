@@ -84,21 +84,24 @@ pub fn ensure_indexed(ctx: &HookContext) -> anyhow::Result<()> {
         indexed_head = read_json_indexed_head(&json_path);
     }
 
-    if indexed_head != ctx.new_commit {
-        info!(
-            "Branch {} is stale ({} != {}). Running JIT indexing...",
-            ctx.branch, indexed_head, ctx.new_commit
-        );
-
-        let result = execute_repo_hook(ctx, "index");
-        result?;
-        debug!("JIT indexing completed for branch {}", ctx.branch);
-    } else {
+    if indexed_head == ctx.new_commit {
         debug!(
             "Branch {} is up to date (head: {})",
             ctx.branch, ctx.new_commit
         );
+        // Skip JSON/catalog re-sync: path_tree ingest is expensive and must not
+        // run on every QUERY when SQLite already matches tip.
+        return Ok(());
     }
+
+    info!(
+        "Branch {} is stale ({} != {}). Running JIT indexing...",
+        ctx.branch, indexed_head, ctx.new_commit
+    );
+
+    let result = execute_repo_hook(ctx, "index");
+    result?;
+    debug!("JIT indexing completed for branch {}", ctx.branch);
 
     if json_path.exists() {
         index_store::sync_json_to_redb(&json_path, &redb_path)?;

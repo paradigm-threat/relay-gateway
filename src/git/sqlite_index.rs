@@ -402,12 +402,14 @@ pub fn query_collection(
             if match_q.is_empty() {
                 return Ok(vec![]);
             }
+            // Newest-first by path (chat filenames are ISO8601-prefixed).
             let mut stmt = conn.prepare(
                 "SELECT d.json FROM docs d
                  WHERE d.collection = ?1
                    AND d.id IN (
                      SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?2
                    )
+                 ORDER BY json_extract(d.json, '$.path') DESC
                  LIMIT ?3",
             )?;
             let iter = stmt.query_map(params![collection, match_q, lim as i64], |r| {
@@ -422,7 +424,10 @@ pub fn query_collection(
             }
         }
         Some(Value::Object(q_obj)) => {
-            let mut stmt = conn.prepare("SELECT json FROM docs WHERE collection = ?1")?;
+            let mut stmt = conn.prepare(
+                "SELECT json FROM docs WHERE collection = ?1
+                 ORDER BY json_extract(json, '$.path') DESC",
+            )?;
             let iter = stmt.query_map(params![collection], |r| {
                 let json: String = r.get(0)?;
                 Ok(json)
@@ -440,8 +445,11 @@ pub fn query_collection(
             }
         }
         _ => {
-            let mut stmt =
-                conn.prepare("SELECT json FROM docs WHERE collection = ?1 LIMIT ?2")?;
+            let mut stmt = conn.prepare(
+                "SELECT json FROM docs WHERE collection = ?1
+                 ORDER BY json_extract(json, '$.path') DESC
+                 LIMIT ?2",
+            )?;
             let iter = stmt.query_map(params![collection, lim as i64], |r| {
                 let json: String = r.get(0)?;
                 Ok(json)
