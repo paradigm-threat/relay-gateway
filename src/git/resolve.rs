@@ -191,12 +191,62 @@ fn want_static_markdown_html(
         && !embed_query_flag(q)
 }
 
+/// Site shell (embed SSR / CSR): markdown blob and either `?embed=1` or `Accept: text/html`.
 fn want_relay_embed_from_request(
+    headers: &HeaderMap,
     q: &HashMap<String, String>,
     content_type: &str,
     uri_path: &str,
 ) -> bool {
-    is_markdown_blob(content_type, uri_path) && embed_query_flag(q)
+    is_markdown_blob(content_type, uri_path)
+        && (embed_query_flag(q) || accept_prefers_html(headers))
+}
+
+fn response_content_type_is_html(resp: &axum::response::Response) -> bool {
+    resp.headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| {
+            let ct = ct.to_ascii_lowercase();
+            ct.contains("text/html") || ct.contains("application/xhtml")
+        })
+        .unwrap_or(false)
+}
+
+/// Repo-host `/`: run `server.hooks.get` with `siteShellRequest` so sites can SSR the client
+/// hook without a markdown path or `?embed=1`. Returns HTML only when the hook opts in.
+pub fn try_site_shell_for_root(
+    state: &AppState,
+    headers: &HeaderMap,
+    branch: &str,
+    repo_name: &str,
+    query: Option<&HashMap<String, String>>,
+) -> Option<axum::response::Response> {
+    let repo = open_repo_for_state(state, repo_name)?;
+    let refname = format!("refs/heads/{branch}");
+    let reference = repo.find_reference(&refname).ok()?;
+    let commit = reference.peel_to_commit().ok()?;
+    let cfg = read_relay_config(&repo, &commit.id().to_string())?;
+    let _ = index_policy::clever_get_hook_path(&cfg)?;
+    let qmap: HashMap<String, String> = query.cloned().unwrap_or_default();
+    let resp = try_server_get_hook(
+        &repo,
+        branch,
+        repo_name,
+        "",
+        headers,
+        &commit,
+        None,
+        "text/html",
+        None,
+        &qmap,
+        serde_json::json!({ "siteShellRequest": true }),
+    )?;
+    if response_content_type_is_html(&resp) {
+        Some(merge_vary_accept(resp))
+    } else {
+        None
+    }
 }
 
 pub fn git_resolve_and_respond(
@@ -332,25 +382,10 @@ pub fn git_resolve_and_respond(
                     }
                 }
 
-                if want_static_markdown_html(headers, &qmap, &ct, rel) {
-                    if let Some(resp) = try_server_get_hook_for_blob(
-                        &repo,
-                        branch,
-                        repo_name,
-                        rel,
-                        headers,
-                        &commit,
-                        &entry,
-                        &body_bytes,
-                        &ct,
-                        &qmap,
-                        serde_json::json!({ "markdownHtmlRequest": true }),
-                    ) {
-                        return GitResolveResult::Respond(merge_vary_accept(resp));
-                    }
-                }
-
-                if want_relay_embed_from_request(&qmap, &ct, rel) {
+                // App shell first: `?embed=1` or browser Accept:text/html on markdown.
+                // Hook may SSR via `@relay/ssr`. Explicit `?embed=1` falls back to the empty
+                // CSR embed shell; Accept-only falls through to static `@relay/md` HTML.
+                if want_relay_embed_from_request(headers, &qmap, &ct, rel) {
                     let initial_path = format!("/{}", rel.trim_start_matches('/'));
 
                     let cfg_opt = read_relay_config(&repo, &commit.id().to_string());
@@ -377,15 +412,39 @@ pub fn git_resolve_and_respond(
                         &qmap,
                         serde_json::json!({ "embedMarkdownRequest": true }),
                     ) {
-                        return GitResolveResult::Respond(merge_vary_accept(resp));
+                        // Hooks often `return next()` (raw blob). Only honor custom HTML
+                        // from the server GET hook; otherwise fall through.
+                        if response_content_type_is_html(&resp) {
+                            return GitResolveResult::Respond(merge_vary_accept(resp));
+                        }
                     }
 
-                    return GitResolveResult::Respond(fallback_embed_html_response(
-                        repo_name,
+                    if embed_query_flag(&qmap) {
+                        return GitResolveResult::Respond(fallback_embed_html_response(
+                            repo_name,
+                            branch,
+                            &initial_path,
+                            &client_hook_http,
+                        ));
+                    }
+                }
+
+                if want_static_markdown_html(headers, &qmap, &ct, rel) {
+                    if let Some(resp) = try_server_get_hook_for_blob(
+                        &repo,
                         branch,
-                        &initial_path,
-                        &client_hook_http,
-                    ));
+                        repo_name,
+                        rel,
+                        headers,
+                        &commit,
+                        &entry,
+                        &body_bytes,
+                        &ct,
+                        &qmap,
+                        serde_json::json!({ "markdownHtmlRequest": true }),
+                    ) {
+                        return GitResolveResult::Respond(merge_vary_accept(resp));
+                    }
                 }
 
                 if read_relay_config(&repo, &commit.id().to_string())
@@ -467,7 +526,7 @@ pub fn git_resolve_and_respond(
 mod tests {
     use super::*;
     use crate::types::GitResolveResult;
-    use axum::http::HeaderValue;
+    use axum::http::{HeaderName, HeaderValue};
     use git2::{Repository, Signature};
     use image::{ImageBuffer, ImageFormat, Rgba};
     use serial_test::serial;
@@ -677,6 +736,77 @@ export default function run(ctx, next) {
         (dir, root)
     }
 
+    fn bare_ssr_opt_in_repo() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let repo_path = root.join("doc.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+
+        let md_oid = repo.blob(b"# Hello\n").unwrap();
+        let yaml_oid = repo
+            .blob(
+                br#"
+client:
+  hooks:
+    get:
+      path: hooks/client/get.jsx
+server:
+  hooks:
+    get:
+      path: hooks/server/get.cs
+"#,
+            )
+            .unwrap();
+        let get_cs_oid = repo
+            .blob(
+                br#"import { ssrClientHookFromGetContext } from '@relay/ssr';
+export default function run(ctx, next) {
+  var shell = false;
+  try { if (ctx.embedMarkdownRequest === true) shell = true; } catch (e) {}
+  try { if (ctx.siteShellRequest === true) shell = true; } catch (e) {}
+  if (shell) {
+    var ssr = ssrClientHookFromGetContext(ctx);
+    if (ssr !== null) { return ssr; }
+  }
+  return next();
+}"#,
+            )
+            .unwrap();
+        let client_get_oid = repo
+            .blob(
+                br#"export default function App() {
+  return <main><h1>Opt-in SSR</h1><button onClick={() => {}}>Go</button></main>;
+}"#,
+            )
+            .unwrap();
+
+        let mut server = repo.treebuilder(None).unwrap();
+        server.insert("get.cs", get_cs_oid, 0o100644).unwrap();
+        let server_id = server.write().unwrap();
+        let mut client = repo.treebuilder(None).unwrap();
+        client
+            .insert("get.jsx", client_get_oid, 0o100644)
+            .unwrap();
+        let client_id = client.write().unwrap();
+        let mut hooks = repo.treebuilder(None).unwrap();
+        hooks.insert("server", server_id, 0o040000).unwrap();
+        hooks.insert("client", client_id, 0o040000).unwrap();
+        let hooks_id = hooks.write().unwrap();
+
+        let mut root_tree = repo.treebuilder(None).unwrap();
+        root_tree.insert("readme.md", md_oid, 0o100644).unwrap();
+        root_tree
+            .insert(".relay.yaml", yaml_oid, 0o100644)
+            .unwrap();
+        root_tree.insert("hooks", hooks_id, 0o040000).unwrap();
+        let tree_id = root_tree.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        (dir, root)
+    }
+
     #[tokio::test]
     async fn markdown_accept_html_without_hook_serves_raw() {
         let (_dir, root) = bare_md_repo(false);
@@ -755,6 +885,119 @@ export default function run(ctx, next) {
             vary.to_ascii_lowercase().contains("accept"),
             "Vary should mention Accept, got {vary:?}"
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn markdown_embed_ignores_server_hook_next_and_serves_shell() {
+        // Production pattern: get.cs returns markdownHtml OR next(). For embed,
+        // markdownHtml is null and next() would be raw markdown — must not short-circuit SSR.
+        let (_dir, root) = bare_md_repo(true);
+        let mut q = HashMap::new();
+        q.insert("embed".into(), "1".into());
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &headers, "main", "doc", "readme.md", Some(&q));
+        let GitResolveResult::Respond(resp) = r else {
+            panic!("expected Respond");
+        };
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let ct = parts
+            .headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.contains("text/html"), "expected HTML embed, got {ct:?}");
+        let html = String::from_utf8(axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec())
+            .unwrap();
+        assert!(html.contains("/assets/embed.js"), "{html}");
+        assert!(html.contains("relay-embed-config"), "{html}");
+        assert!(
+            !html.contains("data-relay-ssr=\"1\""),
+            "repo did not opt in to SSR: {html}"
+        );
+        assert!(
+            !html.starts_with("# Hello"),
+            "must not return raw markdown from next()"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn markdown_embed_server_hook_explicitly_opts_into_ssr() {
+        let (_dir, root) = bare_ssr_opt_in_repo();
+        let mut q = HashMap::new();
+        q.insert("embed".into(), "1".into());
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
+        headers.insert(header::HOST, HeaderValue::from_static("doc.example.test"));
+        headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &headers, "main", "doc", "readme.md", Some(&q));
+        let GitResolveResult::Respond(resp) = r else {
+            panic!("expected Respond");
+        };
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let html = String::from_utf8(axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec())
+            .unwrap();
+        assert!(html.contains("data-relay-ssr=\"1\""), "{html}");
+        assert!(html.contains("Opt-in SSR"), "{html}");
+        assert!(html.contains("data-relay-hid=\"1\""), "{html}");
+        assert!(html.contains("/assets/embed.js"), "{html}");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn markdown_accept_html_without_embed_opts_into_ssr() {
+        let (_dir, root) = bare_ssr_opt_in_repo();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
+        headers.insert(header::HOST, HeaderValue::from_static("doc.example.test"));
+        headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &headers, "main", "doc", "readme.md", None);
+        let GitResolveResult::Respond(resp) = r else {
+            panic!("expected Respond");
+        };
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let html = String::from_utf8(axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec())
+            .unwrap();
+        assert!(html.contains("data-relay-ssr=\"1\""), "{html}");
+        assert!(html.contains("Opt-in SSR"), "{html}");
+        assert!(html.contains("/assets/embed.js"), "{html}");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn site_shell_root_opts_into_ssr() {
+        let (_dir, root) = bare_ssr_opt_in_repo();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
+        headers.insert(header::HOST, HeaderValue::from_static("doc.example.test"));
+        headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        let state = bare_fleet_state(root);
+        let resp = try_site_shell_for_root(&state, &headers, "main", "doc", None)
+            .expect("site shell HTML");
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let html = String::from_utf8(axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec())
+            .unwrap();
+        assert!(html.contains("data-relay-ssr=\"1\""), "{html}");
+        assert!(html.contains("Opt-in SSR"), "{html}");
+        assert!(html.contains("/assets/embed.js"), "{html}");
     }
 
     #[tokio::test]

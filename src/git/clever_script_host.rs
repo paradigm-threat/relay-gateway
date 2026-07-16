@@ -26,6 +26,7 @@ pub const RELAY_GIT_MODULE: &str = "@relay/git";
 pub const RELAY_IMAGE_MODULE: &str = "@relay/image";
 pub const RELAY_IPFS_MODULE: &str = "@relay/ipfs";
 pub const RELAY_MD_MODULE: &str = "@relay/md";
+pub const RELAY_SSR_MODULE: &str = "@relay/ssr";
 pub const RELAY_SEARCH_SQLITE_MODULE: &str = "@relay/search/sqlite";
 pub const RELAY_SEARCH_REDB_MODULE: &str = "@relay/search/redb";
 pub const RELAY_SEARCH_CHAT_MODULE: &str = "@relay/search/chat";
@@ -586,6 +587,24 @@ fn hook_file_object_html(html: &str) -> CsValue {
     CsValue::Object(file)
 }
 
+fn hook_file_object_ssr_html(html: String) -> CsValue {
+    let mut headers = HashMap::new();
+    headers.insert(
+        "Cache-Control".to_string(),
+        CsValue::String("private, no-store".into()),
+    );
+    headers.insert("Vary".to_string(), CsValue::String("Accept".into()));
+    let mut file = HashMap::new();
+    file.insert("kind".to_string(), CsValue::String("file".into()));
+    file.insert(
+        "contentType".to_string(),
+        CsValue::String("text/html; charset=utf-8".into()),
+    );
+    file.insert("bodyUtf8".to_string(), CsValue::String(html));
+    file.insert("headers".to_string(), CsValue::Object(headers));
+    CsValue::Object(file)
+}
+
 fn ctx_flag_true(m: &HashMap<String, CsValue>, key: &str) -> bool {
     match m.get(key) {
         Some(CsValue::Bool(b)) => *b,
@@ -656,6 +675,91 @@ fn md_exports(repo_root: PathBuf, branch: String) -> CsValue {
         CsValue::NativeFn(NativeFnClosure(from_ctx)),
     );
     CsValue::Object(md)
+}
+
+fn nested_obj_str<'a>(
+    obj: &'a HashMap<String, CsValue>,
+    object_key: &str,
+    key: &str,
+) -> Option<&'a str> {
+    let CsValue::Object(nested) = obj.get(object_key)? else {
+        return None;
+    };
+    cs_obj_str(nested, key)
+}
+
+fn ssr_public_origin(ctx: &HashMap<String, CsValue>) -> String {
+    let host = nested_obj_str(ctx, "requestHeaders", "host")
+        .unwrap_or("")
+        .trim();
+    if host.is_empty() {
+        return String::new();
+    }
+    let proto = nested_obj_str(ctx, "requestHeaders", "x-forwarded-proto")
+        .and_then(|p| p.split(',').next())
+        .map(str::trim)
+        .filter(|p| *p == "http" || *p == "https")
+        .unwrap_or("https");
+    format!("{proto}://{host}")
+}
+
+/// Build `@relay/ssr`. Calling the helper is the explicit opt-in boundary: routing and
+/// eligibility remain in repository-owned CleverScript.
+fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
+    let render = Rc::new(move |args: &[CsValue]| -> Result<CsValue, String> {
+        let Some(CsValue::Object(ctx)) = args.first() else {
+            return Err("ssrClientHookFromGetContext requires hook context object".into());
+        };
+        let opts = args.get(1).and_then(|v| match v {
+            CsValue::Object(o) => Some(o),
+            _ => None,
+        });
+        let client_hook_path = opts
+            .and_then(|o| cs_obj_str(o, "clientHookPath"))
+            .unwrap_or("hooks/client/get.jsx")
+            .trim_start_matches('/');
+        let initial_path = format!(
+            "/{}",
+            cs_obj_str(ctx, "relPath")
+                .unwrap_or("")
+                .trim_start_matches('/')
+        );
+        let repo = cs_obj_str(ctx, "repo").unwrap_or("relay");
+        let request_branch = cs_obj_str(ctx, "branch").unwrap_or(&branch);
+        let origin = opts
+            .and_then(|o| cs_obj_str(o, "assetBaseUrl"))
+            .map(str::to_string)
+            .unwrap_or_else(|| ssr_public_origin(ctx));
+
+        let Some(rendered) =
+            crate::git::ssr_client_hook::try_ssr_client_hook(
+                &crate::git::ssr_client_hook::ClientHookSsrRequest {
+                    repo_path: &repo_root,
+                    branch: request_branch,
+                    client_hook_rel: client_hook_path,
+                    asset_base_url: &origin,
+                    initial_path: &initial_path,
+                },
+            )
+        else {
+            return Ok(CsValue::Null);
+        };
+        let client_hook_http = format!("/{}", client_hook_path);
+        let html = crate::git::embed_html::embed_html_document(
+            repo,
+            request_branch,
+            &initial_path,
+            &client_hook_http,
+            Some(&rendered.body_html),
+        );
+        Ok(hook_file_object_ssr_html(html))
+    });
+    let mut module = HashMap::new();
+    module.insert(
+        "ssrClientHookFromGetContext".to_string(),
+        CsValue::NativeFn(NativeFnClosure(render)),
+    );
+    CsValue::Object(module)
 }
 
 /// Raster resize/WebP (+ disk cache). Requires **`opts.width`**; optional **`bytes`** from `fetchIpfsBytes`.
@@ -893,6 +997,7 @@ pub struct CleverScriptServerHost {
     image_exports: Option<CsValue>,
     ipfs_exports: Option<CsValue>,
     md_exports: Option<CsValue>,
+    ssr_exports: Option<CsValue>,
     #[allow(dead_code)]
     image_disk_cache: Option<Arc<ImageDiskCache>>,
 }
@@ -930,6 +1035,11 @@ impl CleverScriptServerHost {
         } else {
             None
         };
+        let ssr_exports = if include_image {
+            Some(ssr_exports(repo_root.clone(), branch.clone()))
+        } else {
+            None
+        };
         let ipfs_exports = if include_image {
             Some(ipfs_exports(repo_root.clone(), branch.clone()))
         } else {
@@ -944,6 +1054,7 @@ impl CleverScriptServerHost {
             image_exports,
             ipfs_exports,
             md_exports,
+            ssr_exports,
             image_disk_cache,
         }
     }
@@ -989,6 +1100,11 @@ impl Host for CleverScriptServerHost {
                 .ok_or_else(|| format!("unknown module {:?}", path)),
             RELAY_MD_MODULE => self
                 .md_exports
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| format!("unknown module {:?}", path)),
+            RELAY_SSR_MODULE => self
+                .ssr_exports
                 .as_ref()
                 .cloned()
                 .ok_or_else(|| format!("unknown module {:?}", path)),

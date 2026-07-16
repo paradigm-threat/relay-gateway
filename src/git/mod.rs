@@ -8,6 +8,7 @@ pub mod ipfs;
 pub mod clever_hooks;
 pub mod clever_script_host;
 pub mod embed_html;
+pub mod ssr_client_hook;
 pub mod get_hook_http;
 pub mod hooks;
 pub mod image_cache;
@@ -50,4 +51,4 @@ pub use repo::{
     open_repo_for_state, read_file_from_repo, read_git_config, read_git_config_from_revision,
     read_relay_config, repo_names_for_state,
 };
-pub use resolve::git_resolve_and_respond;
+pub use resolve::{git_resolve_and_respond, try_site_shell_for_root};

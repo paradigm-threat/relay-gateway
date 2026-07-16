@@ -4,6 +4,15 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+CLIENT_WEB="$ROOT/../relay-client-web"
+if [[ ! -f "$CLIENT_WEB/package.json" ]]; then
+  echo "relay-client-web not found at $CLIENT_WEB" >&2
+  exit 1
+fi
+# `npm run build` runs build:wasm first (WASM is gitignored) so fleet packs always hydrate.
+npm --prefix "$CLIENT_WEB" run build
+test -f "$CLIENT_WEB/dist/assets/embed.js"
+test -f "$CLIENT_WEB/dist/wasm/relay_runtime_pkg/relay_runtime_bg.wasm"
 cargo build --release --bin relay-gateway --bin relay-hook-handler
 DIST="$ROOT/target/linode-deploy"
 rm -rf "$DIST"
@@ -17,6 +26,7 @@ cp "$ROOT/scripts/relay-startup-catalog-sync.sh" "$DIST/relay-startup-catalog-sy
 cp "$ROOT/scripts/relay-reconcile.sh" "$DIST/relay-reconcile.sh"
 cp "$ROOT/scripts/install-caddy-tls.sh" "$DIST/install-caddy-tls.sh"
 cp "$ROOT/scripts/caddy-ask.py" "$DIST/caddy-ask.py"
+cp -a "$CLIENT_WEB/dist" "$DIST/www"
 chmod +x "$DIST/install.sh" "$DIST/relay-bootstrap.sh" "$DIST/relay-startup-catalog-sync.sh" "$DIST/relay-reconcile.sh" "$DIST/install-caddy-tls.sh" "$DIST/relay-probe-features.py"
 tar -czvf "$ROOT/target/relay-linode-deploy.tgz" -C "$DIST" .
 echo "Created $ROOT/target/relay-linode-deploy.tgz"

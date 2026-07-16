@@ -539,8 +539,20 @@ pub async fn options_capabilities(
 pub async fn get_root(
     State(state): State<AppState>,
     headers: HeaderMap,
-    _query: Option<Query<HashMap<String, String>>>,
+    query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
+    let qmap = query.as_ref().map(|q| &q.0);
+    // Repo subdomain (`{repo}.node`): prefer site shell via `server.hooks.get` +
+    // `siteShellRequest` before the gateway SPA `index.html`.
+    if let Some(repo_name) = helpers::repo_from_host(&state, state.node_fqdn.as_deref(), &headers)
+    {
+        let branch = helpers::branch_for_request(&headers, &state, Some(&repo_name));
+        if let Some(resp) =
+            git::try_site_shell_for_root(&state, &headers, &branch, &repo_name, qmap)
+        {
+            return resp;
+        }
+    }
     // Try serving SPA index.html from configured static paths
     if let Some(resp) = crate::handlers::try_static(&state, "index.html").await {
         return resp;

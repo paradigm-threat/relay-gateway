@@ -35,6 +35,45 @@ fn escape_html_text(s: &str) -> String {
     out
 }
 
+/// Strip `<script…>` / `</script>` from SSR body so a hostile hook cannot break the embed document.
+fn sanitize_ssr_body_html(body: &str) -> String {
+    let mut remaining = body;
+    let mut out = String::with_capacity(body.len());
+    loop {
+        let lower = remaining.to_ascii_lowercase();
+        let open = lower.find("<script");
+        let orphan_close = lower.find("</script");
+        let next = match (open, orphan_close) {
+            (Some(o), Some(c)) => Some((o.min(c), o <= c)),
+            (Some(o), None) => Some((o, true)),
+            (None, Some(c)) => Some((c, false)),
+            (None, None) => None,
+        };
+        let Some((idx, is_open)) = next else {
+            out.push_str(remaining);
+            break;
+        };
+        out.push_str(&remaining[..idx]);
+        remaining = &remaining[idx..];
+        let lower = remaining.to_ascii_lowercase();
+        if is_open {
+            if let Some(end_rel) = lower.find("</script>") {
+                remaining = &remaining[end_rel + "</script>".len()..];
+                continue;
+            }
+            // Unclosed script — drop the rest
+            break;
+        }
+        // Orphan </script…>
+        if let Some(gt) = remaining.find('>') {
+            remaining = &remaining[gt + 1..];
+            continue;
+        }
+        break;
+    }
+    out
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayEmbedConfig<'a> {
@@ -48,15 +87,15 @@ pub struct RelayEmbedConfig<'a> {
     pub client_hook_path: &'a str,
 }
 
-/// Build a minimal HTML document that boots **`/assets/embed.js`** and passes config via JSON
-/// in `#relay-embed-config`.
-pub fn fallback_embed_html_response(
+/// Build the Relay embed document. `ssr_body_html=None` produces the existing empty CSR shell;
+/// `Some` pre-fills `#root` for relay-runtime hydration.
+pub fn embed_html_document(
     repo: &str,
     branch: &str,
     rel_path: &str,
     client_hook_path: &str,
-) -> Response {
-    use crate::types::{HEADER_BRANCH, HEADER_REPO};
+    ssr_body_html: Option<&str>,
+) -> String {
     let initial_path = if rel_path.starts_with('/') {
         rel_path.to_string()
     } else {
@@ -68,12 +107,16 @@ pub fn fallback_embed_html_response(
         initial_path,
         client_hook_path,
     };
-    let json =
-        serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
-    // Prevent `</script>` (or any `<`) in serialized strings from terminating the HTML `<script>` tag.
+    let json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
     let json = escape_json_for_html_script(&json);
     let title_repo = escape_html_text(repo);
-    let html = format!(
+    let (root_attrs, root_inner) = match ssr_body_html {
+        Some(body) if !body.trim().is_empty() => {
+            (" data-relay-ssr=\"1\"", sanitize_ssr_body_html(body))
+        }
+        _ => ("", String::new()),
+    };
+    format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -85,13 +128,43 @@ pub fn fallback_embed_html_response(
   <style>html,body,#root{{margin:0;height:100%;}}</style>
 </head>
 <body>
-  <div id="root"></div>
+  <div id="root"{root_attrs}>{root_inner}</div>
   <script type="application/json" id="relay-embed-config">{json}</script>
   <script type="module" src="/assets/embed.js"></script>
 </body>
 </html>"#,
-        title_repo = title_repo,
-        json = json,
+    )
+}
+
+/// Build a minimal HTML document that boots **`/assets/embed.js`** and passes config via JSON
+/// in `#relay-embed-config`.
+///
+/// When `ssr_body_html` is `Some`, `#root` is pre-filled with the client-hook markup and marked
+/// `data-relay-ssr="1"` so the embed client hydrates instead of mounting an empty CSR shell.
+pub fn fallback_embed_html_response(
+    repo: &str,
+    branch: &str,
+    rel_path: &str,
+    client_hook_path: &str,
+) -> Response {
+    fallback_embed_html_response_with_ssr(repo, branch, rel_path, client_hook_path, None)
+}
+
+/// Like [`fallback_embed_html_response`], with optional SSR body HTML for `#root`.
+pub fn fallback_embed_html_response_with_ssr(
+    repo: &str,
+    branch: &str,
+    rel_path: &str,
+    client_hook_path: &str,
+    ssr_body_html: Option<&str>,
+) -> Response {
+    use crate::types::{HEADER_BRANCH, HEADER_REPO};
+    let html = embed_html_document(
+        repo,
+        branch,
+        rel_path,
+        client_hook_path,
+        ssr_body_html,
     );
 
     let mut resp = html.into_response();
@@ -166,5 +239,45 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         assert!(ct.contains("text/html"));
+    }
+
+    #[tokio::test]
+    async fn embed_with_ssr_body_marks_root() {
+        let r = fallback_embed_html_response_with_ssr(
+            "r",
+            "main",
+            "/doc.md",
+            "/hooks/client/get.jsx",
+            Some(r#"<div class="ssr">Hi</div>"#),
+        );
+        let body = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        let s = String::from_utf8(body.to_vec()).unwrap();
+        assert!(s.contains(r#"id="root" data-relay-ssr="1""#), "{s}");
+        assert!(s.contains(r#"class="ssr">Hi</div>"#), "{s}");
+    }
+
+    #[tokio::test]
+    async fn embed_ssr_strips_script_tags() {
+        let r = fallback_embed_html_response_with_ssr(
+            "r",
+            "main",
+            "/doc.md",
+            "/hooks/client/get.jsx",
+            Some(r#"<div>ok</div><script>alert(1)</script><p>tail</p>"#),
+        );
+        let body = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        let s = String::from_utf8(body.to_vec()).unwrap();
+        assert!(s.contains("<div>ok</div>"), "{s}");
+        assert!(s.contains("<p>tail</p>"), "{s}");
+        assert!(
+            !s.contains("alert(1)"),
+            "script body must be stripped: {s}"
+        );
+    }
+
+    #[test]
+    fn sanitize_ssr_removes_script() {
+        let s = sanitize_ssr_body_html(r#"a<script src=x></script>b</script>c"#);
+        assert_eq!(s, "abc");
     }
 }

@@ -1,12 +1,24 @@
 # Relay embed client + server GET intercept (requirements & plan)
 
-**Status:** **shipped** (gateway + client bundle). Remaining: repo-specific `hooks/server/get.cs` templates that return custom HTML (optional); production deploy wiring of `relay-client-web` **`dist/assets/embed.{js,css}`** next to the main static bundle.
+**Status:** **shipped** (gateway + client bundle). The relay template includes explicit
+`@relay/ssr` routing; individual repositories may remove or narrow that route. Production still
+needs `relay-client-web` **`dist/assets/embed.{js,css}`** deployed next to the main static bundle.
+
+**SSR policy:** server rendering is explicitly enabled by repository CleverScript, not by the
+gateway route. A `server.hooks.get` imports `ssrClientHookFromGetContext` from `@relay/ssr` and
+calls it for selected requests (`ctx.embedMarkdownRequest` for markdown + Accept HTML / `?embed=1`,
+or `ctx.siteShellRequest` for repo-host `/`). Repositories that omit the import/call retain the
+empty client-rendered embed shell (when `?embed=1`) or static `@relay/md` HTML (Accept-only).
+
+**App-shell model:** the client GET hook owns which markdown (if any) to load per route. The URL
+path is an entry route, not necessarily the blob rendered as the page. If SSR succeeds but client
+hydration fails, embed.js keeps the server DOM and prepends a light `.relay-hook-error` panel.
 
 **Implementation (relay monorepo):**
 
-- Gateway: `relay-gateway/src/git/embed_html.rs` (fallback HTML + `Vary` / cache / `X-Relay-*` parity), `relay-gateway/src/git/resolve.rs` (markdown + `Accept` / `?embed=` + `server.hooks.get`), `relay-gateway/src/handlers/head.rs` (query map parity with GET).
+- Gateway: `relay-gateway/src/git/embed_html.rs` (fallback HTML + `Vary` / cache / `X-Relay-*` parity), `relay-gateway/src/git/resolve.rs` (markdown + `Accept` / `?embed=` + `server.hooks.get`), `relay-gateway/src/handlers/general.rs` (`/` site shell), `relay-gateway/src/handlers/head.rs` (query map parity with GET).
 - Client: `relay-client-web/src/embed-main.tsx`, `relay-client-web/src/EmbedApp.tsx`, esbuild entry **`embed`** → `dist/assets/embed.js` + `embed.css`.
-- Template hook comments: `relay-template/hooks/server/get.cs` (`embedMarkdownRequest` context field).
+- Template hook comments: `relay-template/hooks/server/get.cs` (`embedMarkdownRequest` / `siteShellRequest`).
 
 ## Product requirement
 
@@ -31,7 +43,7 @@ The **embed** feature **reuses the same hook dispatch and JSON→HTTP contract**
 
 GET-hook returns are documented on **`get_hook_json_to_response`**: **`kind: "file"`**, **`contentType`**, **`bodyUtf8`** or **`bodyBase64`**, optional **`status`** and **`headers`**. Returning **`text/html`** is therefore **already valid** once the hook runs for the request.
 
-**Shipped behavior:** `git_resolve_and_respond` invokes **`server.hooks.get`** for markdown blobs when embed negotiation applies, passes **`embedMarkdownRequest: true`**, then maps hook JSON to HTTP or falls back to **`fallback_embed_html_response`**. The older “markdown + HTML only” gap in **`RELAY_MARKDOWN_HTML_GET_HOOK_PLAN.md`** is largely superseded by this embed path for browser HTML.
+**Shipped behavior:** `git_resolve_and_respond` invokes **`server.hooks.get`** for markdown blobs when **`Accept` prefers `text/html` or `?embed=1`**, with **`embedMarkdownRequest: true`**. Repo-host **`/`** uses **`try_site_shell_for_root`** + **`siteShellRequest: true`**. The hook may return `ssrClientHookFromGetContext(ctx)` for SSR. Non-HTML + **`?embed=1`** → CSR embed shell; Accept-only non-HTML → static `@relay/md` when the hook handles `markdownHtmlRequest`.
 
 ## Implementation plan (phased)
 

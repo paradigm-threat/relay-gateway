@@ -12,6 +12,15 @@ use crate::{
     HEADER_REPO,
 };
 
+fn is_relay_runtime_static_path(path: &str) -> bool {
+    let rel = path.trim_start_matches('/');
+    let reserved = rel.starts_with("assets/") || rel.starts_with("wasm/");
+    reserved
+        && std::path::Path::new(rel)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
 /// GET file handler — resolves from Git first, then `server.hooks.get` CleverScript (`.cs`), then static
 pub async fn handle_get_file(
     State(state): State<AppState>,
@@ -22,6 +31,13 @@ pub async fn handle_get_file(
     info!(%path, "get_file called");
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
     info!(decoded = %decoded, "decoded path");
+
+    // Framework-owned embed/hydration resources must not be shadowed by a repository GET hook.
+    if is_relay_runtime_static_path(&decoded) {
+        if let Some(resp) = try_static(&state, &decoded).await {
+            return resp;
+        }
+    }
 
     let repo_name_opt =
         helpers::repo_from_host_or_default(&state, state.node_fqdn.as_deref(), &headers);
@@ -101,6 +117,21 @@ pub async fn handle_get_file(
             }
             return hook_resp;
         }
+    }
+}
+
+#[cfg(test)]
+mod static_path_tests {
+    use super::is_relay_runtime_static_path;
+
+    #[test]
+    fn reserves_hydration_assets_without_allowing_traversal() {
+        assert!(is_relay_runtime_static_path("assets/embed.js"));
+        assert!(is_relay_runtime_static_path(
+            "/wasm/relay_runtime_pkg/relay_runtime_bg.wasm"
+        ));
+        assert!(!is_relay_runtime_static_path("README.md"));
+        assert!(!is_relay_runtime_static_path("assets/../relay.env"));
     }
 }
 

@@ -87,14 +87,23 @@ fn git_show(repo: &Path, commit: &str, path: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn git_path_last_commit_times(repo: &Path, commit: &str) -> Result<HashMap<String, String>, String> {
+/// Last commit touching a path: committer ISO date + full hash.
+struct PathCommitMeta {
+    updated: String,
+    commit: String,
+}
+
+fn git_path_last_commit_times(
+    repo: &Path,
+    commit: &str,
+) -> Result<HashMap<String, PathCommitMeta>, String> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(repo)
         .arg("log")
         .arg("--no-renames")
         .arg("--name-only")
-        .arg("--pretty=format:%cI")
+        .arg("--pretty=format:%H %cI")
         .arg(commit)
         .output()
         .map_err(|e| format!("git log path times: {}", e))?;
@@ -105,25 +114,35 @@ fn git_path_last_commit_times(repo: &Path, commit: &str) -> Result<HashMap<Strin
         ));
     }
 
-    let mut current_date = String::new();
+    let mut current: Option<PathCommitMeta> = None;
     let mut by_path = HashMap::new();
     for raw in String::from_utf8_lossy(&out.stdout).lines() {
         let line = raw.trim();
         if line.is_empty() {
             continue;
         }
-        if line.len() >= 20
-            && line.as_bytes().get(4) == Some(&b'-')
-            && line.as_bytes().get(7) == Some(&b'-')
-            && line.as_bytes().get(10) == Some(&b'T')
-        {
-            current_date = line.to_string();
-            continue;
+        // Header: "<40-hex> <ISO-8601>"
+        if let Some((hash, iso)) = line.split_once(' ') {
+            let iso = iso.trim();
+            if hash.len() == 40
+                && hash.bytes().all(|b| b.is_ascii_hexdigit())
+                && iso.len() >= 20
+                && iso.as_bytes().get(4) == Some(&b'-')
+                && iso.as_bytes().get(7) == Some(&b'-')
+                && iso.as_bytes().get(10) == Some(&b'T')
+            {
+                current = Some(PathCommitMeta {
+                    updated: iso.to_string(),
+                    commit: hash.to_string(),
+                });
+                continue;
+            }
         }
-        if !current_date.is_empty() {
-            by_path
-                .entry(line.to_string())
-                .or_insert_with(|| current_date.clone());
+        if let Some(ref meta) = current {
+            by_path.entry(line.to_string()).or_insert_with(|| PathCommitMeta {
+                updated: meta.updated.clone(),
+                commit: meta.commit.clone(),
+            });
         }
     }
     Ok(by_path)
@@ -305,12 +324,15 @@ pub fn build_path_tree_docs_scoped(
         if ext == ".md" {
             if let Some(published) = blog_updated_iso(&path) {
                 doc.insert("_originalPublishedAt".into(), Value::String(published.clone()));
-                doc.insert(
-                    "_updated".into(),
-                    Value::String(path_times.get(&path).cloned().unwrap_or(published)),
-                );
-            } else if let Some(updated) = path_times.get(&path) {
-                doc.insert("_updated".into(), Value::String(updated.clone()));
+                if let Some(meta) = path_times.get(&path) {
+                    doc.insert("_updated".into(), Value::String(meta.updated.clone()));
+                    doc.insert("_commit".into(), Value::String(meta.commit.clone()));
+                } else {
+                    doc.insert("_updated".into(), Value::String(published));
+                }
+            } else if let Some(meta) = path_times.get(&path) {
+                doc.insert("_updated".into(), Value::String(meta.updated.clone()));
+                doc.insert("_commit".into(), Value::String(meta.commit.clone()));
             }
         }
 
@@ -904,6 +926,9 @@ mod tests {
         assert_eq!(docs[0]["_title"], "Venus");
         assert_eq!(docs[0]["content_kind"], "exclude");
         assert!(docs[0]["_updated"].as_str().is_some());
+        let commit = docs[0]["_commit"].as_str().expect("_commit");
+        assert_eq!(commit.len(), 40);
+        assert!(commit.bytes().all(|b| b.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -931,19 +956,23 @@ mod tests {
         let article = by_path("cosmos/mars.md");
         assert_eq!(article["content_kind"], "article");
         assert!(article["_updated"].as_str().is_some());
+        assert_eq!(article["_commit"].as_str().unwrap().len(), 40);
 
         let investigation = by_path("events/false_flag/investigations/tonkin-investigation.md");
         assert_eq!(investigation["content_kind"], "investigation");
         assert!(investigation["_updated"].as_str().is_some());
+        assert_eq!(investigation["_commit"].as_str().unwrap().len(), 40);
 
         let blog = by_path("blog/2026-07-04-roundup.md");
         assert_eq!(blog["content_kind"], "blog");
         assert_eq!(blog["_originalPublishedAt"], "2026-07-04T12:00:00Z");
         assert!(blog["_updated"].as_str().is_some());
+        assert_eq!(blog["_commit"].as_str().unwrap().len(), 40);
 
         let asset = by_path("cosmos/mars.png");
         assert_eq!(asset["content_kind"], "exclude");
         assert!(asset["_updated"].is_null());
+        assert!(asset["_commit"].is_null());
     }
 
     #[test]

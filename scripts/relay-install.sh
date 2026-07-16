@@ -522,6 +522,11 @@ install_binaries() {
   }
   _copy_bin_if_needed "$gw_src" "$INSTALL/bin/$RELAY_HTTP_BIN"
   _copy_bin_if_needed "$src/relay-hook-handler" "$INSTALL/bin/relay-hook-handler"
+  if [[ -d "$src/www" ]]; then
+    rm -rf "$INSTALL/www"
+    mkdir -p "$INSTALL/www"
+    cp -a "$src/www/." "$INSTALL/www/"
+  fi
   if [[ -f "$src/relay-startup-catalog-sync.sh" ]]; then
     _copy_bin_if_needed "$src/relay-startup-catalog-sync.sh" "$INSTALL/bin/relay-startup-catalog-sync.sh"
   elif [[ -f "$SCRIPT_DIR/relay-startup-catalog-sync.sh" ]]; then

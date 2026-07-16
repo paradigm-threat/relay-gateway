@@ -120,7 +120,7 @@ When configured (and/or `mcp.yaml` is present), **`POST /api/mcp/:repo`** serves
 1. **Heavy work stays in Rust.** Raster decode, resize, WebP encoding, IPFS fetch, and disk caches are implemented in the gateway binary, not duplicated in CleverScript. Hooks call **`queryWidth(ctx)`** then **`optimizeRasterFromGetContext(ctx, bytes?, { width })`** from **`@relay/image`** (bytes from Git **`ctx`** or from **`fetchIpfsBytesFromGetContext`**); **`resolveIpfsFromGetContext(ctx)`** from **`@relay/ipfs`** for full-file thin-repo assets (omit IPFS imports to disable). **`toWebp`** remains for low-level use.
 2. **`next()` is the built-in file handler.** For GET hooks only, the runtime injects a second parameter: **`export default function run(ctx, next)`**. Calling **`return next()`** runs the same Rust path as the relay template: read **`ctx.relPath`** from the repo at the request branch, choose UTF‑8 vs base64 by content type, or return a **404** JSON body (with a short message for readers plus a debugging hint) if the blob is missing. **Do not** blanket `try/catch` the whole hook to fake 404s — use **`next()`** for “file not in tree” semantics; let uncaught script errors surface (see below).
 3. **Uncaught CleverScript errors → HTTP 500 with full detail.** On hook failure, the gateway responds with **`application/json; charset=utf-8`**, status **500**, including a layperson **`summaryForReaders`**, the full **`technicalReport`** (`anyhow` `{:#}` chain — **not** censored in production), structured **`cleverScript`** when the root cause is a **`RuntimeError`**, and **`rustBacktrace`** when a Rust backtrace was captured (e.g. **`RUST_BACKTRACE=1`**). The same contract applies to the **raster + `?w=`** path when the hook fails: the gateway does **not** fall back to serving the raw image after a hook error.
-4. **HTML embed (shipped).** For markdown blobs, when the client sends **`Accept: text/html`** / **`application/xhtml+xml`** or **`?embed=1`**, the gateway runs this hook with **`embedMarkdownRequest: true`** in **`ctx`**. If the hook returns a mapped **`text/html`** file response, that document is served (with **`Vary: Accept`** when absent). Otherwise the gateway falls back to a minimal HTML shell that loads **`/assets/embed.js`** (see [**`RELAY_EMBED_CLIENT_GET_INTERCEPT.md`**](RELAY_EMBED_CLIENT_GET_INTERCEPT.md)). Static assets must be deployed beside the main SPA.
+4. **HTML site shell + SSR are hook-routed.** For markdown blobs when **`Accept`** prefers **`text/html`** or **`?embed=1`**, the gateway runs this hook with **`embedMarkdownRequest: true`**. Repo-host **`/`** runs the hook with **`siteShellRequest: true`** (before the gateway SPA `index.html`). A site opts into SSR by calling **`ssrClientHookFromGetContext`** from **`@relay/ssr`**. The helper runs the client GET hook, emits a hydration document, and returns **`null`** on failure. If the hook returns no HTML: **`?embed=1`** falls back to the empty CSR embed shell; Accept-only falls through to static **`@relay/md`** HTML when applicable. Merely configuring `client.hooks.get` never enables SSR. Client hydration must **not** wipe SSR markup on failure — show a light error panel and keep the server page.
 
 If a path is missing from the Git tree, the gateway may run `server.hooks.get` CleverScript. The default export receives a JSON **`ctx`** including (when applicable): **`relPath`**, **`branch`**, **`repo`**, **`query`** (string map of query params — use **`queryWidth(ctx)`** for resize width), **`requestHeaders`** (sanitized copy of the request — sensitive names like **`Cookie`** / **`Authorization`** are omitted), **`contentType`**, **`bodyBase64`** (resolved blob when on-tree), **`commitSha`**, **`blobOid`**.
 
@@ -129,6 +129,23 @@ If a path is missing from the Git tree, the gateway may run `server.hooks.get` C
 **Image pipeline:** **`queryWidth(ctx, { keys? })`** reads max width from **`ctx.query`** (default keys **`w`**, **`width`**, **`maxWidth`**). **`optimizeRasterFromGetContext(ctx, bytes?, { width })`** requires explicit **`width`**; optional **`bytes`** from **`fetchIpfsBytesFromGetContext`**, else reads the Git blob from **`ctx`**. Returns **`null`** when not a raster or no body. Optional: **`RELAY_IMAGE_CACHE_ROOT`**, **`RELAY_IMAGE_CACHE_MAX_BYTES`**.
 
 **IPFS pipeline (opt-in):** **`fetchIpfsBytesFromGetContext(ctx, props?)`** and **`resolveIpfsFromGetContext(ctx, props?)`** — same **`props`** (`sources`, `assetsDir`, `manifestPath`, …). Default source: **`.relay/assets/{relPath}.ipfs`**. Thin catalog repos invoke the GET hook even when **`ctx.relPath`** is absent from the Git tree. See [**`RELAY_IPFS.md`**](RELAY_IPFS.md).
+
+**SSR pipeline (opt-in):** **`ssrClientHookFromGetContext(ctx, { clientHookPath?, assetBaseUrl? })`** from **`@relay/ssr`**. Calling it is the opt-in boundary; the gateway never runs client-hook SSR automatically. Typical routing:
+
+```js
+import { ssrClientHookFromGetContext } from '@relay/ssr';
+
+function wantsSiteShell(ctx) {
+  try { if (ctx.embedMarkdownRequest === true) return true; } catch (e) {}
+  try { if (ctx.siteShellRequest === true) return true; } catch (e) {}
+  return false;
+}
+
+if (wantsSiteShell(ctx)) {
+  var ssr = ssrClientHookFromGetContext(ctx);
+  if (ssr !== null) { return ssr; }
+}
+```
 
 **CleverScript control flow:** **`return`** inside **`if` / `for` / `while`** in the default-export **`run`** body exits **`run`** (relay-runtime propagates early returns from blocks).
 
@@ -143,13 +160,13 @@ If a path is missing from the Git tree, the gateway may run `server.hooks.get` C
 
 The gateway always sets **`X-Relay-Branch`** and **`X-Relay-Repo`** after your headers; values in `headers` for those names are ignored.
 
-Valid module specifiers: **`@relay/git`**, **`@relay/search/sqlite`**, **`@relay/search/redb`**, and (when the host allows GET native modules) **`@relay/image`**, **`@relay/ipfs`**, **`@relay/md`**. Anything else fails at load time.
+Valid module specifiers: **`@relay/git`**, **`@relay/search/sqlite`**, **`@relay/search/redb`**, and (when the host allows GET native modules) **`@relay/image`**, **`@relay/ipfs`**, **`@relay/md`**, **`@relay/ssr`**. Anything else fails at load time.
 
 **Node.js / `RelayHost.mjs` is not supported.**
 
 ## Security notes and hardening checklist
 
-CleverScript hooks run **in-process** on the gateway with a deliberately small virtual module surface (**`@relay/git`**, **`@relay/search/*`**, plus **`@relay/image`** / **`@relay/ipfs`** / **`@relay/md`** on GET paths when enabled). They are still **untrusted repo code** relative to the host. Recommended follow-ups:
+CleverScript hooks run **in-process** on the gateway with a deliberately small virtual module surface (**`@relay/git`**, **`@relay/search/*`**, plus **`@relay/image`** / **`@relay/ipfs`** / **`@relay/md`** / **`@relay/ssr`** on GET paths when enabled). They are still **untrusted repo code** relative to the host. Recommended follow-ups:
 
 1. **CPU and wall-clock limits** — `run_query_script` has no timeout today; a malicious or buggy hook can pin a worker thread. Add a per-hook **instruction budget** or **wall-clock timeout** (with process isolation if you need stronger guarantees).
 2. **Memory caps for images** — **`optimizeRasterFromGetContext`** / **`toWebp`** from **`@relay/image`** decode full rasters in memory. Enforce **max input bytes** (from `bodyBase64` decoded length), **max width/height** after decode, and **max output WebP size** before returning bytes; optional **disk cache** size is bounded by **`RELAY_IMAGE_CACHE_MAX_BYTES`** (see Dynamic GET above).
