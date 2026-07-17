@@ -111,6 +111,11 @@ write_caddyfile() {
 }
 
 :80 {
+	# Park plugin HTTP-01 (and any other gateway-owned challenges) must reach relay-gateway.
+	# Node/repo on_demand issuance uses TLS-ALPN on :443 instead of HTTP-01.
+	handle /.well-known/acme-challenge/* {
+		reverse_proxy 127.0.0.1:${UPSTREAM}
+	}
 	handle /voices* {
 		reverse_proxy 127.0.0.1:${PIPER_PORT}
 	}
@@ -128,6 +133,9 @@ import ${park_caddy}
 https:// {
 	tls {
 		on_demand
+		issuer acme {
+			disable_http_challenge
+		}
 	}
 	handle /voices* {
 		reverse_proxy 127.0.0.1:${PIPER_PORT}

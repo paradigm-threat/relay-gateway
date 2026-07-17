@@ -55,11 +55,13 @@ pub fn persist_cert_pair(domain: &str, fullchain_pem: &str, privkey_pem: &str) -
     }
     std::fs::write(&chain, fullchain_pem.as_bytes())?;
     std::fs::write(&key, privkey_pem.as_bytes())?;
-    // Restrict private key permissions when possible.
+    // Caddy (uid caddy) must read PEMs; keep keys non-executable but world-readable on
+    // the hardened host (state dir is not web-exposed). Operators may tighten with ACLs.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(&chain, std::fs::Permissions::from_mode(0o644));
+        let _ = std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644));
     }
     Ok(())
 }

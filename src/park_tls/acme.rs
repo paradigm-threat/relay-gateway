@@ -12,9 +12,12 @@ use std::time::Duration;
 
 pub async fn ensure_certs_for_domains(state: &AppState, domains: &[String]) -> anyhow::Result<()> {
     for d in domains {
-        issue_one(state, d)
-            .await
-            .with_context(|| format!("issue cert for {d}"))?;
+        tracing::info!(domain = %d, "park_tls: starting ACME order");
+        match tokio::time::timeout(Duration::from_secs(180), issue_one(state, d)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(e).with_context(|| format!("issue cert for {d}")),
+            Err(_) => return Err(anyhow!("ACME timed out after 180s for {d}")),
+        }
     }
     Ok(())
 }
