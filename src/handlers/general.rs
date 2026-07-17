@@ -542,10 +542,10 @@ pub async fn get_root(
     query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
     let qmap = query.as_ref().map(|q| &q.0);
-    // Repo subdomain (`{repo}.node`): prefer site shell via `server.hooks.get` +
-    // `siteShellRequest` before the gateway SPA `index.html`.
-    if let Some(repo_name) = helpers::repo_from_host(&state, state.node_fqdn.as_deref(), &headers)
-    {
+    // `{repo}.{node}` subdomain or parked catalog domain: site shell before gateway SPA.
+    let routed_repo = helpers::repo_from_host(&state, state.node_fqdn.as_deref(), &headers)
+        .or_else(|| helpers::repo_from_parked_domain(&state, &headers));
+    if let Some(repo_name) = routed_repo {
         let branch = helpers::branch_for_request(&headers, &state, Some(&repo_name));
         if let Some(resp) =
             git::try_site_shell_for_root(&state, &headers, &branch, &repo_name, qmap)
@@ -553,23 +553,40 @@ pub async fn get_root(
             return resp;
         }
     }
-    // Try serving SPA index.html from configured static paths
-    if let Some(resp) = crate::handlers::try_static(&state, "index.html").await {
-        return resp;
-    }
-    // Apex host (no `{repo}.` prefix): serve **`RELAY_DEFAULT_REPO`** (default `relay-master`) index if present
-    if let Some(repo_name) = helpers::default_http_repo_from_apex(&state) {
-        let branch = helpers::branch_for_request(&headers, &state, Some(&repo_name));
-        if let GitResolveResult::Respond(resp) = git::git_resolve_and_respond(
-            &state,
-            &headers,
-            &branch,
-            &repo_name,
-            "index.html",
-            None,
-        ) {
+    let has_parked = state
+        .parked_domains
+        .as_ref()
+        .map(|m| !m.is_empty())
+        .unwrap_or(false);
+    let apex = helpers::host_is_node_apex(state.node_fqdn.as_deref(), &headers);
+    // Gateway SPA only on the node apex (or when no parked map is configured).
+    if apex || !has_parked {
+        if let Some(resp) = crate::handlers::try_static(&state, "index.html").await {
             return resp;
         }
+    }
+    // Apex host: serve **`RELAY_DEFAULT_REPO`** (default `relay-master`) index if present
+    if apex {
+        if let Some(repo_name) = helpers::default_http_repo_from_apex(&state) {
+            let branch = helpers::branch_for_request(&headers, &state, Some(&repo_name));
+            if let GitResolveResult::Respond(resp) = git::git_resolve_and_respond(
+                &state,
+                &headers,
+                &branch,
+                &repo_name,
+                "index.html",
+                None,
+            ) {
+                return resp;
+            }
+        }
+    }
+    if has_parked && !apex {
+        return (
+            StatusCode::NOT_FOUND,
+            "Not Found\n\nUnknown Host (not a parked domain or repo subdomain).\n",
+        )
+            .into_response();
     }
     StatusCode::NO_CONTENT.into_response()
 }

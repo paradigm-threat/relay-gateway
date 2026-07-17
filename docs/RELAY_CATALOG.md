@@ -30,8 +30,26 @@ relay-master/
 | `publish_branch` | Branch served on Relay HTTPS / anchor checks |
 | `signing_keys` | Append-only identity list (`active` / `disabled`) |
 | `signing_keys_source` | `repo` \| `catalog` \| `hybrid` |
+| `domains` | Optional globally unique parked apex/subdomain hosts served by this repo |
 | `branch_features` | Optional `comments` / `dev` branches |
 | `limits` | Per-repo overrides; inherit from `policy-profiles.json` when empty |
+
+## Parked domains
+
+`domains[]` assigns exact HTTP Host names to a repository. Values are normalized to lowercase without a trailing dot, validated as DNS hostnames, and must be globally unique across the catalog.
+
+```json
+{
+  "repo": "clevertree-site",
+  "domains": [
+    "clevertree.net",
+    "www.clevertree.net",
+    "relay.clevertree.net"
+  ]
+}
+```
+
+The gateway materializes the signed assignment for HTTP routing and Caddy's on-demand TLS allowlist. DNS is a separate layer: the Relay network strategy uses **`fleet.relaygateway.net`** as the stable ingress target, apex ALIAS/flattening, and subdomain CNAME records. See **[`RELAY_NETWORK_DNS.md`](./RELAY_NETWORK_DNS.md)**.
 
 ## Publish branch
 
@@ -116,6 +134,7 @@ No binaries in Git for `hosted`; pointers only.
 
 ## Related docs
 
+- [RELAY_NETWORK_DNS.md](./RELAY_NETWORK_DNS.md) — parked-domain DNS, fleet ingress, Spot IP changes, TLS gate
 - [HOME_INTERNET_RELAY_PLAN.md](./HOME_INTERNET_RELAY_PLAN.md) — product / home hosting
 - [RELAY_BRANCH_POLICY_OPERATOR.md](./RELAY_BRANCH_POLICY_OPERATOR.md) — `.relay.yaml` checks
 - [RELAY_TRUST_AND_BOOTSTRAP.md](./RELAY_TRUST_AND_BOOTSTRAP.md) — anchors and trust root

@@ -89,12 +89,26 @@ pub struct RelayEmbedConfig<'a> {
 
 /// Build the Relay embed document. `ssr_body_html=None` produces the existing empty CSR shell;
 /// `Some` pre-fills `#root` for relay-runtime hydration.
+///
+/// `ssr_css` is optional generated theme CSS for no-JS browsers (media queries, themes).
 pub fn embed_html_document(
     repo: &str,
     branch: &str,
     rel_path: &str,
     client_hook_path: &str,
     ssr_body_html: Option<&str>,
+) -> String {
+    embed_html_document_with_css(repo, branch, rel_path, client_hook_path, ssr_body_html, None)
+}
+
+/// Like [`embed_html_document`], with optional SSR stylesheet.
+pub fn embed_html_document_with_css(
+    repo: &str,
+    branch: &str,
+    rel_path: &str,
+    client_hook_path: &str,
+    ssr_body_html: Option<&str>,
+    ssr_css: Option<&str>,
 ) -> String {
     let initial_path = if rel_path.starts_with('/') {
         rel_path.to_string()
@@ -116,6 +130,14 @@ pub fn embed_html_document(
         }
         _ => ("", String::new()),
     };
+    let theme_style = match ssr_css {
+        Some(css) if !css.trim().is_empty() => {
+            // Strip </style> so hostile theme CSS cannot break out of the style element.
+            let safe = css.replace("</style", "<\\/style").replace("</STYLE", "<\\/STYLE");
+            format!("\n  <style id=\"relay-ssr-theme\">{}</style>", safe)
+        }
+        _ => String::new(),
+    };
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -125,7 +147,7 @@ pub fn embed_html_document(
   <meta name="color-scheme" content="light dark"/>
   <title>{title_repo} — Relay</title>
   <link rel="stylesheet" href="/assets/embed.css"/>
-  <style>html,body,#root{{margin:0;height:100%;}}</style>
+  <style>html,body,#root{{margin:0;height:100%;}}</style>{theme_style}
 </head>
 <body>
   <div id="root"{root_attrs}>{root_inner}</div>
@@ -279,5 +301,20 @@ mod tests {
     fn sanitize_ssr_removes_script() {
         let s = sanitize_ssr_body_html(r#"a<script src=x></script>b</script>c"#);
         assert_eq!(s, "abc");
+    }
+
+    #[test]
+    fn embed_with_ssr_css_injects_theme_style() {
+        let html = embed_html_document_with_css(
+            "demo",
+            "main",
+            "/",
+            "/hooks/client/get.jsx",
+            Some("<main id=\"x\">hi</main>"),
+            Some(".ct-page{background-color:#020817;}"),
+        );
+        assert!(html.contains("id=\"relay-ssr-theme\""));
+        assert!(html.contains(".ct-page{background-color:#020817;}"));
+        assert!(html.contains("data-relay-ssr=\"1\""));
     }
 }

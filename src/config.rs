@@ -137,6 +137,13 @@ impl Config {
 
         let authorized_repos = authorized_repos.map(Arc::new);
 
+        // Parked-domain routing: worktree catalog → bare relay-master tip → state map file.
+        let parked_domains = crate::catalog_policy::resolve_parked_domains(
+            &repo_path,
+            catalog_path.as_deref(),
+        )?
+        .map(Arc::new);
+
         let features_path = std::env::var("RELAY_FEATURES_STATE_PATH")
             .ok()
             .filter(|s| !s.trim().is_empty())
@@ -162,6 +169,7 @@ impl Config {
                 node_fqdn,
                 relay_server_id,
                 authorized_repos,
+                parked_domains,
                 features_manifest,
                 git_ensure_bare_enabled,
             },
@@ -188,6 +196,7 @@ impl Config {
             node_fqdn: Some("localhost".to_string()),
             relay_server_id: None,
             authorized_repos: None,
+            parked_domains: None,
             features_manifest: None,
             git_ensure_bare_enabled: false,
         }

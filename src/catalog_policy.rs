@@ -140,6 +140,10 @@ pub struct CatalogRepoRecord {
     pub allowed_keys: Vec<String>,
     #[serde(default)]
     pub signing_keys_source: SigningKeysSource,
+    /// Parked apex/host domains this repo answers on (e.g. `clevertree.net`, `www.clevertree.net`).
+    /// Matched case-insensitively against the request `Host`. Globally unique across the catalog.
+    #[serde(default)]
+    pub domains: Vec<String>,
     #[serde(default)]
     pub branch_features: Option<BranchFeatures>,
     #[serde(default)]
@@ -311,6 +315,203 @@ pub fn catalog_record_for_slug<'a>(
     index.repos.get(repo_slug)
 }
 
+/// Normalize a `Host` (or catalog domain) for parked-domain matching:
+/// strip an optional `:port`, drop a trailing dot, and lowercase.
+pub fn normalize_domain(host: &str) -> String {
+    let h = host.trim();
+    let h = h.split(':').next().unwrap_or(h);
+    h.trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Basic hostname validation (labels 1..=63 of `[a-z0-9-]`, not edge-hyphenated, >=2 labels).
+fn is_valid_domain(d: &str) -> bool {
+    !d.is_empty()
+        && d.len() <= 253
+        && d.split('.').count() >= 2
+        && d.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        })
+}
+
+/// Build a `domain -> repo slug` map from the catalog, enforcing global uniqueness.
+///
+/// Errors if two repos claim the same domain, or a domain is empty/malformed. Repos are
+/// visited in sorted-slug order so collision errors are deterministic.
+pub fn build_parked_domain_map(index: &CatalogIndex) -> anyhow::Result<HashMap<String, String>> {
+    let mut map: HashMap<String, String> = HashMap::new();
+    let mut slugs: Vec<&String> = index.repos.keys().collect();
+    slugs.sort();
+    for slug in slugs {
+        let rec = &index.repos[slug];
+        for raw in &rec.domains {
+            let d = normalize_domain(raw);
+            if d.is_empty() {
+                anyhow::bail!("catalog repo '{}' has an empty domain entry", rec.repo);
+            }
+            if !is_valid_domain(&d) {
+                anyhow::bail!("catalog repo '{}' has invalid domain '{}'", rec.repo, raw);
+            }
+            if let Some(existing) = map.get(&d) {
+                if existing != &rec.repo {
+                    anyhow::bail!(
+                        "parked domain '{}' claimed by both '{}' and '{}'",
+                        d,
+                        existing,
+                        rec.repo
+                    );
+                }
+            }
+            map.insert(d, rec.repo.clone());
+        }
+    }
+    Ok(map)
+}
+
+/// Resolve a request `Host` to a parked repo slug via a `domain -> repo` map.
+pub fn repo_for_parked_host(map: &HashMap<String, String>, host_header: &str) -> Option<String> {
+    map.get(&normalize_domain(host_header)).cloned()
+}
+
+/// Path for the parked-domain allowlist consumed by `caddy-ask.py` (Caddy on-demand TLS).
+/// `RELAY_PARKED_DOMAINS_PATH`, else `${RELAY_INSTALL_ROOT}/state/parked-domains.txt`.
+pub fn parked_domains_allowlist_path() -> PathBuf {
+    if let Ok(p) = std::env::var("RELAY_PARKED_DOMAINS_PATH") {
+        let p = p.trim();
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    let root = std::env::var("RELAY_INSTALL_ROOT").unwrap_or_else(|_| "/opt/relay".into());
+    Path::new(&root).join("state/parked-domains.txt")
+}
+
+/// Write the parked domains (one normalized host per line, sorted) to the allowlist file so
+/// `caddy-ask.py` will authorize on-demand certificate issuance for them. Also writes a JSON
+/// domain→repo map beside it for gateway restarts that lack a catalog worktree. Best-effort.
+pub fn write_parked_domains_allowlist(map: &HashMap<String, String>) {
+    let path = parked_domains_allowlist_path();
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            return;
+        }
+    }
+    let mut domains: Vec<&String> = map.keys().collect();
+    domains.sort();
+    let mut body = String::from("# relay parked domains (Host -> repo); managed by relay-gateway\n");
+    for d in domains {
+        body.push_str(d);
+        body.push('\n');
+    }
+    if let Err(e) = std::fs::write(&path, body) {
+        tracing::warn!(error = %e, path = %path.display(), "failed to write parked-domains allowlist");
+    }
+    let map_path = parked_domains_map_path();
+    match serde_json::to_string_pretty(map) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&map_path, format!("{json}\n")) {
+                tracing::warn!(error = %e, path = %map_path.display(), "failed to write parked-domains map");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "failed to serialize parked-domains map"),
+    }
+}
+
+/// JSON domain→repo map path (`RELAY_PARKED_DOMAINS_MAP_PATH` or state/parked-domains.json).
+pub fn parked_domains_map_path() -> PathBuf {
+    if let Ok(p) = std::env::var("RELAY_PARKED_DOMAINS_MAP_PATH") {
+        let p = p.trim();
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    let root = std::env::var("RELAY_INSTALL_ROOT").unwrap_or_else(|_| "/opt/relay".into());
+    Path::new(&root).join("state/parked-domains.json")
+}
+
+/// Load a previously materialized domain→repo map from disk.
+pub fn load_parked_domains_map_file() -> Option<HashMap<String, String>> {
+    let path = parked_domains_map_path();
+    let s = std::fs::read_to_string(&path).ok()?;
+    let raw: HashMap<String, String> = serde_json::from_str(&s).ok()?;
+    let mut map = HashMap::new();
+    for (k, v) in raw {
+        map.insert(normalize_domain(&k), v);
+    }
+    (!map.is_empty()).then_some(map)
+}
+
+/// Load `catalog/repos/*.json` from the tip of a bare `relay-master.git` (fleet nodes without a worktree).
+pub fn load_catalog_index_from_bare(bare_path: &Path) -> anyhow::Result<CatalogIndex> {
+    let repo = git2::Repository::open_bare(bare_path)
+        .with_context(|| format!("open bare {}", bare_path.display()))?;
+    let tip = repo
+        .head()
+        .context("bare HEAD")?
+        .peel_to_commit()
+        .context("peel HEAD")?
+        .tree()
+        .context("HEAD tree")?;
+    let catalog = tip
+        .get_path(Path::new("catalog"))
+        .ok()
+        .and_then(|e| e.to_object(&repo).ok())
+        .and_then(|o| o.peel_to_tree().ok())
+        .context("catalog/ missing at bare tip")?;
+    let repos_tree = catalog
+        .get_path(Path::new("repos"))
+        .ok()
+        .and_then(|e| e.to_object(&repo).ok())
+        .and_then(|o| o.peel_to_tree().ok())
+        .context("catalog/repos/ missing at bare tip")?;
+    let mut repos = HashMap::new();
+    for entry in repos_tree.iter() {
+        let name = entry.name().unwrap_or("");
+        if !name.ends_with(".json") {
+            continue;
+        }
+        let blob = entry
+            .to_object(&repo)
+            .ok()
+            .and_then(|o| o.peel_to_blob().ok())
+            .with_context(|| format!("read catalog/repos/{name}"))?;
+        let rec: CatalogRepoRecord = serde_json::from_slice(blob.content())
+            .with_context(|| format!("parse catalog/repos/{name}"))?;
+        repos.insert(rec.repo.clone(), rec);
+    }
+    Ok(CatalogIndex { repos })
+}
+
+/// Resolve parked-domain map: worktree catalog → bare relay-master tip → state map file.
+pub fn resolve_parked_domains(
+    repo_path: &Path,
+    catalog_worktree: Option<&Path>,
+) -> anyhow::Result<Option<HashMap<String, String>>> {
+    if let Some(c) = catalog_worktree {
+        if let Ok(index) = load_catalog_index(c) {
+            let map = build_parked_domain_map(&index)?;
+            write_parked_domains_allowlist(&map);
+            return Ok((!map.is_empty()).then_some(map));
+        }
+    }
+    let bare = repo_path.join("relay-master.git");
+    if bare.is_dir() {
+        if let Ok(index) = load_catalog_index_from_bare(&bare) {
+            let map = build_parked_domain_map(&index)?;
+            if !map.is_empty() {
+                write_parked_domains_allowlist(&map);
+                return Ok(Some(map));
+            }
+        }
+    }
+    Ok(load_parked_domains_map_file())
+}
+
 /// Env `RELAY_MASTER_CATALOG_PATH` or parent of bare data when syncing.
 pub fn catalog_path_from_env() -> Option<PathBuf> {
     std::env::var("RELAY_MASTER_CATALOG_PATH")
@@ -366,11 +567,95 @@ mod tests {
             ],
             allowed_keys: vec![],
             signing_keys_source: SigningKeysSource::Catalog,
+            domains: vec![],
             branch_features: None,
             limits: None,
             last_history_reset: None,
         };
         assert_eq!(rec.verify_key_lines().len(), 2);
         assert_eq!(rec.authorize_key_lines().len(), 1);
+    }
+
+    fn rec_with_domains(repo: &str, domains: &[&str]) -> CatalogRepoRecord {
+        CatalogRepoRecord {
+            schema: None,
+            repo: repo.into(),
+            tier: RepoTier::Hosted,
+            forge_url: None,
+            relay_root_commit: "a".repeat(40),
+            approved_head: None,
+            publish_branch: "release".into(),
+            owner_key_id: None,
+            signing_keys: vec![],
+            allowed_keys: vec![],
+            signing_keys_source: SigningKeysSource::Repo,
+            domains: domains.iter().map(|s| s.to_string()).collect(),
+            branch_features: None,
+            limits: None,
+            last_history_reset: None,
+        }
+    }
+
+    fn index_of(records: Vec<CatalogRepoRecord>) -> CatalogIndex {
+        let mut repos = HashMap::new();
+        for r in records {
+            repos.insert(r.repo.clone(), r);
+        }
+        CatalogIndex { repos }
+    }
+
+    #[test]
+    fn normalize_domain_strips_port_dot_and_case() {
+        assert_eq!(normalize_domain("CleverTree.NET"), "clevertree.net");
+        assert_eq!(normalize_domain("clevertree.net:443"), "clevertree.net");
+        assert_eq!(normalize_domain("clevertree.net."), "clevertree.net");
+        assert_eq!(normalize_domain(" www.clevertree.net "), "www.clevertree.net");
+    }
+
+    #[test]
+    fn parked_domain_map_resolves_apex_and_www() {
+        let idx = index_of(vec![rec_with_domains(
+            "clevertree-site",
+            &["clevertree.net", "www.clevertree.net"],
+        )]);
+        let map = build_parked_domain_map(&idx).unwrap();
+        assert_eq!(
+            repo_for_parked_host(&map, "clevertree.net").as_deref(),
+            Some("clevertree-site")
+        );
+        assert_eq!(
+            repo_for_parked_host(&map, "WWW.CleverTree.net:443").as_deref(),
+            Some("clevertree-site")
+        );
+        assert_eq!(repo_for_parked_host(&map, "example.com"), None);
+    }
+
+    #[test]
+    fn parked_domain_map_rejects_duplicate_across_repos() {
+        let idx = index_of(vec![
+            rec_with_domains("clevertree-site", &["clevertree.net"]),
+            rec_with_domains("other-site", &["clevertree.net"]),
+        ]);
+        let err = build_parked_domain_map(&idx).unwrap_err().to_string();
+        assert!(err.contains("clevertree.net"), "unexpected: {err}");
+        assert!(err.contains("claimed by both"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn parked_domain_map_rejects_malformed_domain() {
+        let idx = index_of(vec![rec_with_domains("bad-site", &["not_a_domain"])]);
+        assert!(build_parked_domain_map(&idx).is_err());
+        let idx2 = index_of(vec![rec_with_domains("bad-site", &["nodot"])]);
+        assert!(build_parked_domain_map(&idx2).is_err());
+    }
+
+    #[test]
+    fn parked_domain_map_allows_same_repo_repeated_domain() {
+        let idx = index_of(vec![rec_with_domains(
+            "clevertree-site",
+            &["clevertree.net", "Clevertree.net."],
+        )]);
+        let map = build_parked_domain_map(&idx).unwrap();
+        assert_eq!(map.len(), 1);
     }
 }

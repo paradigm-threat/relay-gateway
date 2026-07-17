@@ -41,6 +41,9 @@ pub struct AppState {
     pub relay_server_id: Option<String>,
     /// When set, git-pull only for listed repos and anchor validation after fetch.
     pub authorized_repos: Option<Arc<crate::authorized_repos::AuthorizedReposFile>>,
+    /// Parked-domain routing map (`Host` → repo slug), materialized from the catalog `domains[]`.
+    /// A request `Host` matching a key is served by that repo instead of the apex default.
+    pub parked_domains: Option<Arc<std::collections::HashMap<String, String>>>,
     /// Written by relay-install.sh (`state/features.json`); exposed in `POST /api/config`.
     pub features_manifest: Option<Arc<serde_json::Value>>,
     /// When true, `POST /api/git/ensure-bare/:repo` may create `RELAY_REPO_PATH/<repo>.git` so anonymous `git push` over git:// succeeds.

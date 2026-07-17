@@ -25,6 +25,8 @@ pub struct ClientHookSsrRequest<'a> {
 /// Successful SSR output.
 pub struct ClientHookSsrResult {
     pub body_html: String,
+    /// Generated stylesheet for no-JS / SSR (may be empty).
+    pub css: String,
     pub stable_passes: u32,
 }
 
@@ -199,6 +201,7 @@ fn load_module_map(
     for extra in [
         "hooks/client/theme.yaml",
         "hooks/client/components/Layout.jsx",
+        "hooks/client/components/Icons.jsx",
         "theme.yaml",
     ] {
         if modules.contains_key(extra) {
@@ -283,6 +286,7 @@ pub fn try_ssr_client_hook(req: &ClientHookSsrRequest<'_>) -> Option<ClientHookS
     }
     Some(ClientHookSsrResult {
         body_html,
+        css: run.css,
         stable_passes: run.stable_passes,
     })
 }
@@ -345,6 +349,15 @@ export default function App() {
             result.body_html
         );
         assert!(result.body_html.contains("ssr-root") || result.body_html.contains("<div"));
+        assert!(
+            result.body_html.contains("class=\"ssr-root\"") || result.body_html.contains("class='ssr-root'") || result.body_html.contains("ssr-root"),
+            "className must survive SSR: {}",
+            result.body_html
+        );
+        assert!(
+            !result.css.trim().is_empty() || result.css.is_empty(),
+            "css field present"
+        );
     }
 
     #[test]
@@ -355,9 +368,11 @@ export default function App() {
             return;
         };
         let path = PathBuf::from(bare);
+        let branch =
+            std::env::var("CLEVERTREE_BRANCH").unwrap_or_else(|_| "main".to_string());
         let result = try_ssr_client_hook(&ClientHookSsrRequest {
             repo_path: &path,
-            branch: "main",
+            branch: &branch,
             client_hook_rel: "hooks/client/get.jsx",
             asset_base_url: "",
             initial_path: "/index.md",
@@ -373,14 +388,31 @@ export default function App() {
         assert!(html.contains("Forgotten Future"), "{html}");
         assert!(html.contains("ct-home") || html.contains("id=\"ct-home\""), "{html}");
         assert!(
+            html.contains("ct-projects"),
+            "projects grid class must survive SSR: {html}"
+        );
+        assert!(
             !html.contains("data-error-boundary"),
             "SSR should not emit error boundaries: {html}"
         );
+        assert!(
+            !result.css.trim().is_empty(),
+            "SSR must emit stylesheet CSS for no-JS browsers"
+        );
+        assert!(
+            result.css.contains("prefers-color-scheme") || result.css.contains(".ct-page"),
+            "CSS should include theme rules: {}",
+            &result.css[..result.css.len().min(400)]
+        );
         if let Ok(out) = std::env::var("CLEVERTREE_WRITE_FIXTURE") {
             if !out.is_empty() {
-                let doc = format!(
-                    r#"<!DOCTYPE html><html><head><meta charset="utf-8"/><title>CleverTree SSR fixture</title><style>html,body,#root{{margin:0}}</style></head><body><div id="root" data-relay-ssr="1">{}</div><script type="application/json" id="relay-embed-config">{{"repo":"clevertree-site","branch":"main","initialPath":"/index.md","clientHookPath":"/hooks/client/get.jsx"}}</script></body></html>"#,
-                    html
+                let doc = crate::git::embed_html::embed_html_document_with_css(
+                    "clevertree-site",
+                    &branch,
+                    "index.md",
+                    "/hooks/client/get.jsx",
+                    Some(&html),
+                    Some(&result.css),
                 );
                 std::fs::write(&out, doc).expect("write fixture");
                 eprintln!("wrote fixture to {out}");

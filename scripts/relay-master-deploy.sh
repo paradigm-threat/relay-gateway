@@ -172,6 +172,20 @@ upsert_dns() {
   "$DNS_DIR/vercel-dns-wildcard.sh" "$node_slug" "$ip"
 }
 
+# After a node A record changes, refresh fleet.relaygateway.net from all peer FQDNs.
+reconcile_fleet_dns() {
+  load_vercel_dns_creds
+  [[ -n "${VERCEL_API_TOKEN:-}" ]] || {
+    echo "[deploy] Skip fleet DNS: no VERCEL_API_TOKEN" >&2
+    return 0
+  }
+  local peers="${RELAY_MASTER_PEER_LIST:-${RELAY_OPERATOR_FLEET:-dfw1.relaygateway.net;lon1.relaygateway.net;hkg1.relaygateway.net}}"
+  # shellcheck disable=SC2086
+  IFS=';' read -ra peer_arr <<<"$peers"
+  echo "[deploy] reconcile fleet.relaygateway.net from ${peer_arr[*]}"
+  "$DNS_DIR/vercel-dns-fleet-reconcile.sh" --fleet="${RELAY_FLEET_DNS_NAME:-fleet.relaygateway.net}" "${peer_arr[@]}"
+}
+
 wait_ssh() {
   local target="$1" timeout="${2:-300}" elapsed=0
   while [[ "$elapsed" -lt "$timeout" ]]; do
@@ -222,6 +236,7 @@ wait_ssh "$SSH_TARGET" 300 || { echo "SSH not ready" >&2; exit 1; }
 if [[ "$SKIP_DNS" != 1 ]]; then
   echo "[deploy] Vercel DNS $FQDN + *.${NODE_SLUG}"
   upsert_dns "$FQDN" "$IP" "$NODE_SLUG" || echo "[deploy] WARN: DNS upsert failed" >&2
+  reconcile_fleet_dns || echo "[deploy] WARN: fleet DNS reconcile failed" >&2
 fi
 
 echo "[deploy] upload tarball"

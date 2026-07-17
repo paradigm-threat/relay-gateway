@@ -756,12 +756,17 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             return Ok(CsValue::Null);
         };
         let client_hook_http = format!("/{}", client_hook_path);
-        let html = crate::git::embed_html::embed_html_document(
+        let html = crate::git::embed_html::embed_html_document_with_css(
             repo,
             request_branch,
             &initial_path,
             &client_hook_http,
             Some(&rendered.body_html),
+            if rendered.css.trim().is_empty() {
+                None
+            } else {
+                Some(rendered.css.as_str())
+            },
         );
         Ok(hook_file_object_ssr_html(html))
     });

@@ -15,7 +15,8 @@ Rackspace has stated Terraform/spotctl/API support for VM Cloudspaces is **plann
 
 1. **`scripts/spot-vm-provision.sh`** — writes **`vm-state.json`** with `public_ip` (from **`public_ip_override`**, DNS, or future API).
 2. **`terraform apply`** — triggers provisioner; **`data.external`** reads state for outputs.
-3. **`relay-master-deploy.sh --target spot-dfw1`** — same Linode path after IP is known: tarball, **`install.sh`**, Vercel DNS, Caddy, Piper.
+3. **`relay-master-deploy.sh --target spot-dfw1`** — same Linode path after IP is known: tarball, **`install.sh`**, node/wildcard Vercel DNS, Caddy, Piper.
+4. **Network ingress:** reconcile **`fleet.relaygateway.net`** from the stable node FQDNs after replacement. Parked domains point to the fleet name, not directly to Spot IPs. See **[`RELAY_NETWORK_DNS.md`](../../docs/RELAY_NETWORK_DNS.md)**.
 
 **OS:** use Spot VM image **`ubuntu2404`** (Ubuntu 24.04). K8s worker nodes on **`relay-network-cheapest`** are **Ubuntu 20.04** — the Linode-style **`relay-linode-deploy.tgz`** binary requires **glibc ≥ 2.32** and will not start there.
 

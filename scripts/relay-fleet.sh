@@ -51,6 +51,7 @@ Subcommands:
   reclone-repo REPO   Remote bare reset + catalog sync; optional --peer for git:// fetch
   fix-bare-head      Point each catalog bare repo symbolic HEAD at its .gitmodules branch (default main)
   bootstrap-ssh       Install deploy pubkey for ari via root+sshpass (SSHPASS or RELAY_ROOT_PASSWORD)
+  fleet-dns           Reconcile fleet.relaygateway.net A/AAAA from node FQDNs (Vercel DNS)
   reinstall           Safe default = update. Destructive: --danger-wipe-relay-data --confirm-wipe=<fqdn>
 
 reinstall (destructive) global flags — must appear before subcommand, with reinstall:
@@ -64,6 +65,10 @@ Or export RELAY_FEAT_* in the environment before invoking.
 reclone-repo flags:
   --peer=FQDN         After sync, git fetch from git://peer:GIT_PORT/REPO.git
 
+fleet-dns flags:
+  --dry-run           Print creates/deletes without calling Vercel
+  --fleet=FQDN        Override ingress name (default fleet.relaygateway.net / RELAY_FLEET_DNS_NAME)
+
 Examples:
   ./scripts/relay-fleet.sh ssh-check
   ./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net status
@@ -72,6 +77,8 @@ Examples:
   ./scripts/relay-fleet.sh --build deploy-all
   ./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net --build update
   ./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net features-set --piper=0 --npm-pkgs=
+  ./scripts/relay-fleet.sh fleet-dns
+  ./scripts/relay-fleet.sh fleet-dns --dry-run
 EOF
   exit "${1:-0}"
 }
@@ -553,6 +560,35 @@ EOS
   done
 }
 
+cmd_fleet_dns() {
+  source_env
+  local dry=0
+  local fleet_name="${RELAY_FLEET_DNS_NAME:-fleet.relaygateway.net}"
+  local args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run) dry=1 ;;
+      --fleet=*) fleet_name="${1#*=}" ;;
+      --fleet) shift; fleet_name="${1:?}" ;;
+      -h|--help) usage 0 ;;
+      *) die "fleet-dns: unknown arg: $1" ;;
+    esac
+    shift
+  done
+  [[ -n "${VERCEL_API_TOKEN:-${VERCEL_TOKEN:-}}" ]] || die "fleet-dns needs VERCEL_API_TOKEN in $ENV_FILE or environment"
+  # Always reconcile from the full configured fleet, ignoring --only.
+  local saved_only="$ONLY_HOST"
+  ONLY_HOST=""
+  parse_hosts_to_array
+  ONLY_HOST="$saved_only"
+  [[ "$dry" == 1 ]] && args+=(--dry-run)
+  args+=(--fleet="$fleet_name")
+  args+=("${FLEET_HOSTS[@]}")
+  log "fleet-dns begin ${fleet_name} from ${FLEET_HOSTS[*]}"
+  "$ROOT/terraform/shared-dns/scripts/vercel-dns-fleet-reconcile.sh" "${args[@]}"
+  log "fleet-dns end"
+}
+
 case "$SUB" in
   hosts) cmd_hosts ;;
   ssh-check) cmd_ssh_check ;;
@@ -566,6 +602,7 @@ case "$SUB" in
   reclone-repo) cmd_reclone_repo "$@" ;;
   fix-bare-head) cmd_fix_bare_head ;;
   bootstrap-ssh) cmd_bootstrap_ssh ;;
+  fleet-dns) cmd_fleet_dns "$@" ;;
   reinstall) cmd_reinstall ;;
   -h|--help|help) usage 0 ;;
   *) die "unknown subcommand: $SUB (try ./scripts/relay-fleet.sh help)" ;;

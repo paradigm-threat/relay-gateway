@@ -15,6 +15,8 @@
 
 **Do not** pin stale IPv4s in docs; use hostnames. Temporary SSH-by-IP is an exception for broken DNS only.
 
+**Network ingress / parked domains:** node FQDNs are the source of truth; `fleet.relaygateway.net` is the stable network target materialized from their current addresses. Parked apex domains use ALIAS/flattening to the fleet name, and parked subdomains use CNAME. See **[`RELAY_NETWORK_DNS.md`](./RELAY_NETWORK_DNS.md)**. Reconcile the fleet A/AAAA set with **`./scripts/relay-fleet.sh fleet-dns`** (also runs from **`relay-master-deploy.sh`** after node DNS upsert). Coordinated multi-node TLS is not yet a fleet subcommand.
+
 **Local git remotes (developer laptop):** add **`git://dfw1|lon1|hkg1.relaygateway.net:9418/<repo>.git`** to every checkout listed in **`relay-master/catalog/repos/`**:
 
 ```bash
@@ -53,6 +55,7 @@ Edit paths in **`scripts/relay-local-repos.map`**. Legacy **atlanta2** may still
 | **`deploy-all`** | Same as **`update`** (**`relay-linode-redeploy-seed.sh`** …). **`./scripts/deploy-all-masters.sh`** wraps **`relay-fleet.sh --build deploy-all`** (always repacks — use **`relay-fleet.sh deploy-all`** alone only if you intend to reuse an existing tarball). |
 | **`repair`** | Uploads **`target/relay-linode-deploy.tgz`**, extracts under **`/tmp`**, runs **`./install.sh repair`** (same pattern as **`relay-linode-redeploy-seed`** — **`install.sh` is not kept under `/opt/relay/bin`** on nodes). |
 | **`features-set`** | Same tarball staging, then **`./install.sh reconfigure-features`** with **`RELAY_INSTALL_NONINTERACTIVE=1`** and **`RELAY_FEAT_*`** from flags or your environment: **`--piper=0|1`**, **`--npm-pkgs=`**, **`--translation=0|1`**, **`--translation-pkgs=`**, **`--libretranslate=0|1`**. |
+| **`fleet-dns`** | Resolve configured fleet FQDNs and reconcile **`fleet.relaygateway.net`** A/AAAA via Vercel DNS (**`--dry-run`**, **`--fleet=`**). Ignores **`--only`**. Requires **`VERCEL_API_TOKEN`**. |
 | **`reclone-repo REPO`** | Reads the repo URL/root/branch from the node’s served **`relay-master.git`**, clones and validates a staging bare (optional **`--peer=FQDN`** fetch), then briefly stops **`relay-git-daemon`** for an atomic swap. The existing mirror remains live and is preserved if preparation fails; no catalog worktree is required. See **[`OPERATOR_BARE_REPO_RESET.md`](./OPERATOR_BARE_REPO_RESET.md)**. |
 | **`bootstrap-ssh`** | One-shot **`root`** password (**`SSHPASS`** or **`RELAY_ROOT_PASSWORD`** env — never commit) + **`sshpass`** to append deploy **`*.pub`** to **`ari`’s `authorized_keys`**, then **`ssh-check`**. Not the same as laptop **`autossh`** tunnels — see production-ops rule. |
 | **`reinstall`** | **Safe default:** same as **`update`**. **Destructive:** with **`--danger-wipe-relay-data`**, **`--confirm-wipe=`**, and **`--only=`** exactly one host — stops units and **`rm -rf $RELAY_REPO_PATH/*.git`**, then **`update`**. |
@@ -133,6 +136,7 @@ After deploy, smoke mesh tip-notify: signed push to a repo with **`git.origins`*
 
 ## Related
 
+- **[`RELAY_NETWORK_DNS.md`](./RELAY_NETWORK_DNS.md)** — node names, `fleet.relaygateway.net`, parked-domain ALIAS/CNAME strategy, Spot replacement, TLS gate, and rollback.
 - **[`RELAY_BRANCH_POLICY_OPERATOR.md`](./RELAY_BRANCH_POLICY_OPERATOR.md)** — `.relay.yaml` **pre-receive** policy, why forge vs fleet differ, **`relay-branch-policy-check`** validation.
 - **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** — full install / DNS / secrets.
 - **[`.cursor/rules/relay-production-ops.mdc`](../.cursor/rules/relay-production-ops.mdc)** — SSH, autossh, tarball flow.

@@ -140,11 +140,11 @@ pub fn css_escape_class(class: &str) -> String {
 }
 
 pub fn class_to_selector(class: &str) -> String {
-    let (_bp, hover, base) = parse_prefixed_class(class);
+    let (_bp, hover, _base) = parse_prefixed_class(class);
     if hover {
-        format!(".{}:hover", css_escape_class(&base))
+        format!(".{}:hover", css_escape_class(class))
     } else {
-        format!(".{}", css_escape_class(&base))
+        format!(".{}", css_escape_class(class))
     }
 }
 

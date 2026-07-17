@@ -406,36 +406,77 @@ impl State {
         // Also emit dynamic utility properties for used classes
         for class in &used_classes {
             let (bp_key, hover, base) = parse_prefixed_class(class);
-            let selector = if hover {
-                format!(".{}:hover", css_escape_class(&base))
+            // DOM class is the full token (`md:ct-foo`); CSS must target `.md\:ct-foo`.
+            let emit_sel = if hover {
+                format!(".{}:hover", css_escape_class(class))
             } else {
-                format!(".{}", css_escape_class(&base))
+                format!(".{}", css_escape_class(class))
             };
 
-            // 1) Exact selector in effective theme (e.g. ".x:hover")
-            // Skip: already emitted in the first pass (theme selectors loop above)
-            if eff.get(&selector).is_some() {
+            // 1) Exact selector already emitted in the theme-selectors pass above.
+            //    Only skip when this usage has no breakpoint/hover prefix — otherwise
+            //    `md:ct-foo` would be dropped even though `.ct-foo` was never emitted
+            //    (should_emit_selector only matches the unprefixed class name).
+            if bp_key.is_none() && !hover && eff.get(&emit_sel).is_some() {
                 continue;
             }
             // 2) Dynamic generation for the base class (ignoring hover/breakpoint for props)
             if let Some(dynamic_props) = dynamic_css_properties_for_class(&base, &vars) {
-                let sel = if hover {
-                    format!(".{}:hover", css_escape_class(&base))
-                } else {
-                    format!(".{}", css_escape_class(&base))
-                };
-                let final_sel = wrap_with_media(&sel, bp_key.as_deref(), &bps);
+                let final_sel = wrap_with_media(&emit_sel, bp_key.as_deref(), &bps);
                 rules.push((final_sel, dynamic_props));
                 continue;
             }
-            // 3) Fallback: class key itself in theme (rare)
-            if let Some(props) = eff.get(&base) {
-                let final_sel = wrap_with_media(&selector, bp_key.as_deref(), &bps);
+            // 3) Theme class selector (lookup by base `.ct-foo`; emit full prefixed class)
+            let theme_sel = format!(".{}", base);
+            if let Some(props) = eff.get(&theme_sel).or_else(|| eff.get(&base)) {
+                let final_sel = wrap_with_media(&emit_sel, bp_key.as_deref(), &bps);
                 rules.push((final_sel, props.clone()));
             }
         }
 
         post_process_css(&rules, &vars)
+    }
+
+    /// CSS for no-JS browsers: light as default, dark under `prefers-color-scheme`.
+    ///
+    /// When only one of light/dark exists, falls back to [`Self::css_for_web`].
+    /// JS theme toggles that force a theme should re-resolve and replace the
+    /// stylesheet (see `setCurrentTheme` / `get_injected_css`).
+    pub fn css_for_web_system(&self) -> String {
+        let has_light = self.themes.contains_key("light");
+        let has_dark = self.themes.contains_key("dark");
+        if !(has_light && has_dark) {
+            return self.css_for_web();
+        }
+
+        let mut light = self.clone();
+        light.current_theme = "light".to_string();
+        light.prefers_color_scheme = Some("light".to_string());
+        let light_css = light.css_for_web();
+
+        let mut dark = self.clone();
+        dark.current_theme = "dark".to_string();
+        dark.prefers_color_scheme = Some("dark".to_string());
+        let dark_css = dark.css_for_web();
+
+        if light_css.trim().is_empty() && dark_css.trim().is_empty() {
+            return String::new();
+        }
+
+        let mut out = String::new();
+        out.push_str("/* relay theme: light (default) */\n");
+        out.push_str(&light_css);
+        out.push_str("\n/* relay theme: dark via prefers-color-scheme */\n");
+        // Nested @media (breakpoint utilities inside) is valid CSS.
+        out.push_str("@media (prefers-color-scheme: dark) {\n");
+        out.push_str(&dark_css);
+        out.push_str("}\n");
+        // Forced overrides for JS toggle (prefix top-level selectors only).
+        out.push_str("\n/* relay theme: forced dark */\n");
+        out.push_str(&prefix_css_selectors(&dark_css, "html.dark"));
+        out.push_str("\n/* relay theme: forced light */\n");
+        out.push_str(&prefix_css_selectors(&light_css, "html.light"));
+        out
     }
 
     pub fn android_base_styles(
@@ -1206,6 +1247,94 @@ fn split_tag_class_key(key: &str) -> Option<(String, String)> {
     Some((t, c))
 }
 
+/// Prefix CSS selectors with `prefix` (e.g. `html.dark`), including selectors
+/// nested in conditional at-rules. Declaration at-rules such as `@font-face`
+/// and keyframes are copied unchanged.
+fn prefix_css_selectors(css: &str, prefix: &str) -> String {
+    let mut out = String::with_capacity(css.len() + 64);
+    let mut rest = css;
+    while !rest.is_empty() {
+        let trimmed = rest.trim_start();
+        let leading = rest.len() - trimmed.len();
+        if leading > 0 {
+            out.push_str(&rest[..leading]);
+        }
+        rest = trimmed;
+        if rest.is_empty() {
+            break;
+        }
+        if rest.starts_with('@') {
+            let is_conditional = ["@media", "@supports", "@container", "@layer"]
+                .iter()
+                .any(|at| rest.starts_with(at));
+            if is_conditional {
+                if let Some(brace) = rest.find('{') {
+                    let after = &rest[brace..];
+                    if let Some(close) = find_matching_brace(after) {
+                        out.push_str(&rest[..=brace]);
+                        out.push_str(&prefix_css_selectors(&after[1..close - 1], prefix));
+                        out.push('}');
+                        rest = &rest[brace + close..];
+                        continue;
+                    }
+                }
+            }
+            if let Some(end) = find_at_rule_end(rest) {
+                out.push_str(&rest[..end]);
+                rest = &rest[end..];
+                continue;
+            }
+            out.push_str(rest);
+            break;
+        }
+        if let Some(brace) = rest.find('{') {
+            let selector = rest[..brace].trim();
+            let after = &rest[brace..];
+            if let Some(close) = find_matching_brace(after) {
+                out.push_str(prefix);
+                out.push(' ');
+                out.push_str(selector);
+                out.push_str(&after[..close]);
+                rest = &after[close..];
+                continue;
+            }
+        }
+        out.push_str(rest);
+        break;
+    }
+    out
+}
+
+fn find_matching_brace(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    if bytes.first() != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 0i32;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_at_rule_end(s: &str) -> Option<usize> {
+    if let Some(brace) = s.find('{') {
+        let after = &s[brace..];
+        let close = find_matching_brace(after)?;
+        return Some(brace + close);
+    }
+    s.find(';').map(|i| i + 1)
+}
+
 fn strip_hover_suffix(selector: &str) -> (&str, bool) {
     if let Some(stripped) = selector.strip_suffix(":hover") {
         (stripped, true)
@@ -1429,6 +1558,8 @@ fn css_props_string(props: &CssProps, vars: &IndexMap<String, String>) -> String
         let val = if v.is_string() {
             let s = v.as_str().unwrap();
             resolve_vars(s, vars)
+        } else if let Some(n) = v.as_f64() {
+            css_numeric_value(&key, n)
         } else {
             v.to_string()
         };
@@ -1438,6 +1569,44 @@ fn css_props_string(props: &CssProps, vars: &IndexMap<String, String>) -> String
         }
     }
     buf
+}
+
+fn css_numeric_value(property: &str, value: f64) -> String {
+    let raw = if value.fract() == 0.0 {
+        format!("{}", value as i64)
+    } else {
+        value.to_string()
+    };
+    if value == 0.0
+        || property.starts_with("--")
+        || matches!(
+            property,
+            "animation-iteration-count"
+                | "column-count"
+                | "fill-opacity"
+                | "flex"
+                | "flex-grow"
+                | "flex-shrink"
+                | "font-weight"
+                | "grid-column"
+                | "grid-row"
+                | "line-height"
+                | "opacity"
+                | "order"
+                | "orphans"
+                | "scale"
+                | "stroke-opacity"
+                | "stroke-width"
+                | "tab-size"
+                | "widows"
+                | "z-index"
+                | "zoom"
+        )
+    {
+        raw
+    } else {
+        format!("{raw}px")
+    }
 }
 
 /// Parse var() references manually (replaces regex dependency)
@@ -2981,11 +3150,11 @@ fn css_escape_class(class: &str) -> String {
 }
 
 fn class_to_selector(class: &str) -> String {
-    let (_bp, hover, base) = parse_prefixed_class(class);
+    let (_bp, hover, _base) = parse_prefixed_class(class);
     if hover {
-        format!(".{}:hover", css_escape_class(&base))
+        format!(".{}:hover", css_escape_class(class))
     } else {
-        format!(".{}", css_escape_class(&base))
+        format!(".{}", css_escape_class(class))
     }
 }
 
@@ -3361,7 +3530,7 @@ mod tests {
         assert!(css.contains("display:none"));
         // breakpoint rule
         assert!(css.contains("@media (min-width: 768px)"));
-        assert!(css.contains(".flex{display:flex"));
+        assert!(css.contains(".md\\:flex{display:flex"));
         // hover inside media (substring check)
         assert!(css.contains(":hover{display:block"));
 
@@ -3663,6 +3832,7 @@ mod tests {
         let default_theme = ThemeEntry {
             name: Some("default".to_string()),
             inherits: None,
+            inherits_dark: None,
             selectors,
             variables,
             breakpoints: IndexMap::new(),
@@ -3706,6 +3876,7 @@ mod tests {
         let default_theme = ThemeEntry {
             name: Some("default".to_string()),
             inherits: None,
+            inherits_dark: None,
             selectors,
             variables: IndexMap::new(),
             breakpoints: IndexMap::new(),
@@ -3740,6 +3911,7 @@ mod tests {
         let default_theme = ThemeEntry {
             name: Some("default".to_string()),
             inherits: None,
+            inherits_dark: None,
             selectors,
             variables: IndexMap::new(),
             breakpoints: IndexMap::new(),
@@ -3758,9 +3930,80 @@ mod tests {
         println!("[test_css_kebab_case_conversion] css: {}", css);
 
         assert!(css.contains("background-color:#ffffff;"));
-        assert!(css.contains("border-top-width:1;"));
+        assert!(css.contains("border-top-width:1px;"));
         assert!(!css.contains("backgroundColor:"));
         assert!(!css.contains("borderTopWidth:"));
+    }
+
+    #[test]
+    fn css_for_web_system_emits_prefers_color_scheme() {
+        let mut state = State::new_default();
+        let mut light_sel = IndexMap::new();
+        let mut body_light = IndexMap::new();
+        body_light.insert("background-color".to_string(), json!("#ffffff"));
+        light_sel.insert("body".to_string(), body_light);
+        state.add_theme("light", light_sel);
+
+        let mut dark_sel = IndexMap::new();
+        let mut body_dark = IndexMap::new();
+        body_dark.insert("background-color".to_string(), json!("#111111"));
+        dark_sel.insert("body".to_string(), body_dark);
+        state.add_theme("dark", dark_sel);
+
+        state.current_theme = "light".to_string();
+        state.register_tags(["body".to_string()]);
+        let css = state.css_for_web_system();
+        assert!(
+            css.contains("prefers-color-scheme: dark"),
+            "system CSS must include dark media query: {css}"
+        );
+        assert!(css.contains("#ffffff") || css.contains("background-color:#ffffff"));
+        assert!(css.contains("#111111") || css.contains("background-color:#111111"));
+        assert!(css.contains("html.dark"), "forced dark override: {css}");
+    }
+
+    #[test]
+    fn css_emits_breakpoint_prefixed_theme_class() {
+        let mut state = State::new_default();
+        let mut selectors = IndexMap::new();
+        let mut props = IndexMap::new();
+        props.insert("grid-template-columns".to_string(), json!("1fr 1fr"));
+        selectors.insert(".ct-projects-md".to_string(), props);
+        state.add_theme("light", selectors);
+        state.current_theme = "light".to_string();
+        let mut bps = IndexMap::new();
+        bps.insert("md".to_string(), "768px".to_string());
+        state.set_breakpoints(bps);
+        state.register_tailwind_classes(["md:ct-projects-md".to_string()]);
+        let css = state.css_for_web();
+        assert!(
+            css.contains("@media (min-width: 768px)"),
+            "breakpoint media missing: {css}"
+        );
+        assert!(
+            css.contains(".md\\:ct-projects-md") && css.contains("grid-template-columns:1fr 1fr"),
+            "prefixed theme class missing in media: {css}"
+        );
+    }
+
+    #[test]
+    fn forced_theme_prefixes_selectors_inside_media_rules() {
+        let css = "@media (min-width: 768px){.md\\:card{color:red;}}";
+        let prefixed = prefix_css_selectors(css, "html.dark");
+        assert_eq!(
+            prefixed,
+            "@media (min-width: 768px){html.dark .md\\:card{color:red;}}"
+        );
+    }
+
+    #[test]
+    fn numeric_css_values_add_px_except_for_unitless_properties() {
+        assert_eq!(css_numeric_value("border-width", 1.0), "1px");
+        assert_eq!(css_numeric_value("padding", 8.0), "8px");
+        assert_eq!(css_numeric_value("margin", 0.0), "0");
+        assert_eq!(css_numeric_value("font-weight", 700.0), "700");
+        assert_eq!(css_numeric_value("line-height", 1.5), "1.5");
+        assert_eq!(css_numeric_value("opacity", 0.5), "0.5");
     }
 }
 

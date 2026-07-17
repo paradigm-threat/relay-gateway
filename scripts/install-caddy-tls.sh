@@ -83,6 +83,7 @@ After=network.target
 [Service]
 Type=simple
 Environment=RELAY_NODE_FQDN=${NODE_FQDN}
+Environment=RELAY_PARKED_DOMAINS_PATH=${RELAY_PARKED_DOMAINS_PATH:-/opt/relay/state/parked-domains.txt}
 ExecStart=/usr/bin/python3 /usr/local/lib/relay/caddy-ask.py
 Restart=always
 RestartSec=3

@@ -63,9 +63,14 @@ See **[`RELAY_FLEET_CONSOLE.md`](./RELAY_FLEET_CONSOLE.md)**.
 
 ## DNS
 
-- Apex: **`{node}.relaygateway.net`**
-- Wildcard on **`relaygateway.net`**: **`*.{node}`** for **`{repo}.{node}.relaygateway.net`**
-- Scripts: **`terraform/shared-dns/scripts/`**
+- **Canonical strategy:** [`RELAY_NETWORK_DNS.md`](./RELAY_NETWORK_DNS.md).
+- Node identity: **`{node}.relaygateway.net`** A record, updated after Spot provisioning/replacement.
+- Repo vhosts: **`*.{node}.relaygateway.net`** A record for **`{repo}.{node}.relaygateway.net`**.
+- Stable network ingress: **`fleet.relaygateway.net`**, whose A/AAAA set is reconciled from the configured node FQDNs.
+- Parked apex domains: provider **ALIAS/flattening → `fleet.relaygateway.net`**; parked subdomains: **CNAME → `fleet.relaygateway.net`**.
+- Single-node canaries may CNAME directly to a node (for example `relay.clevertree.net → dfw1.relaygateway.net`).
+- Do not put all node addresses behind `fleet.relaygateway.net` until coordinated multi-node ACME/certificate distribution and renewal are ready.
+- Existing node/wildcard helpers: **`terraform/shared-dns/scripts/`**. Fleet ingress: **`./scripts/relay-fleet.sh fleet-dns`** (also from **`relay-master-deploy.sh`** after node DNS upsert).
 
 ## Manual follow-up
 

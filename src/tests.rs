@@ -20,6 +20,7 @@ mod tests {
             node_fqdn: Some("test.local".to_string()),
             relay_server_id: None,
             authorized_repos: None,
+            parked_domains: None,
             features_manifest: None,
             git_ensure_bare_enabled: true,
         }
@@ -393,6 +394,68 @@ server:
         h.insert(HOST, "test.local".parse().unwrap());
         let selected = helpers::repo_from_host_or_default(&state, Some("test.local"), &h);
         assert_eq!(selected, Some("relay-master".to_string()));
+    }
+
+    fn parked_state(repo_path: std::path::PathBuf, pairs: &[(&str, &str)]) -> AppState {
+        let mut map = std::collections::HashMap::new();
+        for (domain, repo) in pairs {
+            map.insert(domain.to_string(), repo.to_string());
+        }
+        AppState {
+            parked_domains: Some(std::sync::Arc::new(map)),
+            ..test_state(repo_path)
+        }
+    }
+
+    /// Parked domain Host (`clevertree.net`) → its catalog repo, not the apex default.
+    #[test]
+    fn test_parked_domain_routes_to_repo() {
+        let repo_dir = tempdir().unwrap();
+        let _ = Repository::init_bare(repo_dir.path().join("clevertree-site.git")).unwrap();
+        let _ = Repository::init_bare(repo_dir.path().join("relay-master.git")).unwrap();
+        let state = parked_state(
+            repo_dir.path().to_path_buf(),
+            &[
+                ("clevertree.net", "clevertree-site"),
+                ("www.clevertree.net", "clevertree-site"),
+            ],
+        );
+        let mut h = HeaderMap::new();
+        h.insert(HOST, "clevertree.net".parse().unwrap());
+        assert_eq!(
+            helpers::repo_from_host_or_default(&state, Some("test.local"), &h),
+            Some("clevertree-site".to_string())
+        );
+        let mut hw = HeaderMap::new();
+        hw.insert(HOST, "WWW.clevertree.net:443".parse().unwrap());
+        assert_eq!(
+            helpers::repo_from_host_or_default(&state, Some("test.local"), &hw),
+            Some("clevertree-site".to_string())
+        );
+    }
+
+    /// With parked domains configured, an unknown Host does not leak the apex default repo.
+    #[test]
+    fn test_unknown_host_does_not_fall_back_when_parked() {
+        let repo_dir = tempdir().unwrap();
+        let _ = Repository::init_bare(repo_dir.path().join("relay-master.git")).unwrap();
+        let state = parked_state(
+            repo_dir.path().to_path_buf(),
+            &[("clevertree.net", "clevertree-site")],
+        );
+        let mut h = HeaderMap::new();
+        h.insert(HOST, "unknown.example.com".parse().unwrap());
+        assert_eq!(
+            helpers::repo_from_host_or_default(&state, Some("test.local"), &h),
+            None
+        );
+        // The node's own apex still serves the default repo.
+        let mut apex = HeaderMap::new();
+        apex.insert(HOST, "test.local".parse().unwrap());
+        assert_eq!(
+            helpers::repo_from_host_or_default(&state, Some("test.local"), &apex),
+            Some("relay-master".to_string())
+        );
     }
 
     /// Test bare_repo_names correctly lists repos

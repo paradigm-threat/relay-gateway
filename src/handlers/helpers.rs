@@ -73,13 +73,56 @@ pub fn default_http_repo_from_apex(state: &crate::types::AppState) -> Option<Str
     names.iter().find(|n| *n == &name).map(|_| name)
 }
 
-/// [`repo_from_host`], else apex default (**`RELAY_DEFAULT_REPO`** / **`relay-master`**) when that bare exists.
+/// Resolve a parked domain (`Host` matches a catalog `domains[]` entry) to its repo slug.
+pub fn repo_from_parked_domain(
+    state: &crate::types::AppState,
+    headers: &HeaderMap,
+) -> Option<String> {
+    let map = state.parked_domains.as_ref()?;
+    let host = headers.get("host")?.to_str().ok()?;
+    crate::catalog_policy::repo_for_parked_host(map, host)
+}
+
+/// True when the request `Host` is the node's own apex FQDN (or when either is absent).
+pub fn host_is_node_apex(node_fqdn: Option<&str>, headers: &HeaderMap) -> bool {
+    let node = match node_fqdn.map(normalize_fqdn).filter(|s| !s.is_empty()) {
+        Some(n) => n,
+        None => return true,
+    };
+    match headers.get("host").and_then(|v| v.to_str().ok()) {
+        Some(h) => {
+            let host = normalize_fqdn(h.split(':').next().unwrap_or(h));
+            host == node
+        }
+        None => true,
+    }
+}
+
+/// Repo for a request `Host`: `{repo}.{node}` subdomain, else a parked domain, else the apex
+/// default (**`RELAY_DEFAULT_REPO`** / **`relay-master`**).
+///
+/// When parked domains are configured, an unknown `Host` (neither a known subdomain, parked
+/// domain, nor the node apex) resolves to `None` instead of leaking the default apex repo.
 pub fn repo_from_host_or_default(
     state: &crate::types::AppState,
     node_fqdn: Option<&str>,
     headers: &HeaderMap,
 ) -> Option<String> {
-    repo_from_host(state, node_fqdn, headers).or_else(|| default_http_repo_from_apex(state))
+    if let Some(repo) = repo_from_host(state, node_fqdn, headers) {
+        return Some(repo);
+    }
+    if let Some(repo) = repo_from_parked_domain(state, headers) {
+        return Some(repo);
+    }
+    let has_parked = state
+        .parked_domains
+        .as_ref()
+        .map(|m| !m.is_empty())
+        .unwrap_or(false);
+    if has_parked && !host_is_node_apex(node_fqdn, headers) {
+        return None;
+    }
+    default_http_repo_from_apex(state)
 }
 
 /// Resolve the branch name from `X-Relay-Branch` header only, defaults to **main**.

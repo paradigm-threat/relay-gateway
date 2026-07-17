@@ -541,6 +541,7 @@ mod tests {
             node_fqdn: None,
             relay_server_id: None,
             authorized_repos: None,
+            parked_domains: None,
             features_manifest: None,
             git_ensure_bare_enabled: false,
         }
