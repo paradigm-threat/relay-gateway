@@ -26,11 +26,8 @@ require_clean_pushed() {
     echo "ERROR: $label has no upstream tracking branch" >&2
     return 1
   fi
-  local lr
-  lr="$(git -C "$dir" rev-list --left-right --count '@{upstream}...HEAD')"
   local behind ahead
-  behind="${lr%%[[:space:]]*}"
-  ahead="${lr##*[[:space:]]}"
+  read -r behind ahead < <(git -C "$dir" rev-list --left-right --count '@{upstream}...HEAD')
   if [[ "$behind" != 0 || "$ahead" != 0 ]]; then
     echo "ERROR: $label not synced with upstream (behind=$behind ahead=$ahead); push/pull first" >&2
     return 1
