@@ -90,6 +90,12 @@ async fn relay_path_fallback(
     }
     let (parts, body) = req.into_parts();
     let path = parts.uri.path().trim_start_matches('/').to_string();
+    let query = if parts.uri.query().is_some() {
+        axum::extract::Query::<std::collections::HashMap<String, String>>::try_from_uri(&parts.uri)
+            .ok()
+    } else {
+        None
+    };
     let headers = parts.headers;
     let json = match axum::body::to_bytes(body, 2 * 1024 * 1024).await {
         Ok(b) if b.is_empty() => None,
@@ -98,7 +104,7 @@ async fn relay_path_fallback(
             .map(Json),
         Err(_) => None,
     };
-    handlers::handle_query(State(state), headers, AxPath(path), None, json)
+    handlers::handle_query(State(state), headers, AxPath(path), query, json)
         .await
         .into_response()
 }
