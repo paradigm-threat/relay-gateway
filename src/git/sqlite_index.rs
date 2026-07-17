@@ -34,6 +34,8 @@ fn open_db(path: &Path) -> anyhow::Result<Connection> {
             search_text TEXT NOT NULL DEFAULT '',
             UNIQUE(collection, doc_id)
         );
+        CREATE INDEX IF NOT EXISTS docs_collection_sort_key
+            ON docs(collection, json_extract(json, '$.sort_key'));
         CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
             search_text,
             content='docs',
@@ -368,39 +370,211 @@ fn project_row(row: Value, fields: Option<&[String]>) -> Value {
     Value::Object(m)
 }
 
-fn row_matches_object_filter(item: &Value, q_obj: &Map<String, Value>) -> bool {
+/// Max values in an object-filter `IN` / `$ne` array (DoS guard).
+pub const QUERY_FILTER_IN_MAX: usize = 32;
+
+/// Predicate for one allowlisted JSON field in an object QUERY.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FieldPred {
+    /// Exact string equality.
+    Eq(String),
+    /// Not equal to this string (missing field also matches).
+    Ne(String),
+    /// Field equals any of these strings.
+    In(Vec<String>),
+    /// Field equals none of these strings (missing field matches).
+    Nin(Vec<String>),
+}
+
+/// True when `name` is safe to embed in a fixed `json_extract(..., '$.name')` template.
+fn is_safe_json_field(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn string_list_from_array(arr: &[Value]) -> Option<Vec<String>> {
+    if arr.is_empty() || arr.len() > QUERY_FILTER_IN_MAX {
+        return None;
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    for v in arr {
+        let Value::String(s) = v else {
+            return None;
+        };
+        if s.is_empty() || s.len() > 256 {
+            return None;
+        }
+        out.push(s.clone());
+    }
+    Some(out)
+}
+
+/// Parse object QUERY predicates. Unsupported shapes → empty (no matches).
+fn parse_object_predicates(q_obj: &Map<String, Value>) -> Option<Vec<(String, FieldPred)>> {
+    if q_obj.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut preds = Vec::with_capacity(q_obj.len());
+    for (key, val) in q_obj {
+        if !is_safe_json_field(key) {
+            return None;
+        }
+        let pred = match val {
+            Value::String(s) if !s.is_empty() && s.len() <= 256 => FieldPred::Eq(s.clone()),
+            Value::Array(arr) => FieldPred::In(string_list_from_array(arr)?),
+            Value::Object(op) => {
+                if op.len() != 1 {
+                    return None;
+                }
+                if let Some(v) = op.get("$ne") {
+                    match v {
+                        Value::String(s) if !s.is_empty() && s.len() <= 256 => {
+                            FieldPred::Ne(s.clone())
+                        }
+                        Value::Array(arr) => FieldPred::Nin(string_list_from_array(arr)?),
+                        _ => return None,
+                    }
+                } else if let Some(v) = op.get("$in") {
+                    let Value::Array(arr) = v else {
+                        return None;
+                    };
+                    FieldPred::In(string_list_from_array(arr)?)
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        };
+        preds.push((key.clone(), pred));
+    }
+    Some(preds)
+}
+
+fn field_value_str<'a>(item_obj: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+    item_obj.get(key).and_then(|v| v.as_str())
+}
+
+fn row_matches_predicates(item: &Value, preds: &[(String, FieldPred)]) -> bool {
     let Some(item_obj) = item.as_object() else {
         return false;
     };
-    for (k, v) in q_obj {
-        if item_obj.get(k) != Some(v) {
+    for (key, pred) in preds {
+        let got = field_value_str(item_obj, key);
+        let ok = match pred {
+            FieldPred::Eq(want) => got == Some(want.as_str()),
+            FieldPred::Ne(want) => got != Some(want.as_str()),
+            FieldPred::In(want) => got.is_some_and(|g| want.iter().any(|w| w == g)),
+            FieldPred::Nin(want) => !got.is_some_and(|g| want.iter().any(|w| w == g)),
+        };
+        if !ok {
             return false;
         }
     }
     true
 }
 
+fn row_matches_object_filter(item: &Value, q_obj: &Map<String, Value>) -> bool {
+    match parse_object_predicates(q_obj) {
+        Some(preds) => row_matches_predicates(item, &preds),
+        None => false,
+    }
+}
+
+/// Build `AND json_extract(json, '$.field') …` clauses with bound params.
+/// Field names are allowlisted identifiers only (never user-controlled SQL).
+fn object_filter_sql(
+    preds: &[(String, FieldPred)],
+) -> Option<(String, Vec<String>)> {
+    let mut sql = String::new();
+    let mut binds = Vec::new();
+    for (key, pred) in preds {
+        // `key` already passed `is_safe_json_field`.
+        let extract = format!("json_extract(json, '$.{key}')");
+        match pred {
+            FieldPred::Eq(v) => {
+                sql.push_str(&format!(" AND {extract} = ?"));
+                binds.push(v.clone());
+            }
+            FieldPred::Ne(v) => {
+                // NULL field ≠ value (SQL NULL = x is unknown).
+                sql.push_str(&format!(" AND ({extract} IS NULL OR {extract} != ?)"));
+                binds.push(v.clone());
+            }
+            FieldPred::In(vals) => {
+                if vals.is_empty() {
+                    return None;
+                }
+                let placeholders = vec!["?"; vals.len()].join(", ");
+                sql.push_str(&format!(" AND {extract} IN ({placeholders})"));
+                binds.extend(vals.iter().cloned());
+            }
+            FieldPred::Nin(vals) => {
+                if vals.is_empty() {
+                    return None;
+                }
+                let placeholders = vec!["?"; vals.len()].join(", ");
+                sql.push_str(&format!(
+                    " AND ({extract} IS NULL OR {extract} NOT IN ({placeholders}))"
+                ));
+                binds.extend(vals.iter().cloned());
+            }
+        }
+    }
+    Some((sql, binds))
+}
+
+fn order_by_sql_fragment(order: QueryOrder) -> &'static str {
+    match order {
+        QueryOrder::Random => "ORDER BY RANDOM()",
+        QueryOrder::PathAsc => "ORDER BY json_extract(json, '$.path') ASC",
+        QueryOrder::PathDesc => "ORDER BY json_extract(json, '$.path') DESC",
+        QueryOrder::SortKeyAsc => {
+            "ORDER BY coalesce(
+               json_extract(json, '$.sort_key'),
+               json_extract(json, '$.md_path'),
+               json_extract(json, '$.path')
+             ) ASC, doc_id ASC"
+        }
+        QueryOrder::SortKeyDesc => {
+            "ORDER BY coalesce(
+               json_extract(json, '$.sort_key'),
+               json_extract(json, '$.md_path'),
+               json_extract(json, '$.path')
+             ) DESC, doc_id DESC"
+        }
+    }
+}
+
 /// Sort mode for QUERY. Selected via fixed SQL templates only (never interpolated).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QueryOrder {
     /// `ORDER BY path ASC`
-    PathAsc,
-    /// `ORDER BY path DESC` (default; newest-first for ISO8601-prefixed chat paths).
     #[default]
+    PathAsc,
+    /// `ORDER BY path DESC`.
     PathDesc,
+    /// `ORDER BY sort_key ASC`, then stable document id.
+    SortKeyAsc,
+    /// `ORDER BY sort_key DESC`, then stable document id.
+    SortKeyDesc,
     /// `ORDER BY RANDOM()` — full scan; callers should cap `limit` (see [`clamp_query_limit`]).
     Random,
 }
 
 impl QueryOrder {
-    /// Parse allowlisted order tokens: `path`, `-path`, `random`.
+    /// Parse allowlisted order tokens: `path`, `-path`, `sort_key`, `-sort_key`, `random`.
     pub fn parse(raw: &str) -> Result<Self, String> {
         match raw.trim() {
-            "path" => Ok(Self::PathAsc),
-            "-path" | "" => Ok(Self::PathDesc),
+            "path" | "" => Ok(Self::PathAsc),
+            "-path" => Ok(Self::PathDesc),
+            "sort_key" => Ok(Self::SortKeyAsc),
+            "-sort_key" => Ok(Self::SortKeyDesc),
             "random" => Ok(Self::Random),
             other => Err(format!(
-                "invalid order {other:?}; expected path, -path, or random"
+                "invalid order {other:?}; expected path, -path, sort_key, -sort_key, or random"
             )),
         }
     }
@@ -409,6 +583,8 @@ impl QueryOrder {
         match self {
             Self::PathAsc => "path",
             Self::PathDesc => "-path",
+            Self::SortKeyAsc => "sort_key",
+            Self::SortKeyDesc => "-sort_key",
             Self::Random => "random",
         }
     }
@@ -427,7 +603,8 @@ pub fn clamp_query_limit(order: QueryOrder, limit: Option<usize>) -> usize {
     }
 }
 
-/// QUERY against SQLite: string → FTS AND; object → exact field match; null → all rows.
+/// QUERY against SQLite: string → FTS AND; object → field predicates
+/// (`eq` / `IN` array / `$ne` / `$in`); null/empty → all rows.
 pub fn query_collection(
     db_path: &Path,
     collection: &str,
@@ -435,7 +612,14 @@ pub fn query_collection(
     fields: Option<&[String]>,
     limit: Option<usize>,
 ) -> anyhow::Result<Vec<Value>> {
-    query_collection_ordered(db_path, collection, query, fields, limit, QueryOrder::default())
+    query_collection_ordered(
+        db_path,
+        collection,
+        query,
+        fields,
+        limit,
+        QueryOrder::default(),
+    )
 }
 
 /// Like [`query_collection`] with an explicit [`QueryOrder`].
@@ -489,6 +673,32 @@ pub fn query_collection_ordered(
                      ORDER BY json_extract(d.json, '$.path') DESC
                      LIMIT ?3"
                 }
+                QueryOrder::SortKeyAsc => {
+                    "SELECT d.json FROM docs d
+                     WHERE d.collection = ?1
+                       AND d.id IN (
+                         SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?2
+                       )
+                     ORDER BY coalesce(
+                       json_extract(d.json, '$.sort_key'),
+                       json_extract(d.json, '$.md_path'),
+                       json_extract(d.json, '$.path')
+                     ) ASC, d.doc_id ASC
+                     LIMIT ?3"
+                }
+                QueryOrder::SortKeyDesc => {
+                    "SELECT d.json FROM docs d
+                     WHERE d.collection = ?1
+                       AND d.id IN (
+                         SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?2
+                       )
+                     ORDER BY coalesce(
+                       json_extract(d.json, '$.sort_key'),
+                       json_extract(d.json, '$.md_path'),
+                       json_extract(d.json, '$.path')
+                     ) DESC, d.doc_id DESC
+                     LIMIT ?3"
+                }
             };
             let mut stmt = conn.prepare(sql)?;
             let iter = stmt.query_map(params![collection, match_q, lim as i64], |r| {
@@ -503,32 +713,35 @@ pub fn query_collection_ordered(
             }
         }
         Some(Value::Object(q_obj)) => {
-            let sql = match order {
-                QueryOrder::Random => {
-                    "SELECT json FROM docs WHERE collection = ?1 ORDER BY RANDOM()"
-                }
-                QueryOrder::PathAsc => {
-                    "SELECT json FROM docs WHERE collection = ?1
-                     ORDER BY json_extract(json, '$.path') ASC"
-                }
-                QueryOrder::PathDesc => {
-                    "SELECT json FROM docs WHERE collection = ?1
-                     ORDER BY json_extract(json, '$.path') DESC"
-                }
+            let Some(preds) = parse_object_predicates(q_obj) else {
+                return Ok(vec![]);
             };
-            let mut stmt = conn.prepare(sql)?;
-            let iter = stmt.query_map(params![collection], |r| {
+            let Some((filter_sql, filter_binds)) = object_filter_sql(&preds) else {
+                return Ok(vec![]);
+            };
+            let order_sql = order_by_sql_fragment(order);
+            let lim_idx = 2 + filter_binds.len();
+            let sql = format!(
+                "SELECT json FROM docs WHERE collection = ?1{filter_sql} {order_sql} LIMIT ?{lim_idx}"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let mut sql_params: Vec<rusqlite::types::Value> =
+                Vec::with_capacity(2 + filter_binds.len());
+            sql_params.push(rusqlite::types::Value::Text(collection.to_string()));
+            for b in filter_binds {
+                sql_params.push(rusqlite::types::Value::Text(b));
+            }
+            sql_params.push(rusqlite::types::Value::Integer(lim as i64));
+            let iter = stmt.query_map(rusqlite::params_from_iter(sql_params), |r| {
                 let json: String = r.get(0)?;
                 Ok(json)
             })?;
             for item in iter {
                 let json = item?;
                 if let Ok(v) = serde_json::from_str::<Value>(&json) {
-                    if row_matches_object_filter(&v, q_obj) {
+                    // Defense in depth: re-check predicates in Rust.
+                    if row_matches_predicates(&v, &preds) {
                         rows.push(project_row(v, fields));
-                        if rows.len() >= lim {
-                            break;
-                        }
                     }
                 }
             }
@@ -548,6 +761,24 @@ pub fn query_collection_ordered(
                 QueryOrder::PathDesc => {
                     "SELECT json FROM docs WHERE collection = ?1
                      ORDER BY json_extract(json, '$.path') DESC
+                     LIMIT ?2"
+                }
+                QueryOrder::SortKeyAsc => {
+                    "SELECT json FROM docs WHERE collection = ?1
+                     ORDER BY coalesce(
+                       json_extract(json, '$.sort_key'),
+                       json_extract(json, '$.md_path'),
+                       json_extract(json, '$.path')
+                     ) ASC, doc_id ASC
+                     LIMIT ?2"
+                }
+                QueryOrder::SortKeyDesc => {
+                    "SELECT json FROM docs WHERE collection = ?1
+                     ORDER BY coalesce(
+                       json_extract(json, '$.sort_key'),
+                       json_extract(json, '$.md_path'),
+                       json_extract(json, '$.path')
+                     ) DESC, doc_id DESC
                      LIMIT ?2"
                 }
             };
@@ -774,6 +1005,14 @@ mod tests {
     fn query_order_parse_allowlist() {
         assert_eq!(QueryOrder::parse("path").unwrap(), QueryOrder::PathAsc);
         assert_eq!(QueryOrder::parse("-path").unwrap(), QueryOrder::PathDesc);
+        assert_eq!(
+            QueryOrder::parse("sort_key").unwrap(),
+            QueryOrder::SortKeyAsc
+        );
+        assert_eq!(
+            QueryOrder::parse("-sort_key").unwrap(),
+            QueryOrder::SortKeyDesc
+        );
         assert_eq!(QueryOrder::parse("random").unwrap(), QueryOrder::Random);
         assert!(QueryOrder::parse("drop table").is_err());
     }
@@ -816,15 +1055,9 @@ mod tests {
         )
         .unwrap();
         sync_json_to_sqlite(&json_path, &db_path).unwrap();
-        let hits = query_collection_ordered(
-            &db_path,
-            "index",
-            None,
-            None,
-            Some(5),
-            QueryOrder::Random,
-        )
-        .unwrap();
+        let hits =
+            query_collection_ordered(&db_path, "index", None, None, Some(5), QueryOrder::Random)
+                .unwrap();
         assert_eq!(hits.len(), 5);
     }
 
@@ -849,16 +1082,269 @@ mod tests {
         )
         .unwrap();
         sync_json_to_sqlite(&json_path, &db_path).unwrap();
-        let hits = query_collection_ordered(
-            &db_path,
-            "index",
-            None,
-            None,
-            Some(10),
-            QueryOrder::PathAsc,
-        )
-        .unwrap();
+        let hits =
+            query_collection_ordered(&db_path, "index", None, None, Some(10), QueryOrder::PathAsc)
+                .unwrap();
         assert_eq!(hits[0]["path"], "a");
         assert_eq!(hits[2]["path"], "c");
+    }
+
+    #[test]
+    fn query_order_sort_key_asc() {
+        let dir = tempdir().unwrap();
+        let json_path = dir.path().join("index.db.json");
+        let db_path = dir.path().join("index.db");
+        std::fs::write(
+            &json_path,
+            json!({
+                "metadata": { "indexed_head": "h" },
+                "collections": {
+                    "events": [
+                        { "id": "late", "sort_key": "000002.000000.000000" },
+                        { "id": "early", "sort_key": "000001.000000.000000" },
+                        { "id": "middle", "sort_key": "000001.000001.000000" }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        sync_json_to_sqlite(&json_path, &db_path).unwrap();
+        let hits =
+            query_collection_ordered(&db_path, "events", None, None, None, QueryOrder::SortKeyAsc)
+                .unwrap();
+        let ids: Vec<_> = hits.iter().filter_map(|row| row["id"].as_str()).collect();
+        assert_eq!(ids, vec!["early", "middle", "late"]);
+    }
+
+    #[test]
+    fn query_order_sort_key_falls_back_to_md_path() {
+        let dir = tempdir().unwrap();
+        let json_path = dir.path().join("index.db.json");
+        let db_path = dir.path().join("index.db");
+        std::fs::write(
+            &json_path,
+            json!({
+                "metadata": { "indexed_head": "h" },
+                "collections": {
+                    "events": [
+                        {
+                            "id": "evt-1053-ce-11th-century-ce-common-era-begins",
+                            "md_path": "content/05.ce-11th-common-era-begins/05.00.00-11th-century.md"
+                        },
+                        {
+                            "id": "evt-3147-bce-the-dark-ages",
+                            "md_path": "content/03.the-dark-ages/03.00.00-the-dark-ages.md"
+                        },
+                        {
+                            "id": "evt-4077-bce-the-golden-age",
+                            "md_path": "content/02.the-golden-age/02.00.00-the-golden-age.md"
+                        }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        sync_json_to_sqlite(&json_path, &db_path).unwrap();
+        let hits =
+            query_collection_ordered(&db_path, "events", None, None, None, QueryOrder::SortKeyAsc)
+                .unwrap();
+        let ids: Vec<_> = hits.iter().filter_map(|row| row["id"].as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "evt-4077-bce-the-golden-age",
+                "evt-3147-bce-the-dark-ages",
+                "evt-1053-ce-11th-century-ce-common-era-begins"
+            ]
+        );
+    }
+
+    fn seed_content_kind_docs(dir: &tempfile::TempDir) -> PathBuf {
+        let json_path = dir.path().join("index.db.json");
+        let db_path = dir.path().join("index.db");
+        std::fs::write(
+            &json_path,
+            json!({
+                "metadata": { "indexed_head": "h" },
+                "collections": {
+                    "index": [
+                        { "path": "a.md", "content_kind": "article", "title": "A" },
+                        { "path": "b.md", "content_kind": "investigation", "title": "B" },
+                        { "path": "c.md", "content_kind": "blog", "title": "C" },
+                        { "path": "d.png", "content_kind": "exclude", "title": "D" },
+                        { "path": "e.jpg", "content_kind": "exclude", "title": "E" },
+                        { "path": "f.md", "content_kind": "exclude", "title": "F" },
+                        { "path": "readme.md", "content_kind": "exclude", "title": "README" },
+                        { "path": "g.md", "content_kind": "article", "title": "G" }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        sync_json_to_sqlite(&json_path, &db_path).unwrap();
+        db_path
+    }
+
+    #[test]
+    fn object_filter_eq_excludes_other_kinds() {
+        let dir = tempdir().unwrap();
+        let db = seed_content_kind_docs(&dir);
+        let hits = query_collection(
+            &db,
+            "index",
+            Some(&json!({ "content_kind": "article" })),
+            None,
+            None,
+        )
+        .unwrap();
+        let paths: Vec<_> = hits
+            .iter()
+            .filter_map(|r| r["path"].as_str())
+            .collect();
+        assert_eq!(paths, vec!["a.md", "g.md"]);
+    }
+
+    #[test]
+    fn object_filter_in_array_allowlists_content_kinds() {
+        let dir = tempdir().unwrap();
+        let db = seed_content_kind_docs(&dir);
+        let hits = query_collection(
+            &db,
+            "index",
+            Some(&json!({
+                "content_kind": ["article", "investigation", "blog"]
+            })),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 4);
+        assert!(hits
+            .iter()
+            .all(|r| r["content_kind"] != "exclude"));
+    }
+
+    #[test]
+    fn object_filter_ne_drops_exclude() {
+        let dir = tempdir().unwrap();
+        let db = seed_content_kind_docs(&dir);
+        let hits = query_collection(
+            &db,
+            "index",
+            Some(&json!({ "content_kind": { "$ne": "exclude" } })),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 4);
+        assert!(hits
+            .iter()
+            .all(|r| r["content_kind"].as_str() != Some("exclude")));
+    }
+
+    #[test]
+    fn object_filter_random_limit_applies_after_sql_filter() {
+        let dir = tempdir().unwrap();
+        let db = seed_content_kind_docs(&dir);
+        let q = json!({ "content_kind": ["article", "investigation", "blog"] });
+        for _ in 0..8 {
+            let hits = query_collection_ordered(
+                &db,
+                "index",
+                Some(&q),
+                None,
+                Some(3),
+                QueryOrder::Random,
+            )
+            .unwrap();
+            assert_eq!(hits.len(), 3);
+            assert!(hits.iter().all(|r| {
+                matches!(
+                    r["content_kind"].as_str(),
+                    Some("article" | "investigation" | "blog")
+                )
+            }));
+        }
+    }
+
+    #[test]
+    fn object_filter_rejects_unsafe_field_names() {
+        let dir = tempdir().unwrap();
+        let db = seed_content_kind_docs(&dir);
+        let hits = query_collection(
+            &db,
+            "index",
+            Some(&json!({ "content_kind); DROP TABLE docs;--": "article" })),
+            None,
+            Some(10),
+        )
+        .unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn object_filter_rejects_oversized_in_list() {
+        let dir = tempdir().unwrap();
+        let db = seed_content_kind_docs(&dir);
+        let big: Vec<_> = (0..QUERY_FILTER_IN_MAX + 1)
+            .map(|i| format!("k{i}"))
+            .collect();
+        let hits = query_collection(
+            &db,
+            "index",
+            Some(&json!({ "content_kind": big })),
+            None,
+            Some(10),
+        )
+        .unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn row_matches_object_filter_unit() {
+        let row = json!({ "content_kind": "article", "path": "a.md" });
+        assert!(row_matches_object_filter(
+            &row,
+            json!({ "content_kind": "article" }).as_object().unwrap()
+        ));
+        assert!(row_matches_object_filter(
+            &row,
+            json!({ "content_kind": ["article", "blog"] })
+                .as_object()
+                .unwrap()
+        ));
+        assert!(!row_matches_object_filter(
+            &row,
+            json!({ "content_kind": { "$ne": "article" } })
+                .as_object()
+                .unwrap()
+        ));
+        assert!(row_matches_object_filter(
+            &row,
+            json!({ "content_kind": { "$ne": "exclude" } })
+                .as_object()
+                .unwrap()
+        ));
+        // Missing field: $ne still matches.
+        let bare = json!({ "path": "x.png" });
+        assert!(row_matches_object_filter(
+            &bare,
+            json!({ "content_kind": { "$ne": "exclude" } })
+                .as_object()
+                .unwrap()
+        ));
+    }
+
+    #[test]
+    fn is_safe_json_field_allowlist() {
+        assert!(is_safe_json_field("content_kind"));
+        assert!(is_safe_json_field("type"));
+        assert!(!is_safe_json_field(""));
+        assert!(!is_safe_json_field("a.b"));
+        assert!(!is_safe_json_field("a b"));
+        assert!(!is_safe_json_field("x'); DROP--"));
     }
 }

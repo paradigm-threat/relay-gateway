@@ -1,13 +1,13 @@
 //! Server CleverScript host: virtual `@relay/*` modules only (no global `Relay`).
 
-use crate::git::image_cache::{cache_key_digest, ImageDiskCache};
-use crate::git::ipfs::{
-    self, resolve_ipfs_pointer, resolve_pointer_blob, AssetResolveError,
-    IpfsPointer, IpfsResolveOptions, IpfsResolveSource, ASSET_ERROR_HEADER,
-};
-use crate::git::repo::read_file_from_repo;
 use crate::git::chat_index;
 use crate::git::hooks::HookContext;
+use crate::git::image_cache::{cache_key_digest, ImageDiskCache};
+use crate::git::ipfs::{
+    self, resolve_ipfs_pointer, resolve_pointer_blob, AssetResolveError, IpfsPointer,
+    IpfsResolveOptions, IpfsResolveSource, ASSET_ERROR_HEADER,
+};
+use crate::git::repo::read_file_from_repo;
 use crate::git::search_plugins::{self, PLUGIN_CHAT, PLUGIN_REDB, PLUGIN_SQLITE};
 use axum::http::HeaderMap;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -45,7 +45,9 @@ fn git_exports(repo_root: PathBuf, branch: String) -> CsValue {
                 .ok_or_else(|| "@relay/git readFile requires a string path".to_string())?;
             let bytes =
                 read_file_from_repo(&repo_root, &branch, path).map_err(|e| e.to_string())?;
-            Ok(CsValue::String(String::from_utf8_lossy(&bytes).into_owned()))
+            Ok(CsValue::String(
+                String::from_utf8_lossy(&bytes).into_owned(),
+            ))
         })
     };
     let read_b64 = {
@@ -79,7 +81,7 @@ fn git_exports(repo_root: PathBuf, branch: String) -> CsValue {
 /// `@relay/search/sqlite` / `@relay/search/redb` / `@relay/search/chat`:
 /// callable `search(opts)` runs the Rust plugin.
 ///
-/// `opts` is the QUERY `ctx` (or a subset): `{ collection?, query?, limit?, config? }`.
+/// `opts` is the QUERY `ctx` (or a subset): `{ collection?, query?, limit?, order?, config? }`.
 /// `config` defaults to repo-root `search.yaml` when present (used at index time; QUERY uses tip).
 /// Returns `{ rows: [...] }` for the CleverScript QUERY result path.
 ///
@@ -107,13 +109,20 @@ fn search_plugin_exports(repo_root: PathBuf, branch: String, plugin: &'static st
                 CsValue::Number(n) if *n > 0.0 => Some(*n as usize),
                 _ => None,
             });
+            let order = match opts.get("order") {
+                Some(CsValue::String(raw)) => {
+                    crate::git::sqlite_index::QueryOrder::parse(raw).map_err(|e| e.to_string())?
+                }
+                Some(_) => return Err("search order must be a string".into()),
+                None => crate::git::sqlite_index::QueryOrder::default(),
+            };
             // Optional override path — validated to exist in the tip when provided.
             if let Some(cfg_path) = cs_obj_str(opts, "config") {
                 if crate::git::repo::read_file_from_repo(&repo_root, &branch, cfg_path).is_err() {
                     return Err(format!("search config not found in git tip: {cfg_path}"));
                 }
             }
-            let rows = search_plugins::run_plugin(
+            let rows = search_plugins::run_plugin_ordered(
                 plugin,
                 &repo_root,
                 &branch,
@@ -121,6 +130,7 @@ fn search_plugin_exports(repo_root: PathBuf, branch: String, plugin: &'static st
                 query.as_ref(),
                 None,
                 limit,
+                order,
             )
             .map_err(|e| e.to_string())?;
             let mut out = HashMap::new();
@@ -161,7 +171,9 @@ fn search_plugin_exports(repo_root: PathBuf, branch: String, plugin: &'static st
                     .or_else(|| cs_obj_str(opts, "oldCommit"))
                     .unwrap_or("")
                     .to_string();
-                let br = cs_obj_str(opts, "branch").unwrap_or(branch.as_str()).to_string();
+                let br = cs_obj_str(opts, "branch")
+                    .unwrap_or(branch.as_str())
+                    .to_string();
                 let root = cs_obj_str(opts, "root")
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| {
@@ -312,7 +324,8 @@ fn optional_body_bytes_from_ctx(
     branch: &str,
 ) -> Result<Option<Vec<u8>>, String> {
     if let Some(b64) = cs_obj_str(m, "bodyBase64").filter(|s| !s.is_empty()) {
-        return B64.decode(b64.as_bytes())
+        return B64
+            .decode(b64.as_bytes())
             .map(Some)
             .map_err(|e| format!("invalid bodyBase64: {e}"));
     }
@@ -376,7 +389,12 @@ fn resolve_pointer_with_options(
 ) -> Option<IpfsPointer> {
     let repo_root = repo_root.clone();
     let branch = branch.to_string();
-    resolve_ipfs_pointer(opts, &|path| read_file_from_repo(&repo_root, &branch, path).ok(), rel, inline_bytes)
+    resolve_ipfs_pointer(
+        opts,
+        &|path| read_file_from_repo(&repo_root, &branch, path).ok(),
+        rel,
+        inline_bytes,
+    )
 }
 
 struct FetchedIpfsBytes {
@@ -436,7 +454,9 @@ fn fetch_ipfs_bytes_inner(
     branch: &str,
     opts: &IpfsResolveOptions,
 ) -> Result<FetchIpfsOutcome, String> {
-    let rel = cs_obj_str(m, "relPath").unwrap_or("").trim_start_matches('/');
+    let rel = cs_obj_str(m, "relPath")
+        .unwrap_or("")
+        .trim_start_matches('/');
     if rel.is_empty() {
         return Ok(FetchIpfsOutcome::Miss);
     }
@@ -522,10 +542,7 @@ fn hook_file_object_bytes(bytes: &[u8], content_type: &str, cache_control: &str)
             CsValue::String(String::from_utf8_lossy(bytes).into_owned()),
         );
     } else {
-        file.insert(
-            "bodyBase64".to_string(),
-            CsValue::String(B64.encode(bytes)),
-        );
+        file.insert("bodyBase64".to_string(), CsValue::String(B64.encode(bytes)));
     }
     file.insert("headers".to_string(), CsValue::Object(headers));
     CsValue::Object(file)
@@ -549,10 +566,7 @@ fn hook_file_object_asset_error(err: &AssetResolveError) -> CsValue {
         CsValue::String("public, max-age=60".into()),
     );
     if let Some(ra) = err.retry_after_secs {
-        headers.insert(
-            "Retry-After".to_string(),
-            CsValue::String(ra.to_string()),
-        );
+        headers.insert("Retry-After".to_string(), CsValue::String(ra.to_string()));
     }
     let mut file = HashMap::new();
     file.insert("kind".to_string(), CsValue::String("file".into()));
@@ -622,7 +636,8 @@ fn markdown_body_from_ctx(
     branch: &str,
 ) -> Result<Vec<u8>, String> {
     if let Some(b64) = cs_obj_str(m, "bodyBase64").filter(|s| !s.is_empty()) {
-        return B64.decode(b64.as_bytes())
+        return B64
+            .decode(b64.as_bytes())
             .map_err(|e| format!("markdownHtmlFromGetContext: invalid bodyBase64: {e}"));
     }
     if let Some(rel) = cs_obj_str(m, "relPath").filter(|s| !s.is_empty()) {
@@ -637,13 +652,11 @@ fn markdown_html_from_get_context_native(
     branch: String,
     args: &[CsValue],
 ) -> Result<CsValue, String> {
-    let ctx_obj = args.first().ok_or_else(|| {
-        "markdownHtmlFromGetContext requires hook context object".to_string()
-    })?;
+    let ctx_obj = args
+        .first()
+        .ok_or_else(|| "markdownHtmlFromGetContext requires hook context object".to_string())?;
     let CsValue::Object(m) = ctx_obj else {
-        return Err(
-            "@relay/md markdownHtmlFromGetContext: first arg must be an object".into(),
-        );
+        return Err("@relay/md markdownHtmlFromGetContext: first arg must be an object".into());
     };
     if !ctx_flag_true(m, "markdownHtmlRequest") {
         return Ok(CsValue::Null);
@@ -731,17 +744,15 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             .map(str::to_string)
             .unwrap_or_else(|| ssr_public_origin(ctx));
 
-        let Some(rendered) =
-            crate::git::ssr_client_hook::try_ssr_client_hook(
-                &crate::git::ssr_client_hook::ClientHookSsrRequest {
-                    repo_path: &repo_root,
-                    branch: request_branch,
-                    client_hook_rel: client_hook_path,
-                    asset_base_url: &origin,
-                    initial_path: &initial_path,
-                },
-            )
-        else {
+        let Some(rendered) = crate::git::ssr_client_hook::try_ssr_client_hook(
+            &crate::git::ssr_client_hook::ClientHookSsrRequest {
+                repo_path: &repo_root,
+                branch: request_branch,
+                client_hook_rel: client_hook_path,
+                asset_base_url: &origin,
+                initial_path: &initial_path,
+            },
+        ) else {
             return Ok(CsValue::Null);
         };
         let client_hook_http = format!("/{}", client_hook_path);
@@ -770,9 +781,9 @@ fn optimize_raster_from_get_context_native(
     cache: Arc<ImageDiskCache>,
     args: &[CsValue],
 ) -> Result<CsValue, String> {
-    let ctx_obj = args.first().ok_or_else(|| {
-        "optimizeRasterFromGetContext requires hook context object".to_string()
-    })?;
+    let ctx_obj = args
+        .first()
+        .ok_or_else(|| "optimizeRasterFromGetContext requires hook context object".to_string())?;
     let CsValue::Object(m) = ctx_obj else {
         return Err(
             "@relay/image optimizeRasterFromGetContext: first arg must be an object".into(),
@@ -794,8 +805,7 @@ fn optimize_raster_from_get_context_native(
         if !is_raster_content_type(&ct) {
             return Ok(CsValue::Null);
         }
-        let git_bytes = optional_body_bytes_from_ctx(m, &repo_root, &branch)?
-            .unwrap_or_default();
+        let git_bytes = optional_body_bytes_from_ctx(m, &repo_root, &branch)?.unwrap_or_default();
         if git_bytes.is_empty() {
             return Ok(CsValue::Null);
         }
@@ -860,13 +870,11 @@ fn fetch_ipfs_bytes_from_get_context_native(
     branch: String,
     args: &[CsValue],
 ) -> Result<CsValue, String> {
-    let ctx_obj = args.first().ok_or_else(|| {
-        "fetchIpfsBytesFromGetContext requires hook context object".to_string()
-    })?;
+    let ctx_obj = args
+        .first()
+        .ok_or_else(|| "fetchIpfsBytesFromGetContext requires hook context object".to_string())?;
     let CsValue::Object(m) = ctx_obj else {
-        return Err(
-            "@relay/ipfs fetchIpfsBytesFromGetContext: first arg must be an object".into(),
-        );
+        return Err("@relay/ipfs fetchIpfsBytesFromGetContext: first arg must be an object".into());
     };
     let opts = parse_ipfs_resolve_options(args);
     match fetch_ipfs_bytes_inner(m, &repo_root, &branch, &opts)? {
@@ -882,13 +890,11 @@ fn resolve_ipfs_from_get_context_native(
     branch: String,
     args: &[CsValue],
 ) -> Result<CsValue, String> {
-    let ctx_obj = args.first().ok_or_else(|| {
-        "resolveIpfsFromGetContext requires hook context object".to_string()
-    })?;
+    let ctx_obj = args
+        .first()
+        .ok_or_else(|| "resolveIpfsFromGetContext requires hook context object".to_string())?;
     let CsValue::Object(m) = ctx_obj else {
-        return Err(
-            "@relay/ipfs resolveIpfsFromGetContext: first arg must be an object".into(),
-        );
+        return Err("@relay/ipfs resolveIpfsFromGetContext: first arg must be an object".into());
     };
     let opts = parse_ipfs_resolve_options(args);
     match fetch_ipfs_bytes_inner(m, &repo_root, &branch, &opts)? {
@@ -1162,8 +1168,7 @@ fn default_plain_file_hook_from_context(
 fn default_plain_ok_response(declared_ct: &str, bytes: &[u8]) -> CsValue {
     let ct_trim = declared_ct.trim();
     let ct_lower = ct_trim.to_ascii_lowercase();
-    let is_text_like = ct_lower.starts_with("text/")
-        || ct_lower.starts_with("application/json");
+    let is_text_like = ct_lower.starts_with("text/") || ct_lower.starts_with("application/json");
 
     let mut headers = HashMap::new();
     headers.insert(
@@ -1192,10 +1197,7 @@ fn default_plain_ok_response(declared_ct: &str, bytes: &[u8]) -> CsValue {
             ct_trim.to_string()
         };
         obj.insert("contentType".to_string(), CsValue::String(content_type));
-        obj.insert(
-            "bodyBase64".to_string(),
-            CsValue::String(B64.encode(bytes)),
-        );
+        obj.insert("bodyBase64".to_string(), CsValue::String(B64.encode(bytes)));
     }
 
     obj.insert("headers".to_string(), CsValue::Object(headers));

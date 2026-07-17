@@ -143,7 +143,19 @@ curl -X QUERY "https://dfw1.relaygateway.net/paradigm-threat-files" \
 | `q` | FTS string (max 200 chars) |
 | `collection` | Collection name (default `index`) |
 | `limit` | Row cap (`1..=10000`; **`1..=100` when `order=random`**) |
-| `order` | `path` (asc), `-path` (desc, default), or `random` |
+| `order` | `path` (asc, default), `-path`, `sort_key`, `-sort_key`, or `random`. Timeline events should use `sort_key` (falls back to `md_path`/`path` when unreindexed). |
+
+Object `query` (JSON body) supports field predicates on allowlisted keys (`[A-Za-z0-9_]{1,64}`):
+
+| Shape | Meaning |
+|-------|---------|
+| `{ "content_kind": "article" }` | Exact string match |
+| `{ "content_kind": ["article", "blog"] }` | `IN` (max 32 values) |
+| `{ "content_kind": { "$in": ["article", "blog"] } }` | Same as array shorthand |
+| `{ "content_kind": { "$ne": "exclude" } }` | Not equal (missing field matches) |
+| `{ "type": { "$ne": ["manifest"] } }` | Not in list |
+
+Predicates are pushed into SQL (`json_extract` + bound params) so `order=random&limit=N` returns N matching rows, not N random rows filtered afterward. Invalid / unsafe shapes yield an empty result set (never interpolated SQL).
 
 Unknown keys are ignored. Invalid `order` → HTTP 400. `order` selects fixed SQL `ORDER BY` templates only (never interpolated).
 
@@ -154,6 +166,11 @@ curl -X QUERY 'https://paradigm-threat-files.dfw1.relaygateway.net/?q=venus&limi
 
 curl -X QUERY 'https://paradigm-threat-files.dfw1.relaygateway.net/?collection=index&order=random&limit=1' \
   -H 'Accept: application/json'
+
+# Feeling Lucky-style: random articles only (JSON body)
+curl -X QUERY 'https://paradigm-threat-files.dfw1.relaygateway.net/' \
+  -H 'Content-Type: application/json' -H 'Accept: application/json' \
+  --data '{"collection":"index","order":"random","limit":40,"query":{"content_kind":["article","investigation","blog"]}}'
 ```
 
 Optional: `X-Relay-Branch` (default `main`).

@@ -7,7 +7,14 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::OnceLock;
 
-const EXCLUDE_DIRS: &[&str] = &[".git", ".github", "scripts", "node_modules", ".idea", "docs"];
+const EXCLUDE_DIRS: &[&str] = &[
+    ".git",
+    ".github",
+    "scripts",
+    "node_modules",
+    ".idea",
+    "docs",
+];
 const EXCLUDE_FILES: &[&str] = &[
     "index.json",
     "package-lock.json",
@@ -139,10 +146,12 @@ fn git_path_last_commit_times(
             }
         }
         if let Some(ref meta) = current {
-            by_path.entry(line.to_string()).or_insert_with(|| PathCommitMeta {
-                updated: meta.updated.clone(),
-                commit: meta.commit.clone(),
-            });
+            by_path
+                .entry(line.to_string())
+                .or_insert_with(|| PathCommitMeta {
+                    updated: meta.updated.clone(),
+                    commit: meta.commit.clone(),
+                });
         }
     }
     Ok(by_path)
@@ -323,7 +332,10 @@ pub fn build_path_tree_docs_scoped(
 
         if ext == ".md" {
             if let Some(published) = blog_updated_iso(&path) {
-                doc.insert("_originalPublishedAt".into(), Value::String(published.clone()));
+                doc.insert(
+                    "_originalPublishedAt".into(),
+                    Value::String(published.clone()),
+                );
                 if let Some(meta) = path_times.get(&path) {
                     doc.insert("_updated".into(), Value::String(meta.updated.clone()));
                     doc.insert("_commit".into(), Value::String(meta.commit.clone()));
@@ -546,8 +558,7 @@ fn discover_content(paths: &[String]) -> Result<Vec<ContentFile>, String> {
 }
 
 fn build_entry(repo: &Path, commit: &str, md_path: &str, slug: &str) -> Result<Value, String> {
-    let text =
-        git_show(repo, commit, md_path).ok_or_else(|| format!("{md_path}: missing blob"))?;
+    let text = git_show(repo, commit, md_path).ok_or_else(|| format!("{md_path}: missing blob"))?;
     let title = first_header(&text)
         .filter(|t| !t.trim().is_empty())
         .ok_or_else(|| format!("{md_path}: missing first # header"))?;
@@ -733,7 +744,14 @@ pub fn build_content_events_docs(repo: &Path, commit: &str) -> Result<Vec<Value>
                 by_key[&key]["md_path"].as_str().unwrap_or("?")
             ));
         }
-        by_key.insert(key, build_entry(repo, commit, md_path, slug)?);
+        let mut entry = build_entry(repo, commit, md_path, slug)?;
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert(
+                "sort_key".into(),
+                Value::String(format!("{xx:06}.{yy:06}.{zz:06}")),
+            );
+        }
+        by_key.insert(key, entry);
     }
 
     // Materialize hierarchy: roots (yy=0,zz=0), sections (zz=0), leaves.
@@ -804,7 +822,10 @@ pub fn build_content_events_docs(repo: &Path, commit: &str) -> Result<Vec<Value>
             })
             .unwrap_or_default();
         if !child_ids.is_empty() {
-            let kids: Vec<Value> = child_ids.iter().map(|cid| materialize(cid, nodes)).collect();
+            let kids: Vec<Value> = child_ids
+                .iter()
+                .map(|cid| materialize(cid, nodes))
+                .collect();
             if let Some(obj) = node.as_object_mut() {
                 obj.insert("children".into(), Value::Array(kids));
             }
@@ -895,12 +916,8 @@ mod tests {
             ),
             ("README.md", "# Readme\n\nHello\n"),
         ]);
-        let docs = build_path_tree_docs_scoped(
-            &repo,
-            &commit,
-            Some(".relay/chat/channels"),
-        )
-        .unwrap();
+        let docs =
+            build_path_tree_docs_scoped(&repo, &commit, Some(".relay/chat/channels")).unwrap();
         assert_eq!(docs.len(), 1);
         assert_eq!(
             docs[0]["path"],
@@ -1006,5 +1023,17 @@ mod tests {
         let kids = root["children"].as_array().unwrap();
         assert_eq!(kids.len(), 1);
         assert_eq!(kids[0]["id"], "evt-the-third-story");
+        assert_eq!(root["sort_key"], "000000.000000.000000");
+        assert_eq!(kids[0]["sort_key"], "000000.000001.000000");
+        let ordered_roots: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event["md_path"].as_str().is_some_and(|path| {
+                    path.ends_with("00-era-root.md") || path.ends_with("00-introduction.md")
+                })
+            })
+            .map(|event| event["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ordered_roots, ["evt-introduction", "evt-era-root"]);
     }
 }

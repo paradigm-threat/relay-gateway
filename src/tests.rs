@@ -844,7 +844,12 @@ server:
         let repo = Repository::init_bare(&repo_path).unwrap();
         let sig = Signature::now("relay", "relay@local").unwrap();
         let config_oid = repo.blob(yaml.as_bytes()).unwrap();
-        let meta_oid = repo.blob(META_YAML.as_bytes()).unwrap();
+        let meta_oid = repo
+            .blob(b"title: Later Item\nsort_key: '000002'\n")
+            .unwrap();
+        let early_meta_oid = repo
+            .blob(b"title: Earlier Item\nsort_key: '000001'\n")
+            .unwrap();
         let index_cs_oid = repo.blob(INDEX_STUB_CS.as_bytes()).unwrap();
         let query_cs = r#"
 import { search } from '@relay/search/sqlite';
@@ -856,8 +861,12 @@ export default function run(ctx) {
         let mut tb_t = repo.treebuilder(None).unwrap();
         tb_t.insert("meta.yaml", meta_oid, 0o100644).unwrap();
         let t_tid = tb_t.write().unwrap();
+        let mut tb_u = repo.treebuilder(None).unwrap();
+        tb_u.insert("meta.yaml", early_meta_oid, 0o100644).unwrap();
+        let u_tid = tb_u.write().unwrap();
         let mut tb_data = repo.treebuilder(None).unwrap();
         tb_data.insert("t", t_tid, 0o040000).unwrap();
+        tb_data.insert("u", u_tid, 0o040000).unwrap();
         let data_tid = tb_data.write().unwrap();
         let mut tb = repo.treebuilder(None).unwrap();
         tb.insert(".relay.yaml", config_oid, 0o100644).unwrap();
@@ -886,7 +895,8 @@ export default function run(ctx) {
 
         let query_body = serde_json::json!({
             "collection": "index",
-            "query": "Test"
+            "query": "Item",
+            "order": "sort_key"
         });
 
         let response = handlers::handle_query(
@@ -908,8 +918,9 @@ export default function run(ctx) {
         );
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let results = json["results"].as_array().unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0]["title"], "Test Item");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["title"], "Earlier Item");
+        assert_eq!(results[1]["title"], "Later Item");
         let sqlite = git::branch_sqlite_path(&repo_path, "main");
         assert!(sqlite.exists(), "expected {}", sqlite.display());
     }
