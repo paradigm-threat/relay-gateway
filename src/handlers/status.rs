@@ -117,6 +117,9 @@ struct StatusSelf {
     installed_features_summary: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     startup_catalog_sync: Option<serde_json::Value>,
+    /// Provenance from pack-linode-deploy.sh (`deploy-manifest.json`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deploy_manifest: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -250,6 +253,13 @@ fn now_unix_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn read_deploy_manifest() -> Option<serde_json::Value> {
+    let root = std::env::var("RELAY_INSTALL_ROOT").unwrap_or_else(|_| "/opt/relay".into());
+    let path = std::path::Path::new(&root).join("state/deploy-manifest.json");
+    let s = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&s).ok()
 }
 
 fn html_escape(s: &str) -> String {
@@ -426,6 +436,7 @@ pub async fn post_api_status(
                 .as_ref()
                 .map(|m| summarize_features(m)),
             startup_catalog_sync: read_startup_catalog_sync_status(&state.repo_path),
+            deploy_manifest: read_deploy_manifest(),
         },
         peers,
     };

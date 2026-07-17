@@ -95,6 +95,13 @@ EOF
 
 write_caddyfile() {
   # Piper TTS (relay-tts-piper.service) listens on PIPER_PORT; expose /voices and /tts on the same TLS front door.
+  # Parked domains with server.tls.plugin=park get file-based TLS via import of
+  # /opt/relay/state/park-tls/Caddyfile.parked (written by relay-gateway).
+  local park_caddy="${RELAY_INSTALL_ROOT:-/opt/relay}/state/park-tls/Caddyfile.parked"
+  mkdir -p "$(dirname "$park_caddy")"
+  if [[ ! -f "$park_caddy" ]]; then
+    printf '# park_tls: awaiting certificates\n' >"$park_caddy"
+  fi
   cat >/etc/caddy/Caddyfile <<EOF
 {
 	email ${EMAIL}
@@ -114,6 +121,9 @@ write_caddyfile() {
 		reverse_proxy 127.0.0.1:${UPSTREAM}
 	}
 }
+
+# Opt-in parked domains (file TLS from park plugin) — must precede catch-all on_demand.
+import ${park_caddy}
 
 https:// {
 	tls {

@@ -41,6 +41,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/index/warm/:repo", post(handlers::post_index_warm))
         .route("/git-pull", post(handlers::post_git_pull))
         .route("/hooks/peer", post(handlers::post_peer_hook))
+        .route(
+            "/hooks/park-tls",
+            post(crate::park_tls::post_park_tls_hook),
+        )
         .route("/hooks/mesh-event", post(handlers::post_mesh_event))
         .route("/hooks/github/:repo", post(handlers::post_github_hook))
         .route("/transpile", post(transpiler::post_transpile))
@@ -49,7 +53,7 @@ pub fn build_router(state: AppState) -> Router {
             get({
                 let dir = acme_dir.clone();
                 move |AxPath(path): AxPath<String>| async move {
-                    handlers::serve_acme_challenge(&dir, &path).await
+                    crate::park_tls::serve_challenge(&dir, &path).await
                 }
             }),
         )

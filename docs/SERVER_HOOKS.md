@@ -222,3 +222,8 @@ To test the full "Push -> Protect -> Sync" flow:
     docker exec relay-peer-2 git rev-parse HEAD
     ```
 3.  The server automatically performs a `git fetch` and update for the target repository.
+
+
+## Parked-domain TLS plugin (`server.tls.plugin`)
+
+Set `server.tls.plugin: park` in `.relay.yaml` to opt a repository into coordinated multi-node ACME for its catalog `domains[]`. See [`RELAY_NETWORK_DNS.md`](./RELAY_NETWORK_DNS.md). This is configuration-only in v1 (no CleverScript hook required); heavy work runs in the gateway `park_tls` module.

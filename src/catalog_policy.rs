@@ -391,10 +391,26 @@ pub fn parked_domains_allowlist_path() -> PathBuf {
     Path::new(&root).join("state/parked-domains.txt")
 }
 
-/// Write the parked domains (one normalized host per line, sorted) to the allowlist file so
-/// `caddy-ask.py` will authorize on-demand certificate issuance for them. Also writes a JSON
-/// domain→repo map beside it for gateway restarts that lack a catalog worktree. Best-effort.
+/// Write the parked-domain routing map and the TLS ask allowlist.
+///
+/// `parked-domains.json` always holds the full Host→repo map (HTTP routing).
+/// `parked-domains.txt` (caddy-ask) lists only hosts whose repo enables
+/// `server.tls.plugin: park`. When `repo_path` is unknown, falls back to writing
+/// the full map (legacy / tests).
 pub fn write_parked_domains_allowlist(map: &HashMap<String, String>) {
+    write_parked_domains_allowlist_at(None, map);
+}
+
+/// Like [`write_parked_domains_allowlist`], but filter the TLS allowlist using
+/// `.relay.yaml` from bare repos under `repo_path`.
+pub fn write_parked_domains_allowlist_at(
+    repo_path: Option<&Path>,
+    map: &HashMap<String, String>,
+) {
+    if let Some(rp) = repo_path {
+        crate::park_tls::write_tls_allowlist(rp, map);
+        return;
+    }
     let path = parked_domains_allowlist_path();
     if let Some(parent) = path.parent() {
         if !parent.exists() {
@@ -495,7 +511,7 @@ pub fn resolve_parked_domains(
     if let Some(c) = catalog_worktree {
         if let Ok(index) = load_catalog_index(c) {
             let map = build_parked_domain_map(&index)?;
-            write_parked_domains_allowlist(&map);
+            write_parked_domains_allowlist_at(Some(repo_path), &map);
             return Ok((!map.is_empty()).then_some(map));
         }
     }
@@ -504,12 +520,16 @@ pub fn resolve_parked_domains(
         if let Ok(index) = load_catalog_index_from_bare(&bare) {
             let map = build_parked_domain_map(&index)?;
             if !map.is_empty() {
-                write_parked_domains_allowlist(&map);
+                write_parked_domains_allowlist_at(Some(repo_path), &map);
                 return Ok(Some(map));
             }
         }
     }
-    Ok(load_parked_domains_map_file())
+    if let Some(map) = load_parked_domains_map_file() {
+        write_parked_domains_allowlist_at(Some(repo_path), &map);
+        return Ok(Some(map));
+    }
+    Ok(None)
 }
 
 /// Env `RELAY_MASTER_CATALOG_PATH` or parent of bare data when syncing.

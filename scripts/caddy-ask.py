@@ -4,7 +4,8 @@
 Allows a certificate for:
   * the node apex FQDN and any single-label `{repo}.{node}` subdomain, and
   * any parked domain listed in RELAY_PARKED_DOMAINS_PATH (materialized by relay-gateway
-    from the catalog `domains[]`; one host per line, `#` comments ignored).
+    from catalog `domains[]` whose repo enables `server.tls.plugin: park`; one host per
+    line, `#` comments ignored).
 """
 import os
 import re

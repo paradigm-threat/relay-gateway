@@ -527,6 +527,15 @@ install_binaries() {
     mkdir -p "$INSTALL/www"
     cp -a "$src/www/." "$INSTALL/www/"
   fi
+  mkdir -p "$INSTALL/state"
+  if [[ -f "$src/deploy-manifest.json" ]]; then
+    cp -f "$src/deploy-manifest.json" "$INSTALL/state/deploy-manifest.json"
+    chown root:root "$INSTALL/state/deploy-manifest.json" 2>/dev/null || true
+    chmod 644 "$INSTALL/state/deploy-manifest.json" 2>/dev/null || true
+  fi
+  mkdir -p "$INSTALL/state/park-tls/challenges" "$INSTALL/state/park-tls/certs"
+  chown -R relay:relay "$INSTALL/state/park-tls" 2>/dev/null || true
+
   if [[ -f "$src/relay-startup-catalog-sync.sh" ]]; then
     _copy_bin_if_needed "$src/relay-startup-catalog-sync.sh" "$INSTALL/bin/relay-startup-catalog-sync.sh"
   elif [[ -f "$SCRIPT_DIR/relay-startup-catalog-sync.sh" ]]; then

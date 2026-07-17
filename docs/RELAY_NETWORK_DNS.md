@@ -96,6 +96,25 @@ cd relay-gateway
 ```
 
 The node-name update and fleet-record reconcile scripts exist. Automatic Spot VM discovery (without UI/`public_ip_override`) is still pending.
+## Opt-in park TLS plugin
+
+Parked multi-node HTTPS is **not** a global gateway default. A content repo opts in:
+
+```yaml
+server:
+  tls:
+    plugin: park
+```
+
+With the plugin enabled:
+
+- `caddy-ask` only allowlists that repo's catalog `domains[]` for on-demand / park issuance;
+- the gateway `@relay/tls/park` worker issues Let's Encrypt certs via HTTP-01;
+- challenge tokens and cert/key PEMs fan out to peers over `POST /hooks/park-tls` (mesh secret);
+- Caddy loads file TLS from `/opt/relay/state/park-tls/Caddyfile.parked`.
+
+Repos without the plugin still get Host→repo HTTP routing from `domains[]`, but do not join shared ACME.
+
 ## TLS gate for multi-node ingress
 
 Do not add multiple addresses to `fleet.relaygateway.net` merely because HTTP routing works.

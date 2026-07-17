@@ -8,6 +8,7 @@ pub mod handlers;
 pub mod mesh_events;
 pub mod mesh_role;
 pub mod notify;
+pub mod park_tls;
 pub mod peer_hook;
 pub mod peer_notify;
 pub mod router;

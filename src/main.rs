@@ -70,6 +70,8 @@ async fn main() -> Result<()> {
         "relay mesh node role"
     );
 
+    relay_server::park_tls::spawn_worker(config.state.clone());
+
     let app = build_router(config.state.clone());
 
     let http_addr = config.http_addr;

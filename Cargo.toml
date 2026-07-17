@@ -64,6 +64,9 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 relay-runtime = { path = "../relay-runtime" }
 md2ast = { version = "1.0.2", path = "../../md2ast" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+instant-acme = "0.7"
+rcgen = "0.13"
+time = "0.3"
 
 [dev-dependencies]
 serial_test = "3"

@@ -77,6 +77,9 @@ pub struct ServerConfig {
     /// Search plugin selection for QUERY / MCP search tools (default: sqlite).
     #[serde(default)]
     pub search: Option<SearchConfig>,
+    /// Opt-in TLS plugin for parked domains (e.g. `park` for shared HTTP-01 + cert fan-out).
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
 }
 
 #[derive(Deserialize, Debug, Default, Serialize, Clone)]
@@ -84,6 +87,25 @@ pub struct SearchConfig {
     /// Plugin id: `sqlite` (default) or `redb` (legacy).
     #[serde(default)]
     pub plugin: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Default, Serialize, Clone)]
+pub struct TlsConfig {
+    /// Plugin id: `park` enables coordinated multi-node ACME for catalog `domains[]`.
+    #[serde(default)]
+    pub plugin: Option<String>,
+}
+
+impl RelayConfig {
+    /// True when this repo opts into the shared parked-domain TLS plugin.
+    pub fn has_park_tls_plugin(&self) -> bool {
+        self.server
+            .as_ref()
+            .and_then(|s| s.tls.as_ref())
+            .and_then(|t| t.plugin.as_deref())
+            .map(|p| p.eq_ignore_ascii_case("park"))
+            .unwrap_or(false)
+    }
 }
 
 #[derive(Deserialize, Debug, Default, Serialize, Clone, PartialEq)]
