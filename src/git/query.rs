@@ -5,7 +5,7 @@ use crate::git::index_policy;
 use crate::git::indexing::{branch_operation_mutex, branch_sqlite_path, ensure_indexed};
 use crate::git::search_config::{self, SearchFileConfig};
 use crate::git::search_plugins;
-use crate::git::sqlite_index;
+use crate::git::sqlite_index::{self, QueryOrder};
 use crate::git::repo::{read_file_from_repo, read_relay_config};
 use relay_runtime::value::Value as CsValue;
 use serde_json::Value;
@@ -66,7 +66,15 @@ fn routing_from_cs(
     default_plugin: &str,
     default_collection: &str,
     default_query: Option<&Value>,
-) -> (String, String, Option<Value>, Option<usize>, Option<String>) {
+    default_order: QueryOrder,
+) -> (
+    String,
+    String,
+    Option<Value>,
+    Option<usize>,
+    Option<String>,
+    QueryOrder,
+) {
     let CsValue::Object(o) = v else {
         return (
             default_plugin.to_string(),
@@ -74,6 +82,7 @@ fn routing_from_cs(
             default_query.cloned(),
             None,
             None,
+            default_order,
         );
     };
     let plugin = o
@@ -104,7 +113,14 @@ fn routing_from_cs(
         CsValue::String(s) if !s.is_empty() => Some(s.clone()),
         _ => None,
     });
-    (plugin, collection, query, limit, config)
+    let order = o
+        .get("order")
+        .and_then(|ord| match ord {
+            CsValue::String(s) => QueryOrder::parse(s).ok(),
+            _ => None,
+        })
+        .unwrap_or(default_order);
+    (plugin, collection, query, limit, config, order)
 }
 
 fn finish_outcome(
@@ -146,7 +162,10 @@ pub fn execute_query(
     query: Option<Value>,
     collection: &str,
 ) -> anyhow::Result<Vec<Value>> {
-    Ok(execute_query_outcome(repo_root, repo_name, branch, query, collection, None)?.results)
+    Ok(
+        execute_query_outcome(repo_root, repo_name, branch, query, collection, None, None)?
+            .results,
+    )
 }
 
 pub fn execute_query_limited(
@@ -158,7 +177,16 @@ pub fn execute_query_limited(
     limit: Option<usize>,
 ) -> anyhow::Result<Vec<Value>> {
     Ok(
-        execute_query_outcome(repo_root, repo_name, branch, query, collection, limit)?.results,
+        execute_query_outcome(
+            repo_root,
+            repo_name,
+            branch,
+            query,
+            collection,
+            limit,
+            None,
+        )?
+        .results,
     )
 }
 
@@ -170,8 +198,10 @@ pub fn execute_query_outcome(
     query: Option<Value>,
     collection: &str,
     limit: Option<usize>,
+    order: Option<QueryOrder>,
 ) -> anyhow::Result<QueryOutcome> {
     let started = Instant::now();
+    let order = order.unwrap_or_default();
     let repo_full_path = repo_root.join(format!("{}.git", repo_name));
     let repo = git2::Repository::open_bare(&repo_full_path)?;
     let head = git::get_branch_commit_info(&repo, branch)
@@ -228,6 +258,7 @@ pub fn execute_query_outcome(
             "repo": repo_name,
             "defaultPlugin": default_plugin,
             "limit": limit,
+            "order": order.as_str(),
         });
         let host = CleverScriptServerHost::host_handle(repo_full_path.clone(), branch.to_string(), false);
         let raw = relay_runtime::run_query_script(&source, host, &qctx, None, None)
@@ -235,14 +266,15 @@ pub fn execute_query_outcome(
 
         if let Some(r) = clever_query_result_to_rows(&raw)? {
             rows = project_export(r, export_fields.as_deref());
-            rows = apply_limit(rows, limit);
+            let lim = sqlite_index::clamp_query_limit(order, limit);
+            rows = apply_limit(rows, Some(lim));
         } else {
-            let (plugin, coll, q, cs_limit, _cfg) =
-                routing_from_cs(&raw, default_plugin, collection, query.as_ref());
+            let (plugin, coll, q, cs_limit, _cfg, cs_order) =
+                routing_from_cs(&raw, default_plugin, collection, query.as_ref(), order);
             used_collection = coll.clone();
             used_query = q.clone();
             let effective_limit = cs_limit.or(limit);
-            rows = search_plugins::run_plugin(
+            rows = search_plugins::run_plugin_ordered(
                 &plugin,
                 &repo_full_path,
                 branch,
@@ -250,10 +282,11 @@ pub fn execute_query_outcome(
                 q.as_ref(),
                 export_fields.as_deref(),
                 effective_limit,
+                cs_order,
             )?;
         }
     } else {
-        rows = search_plugins::run_plugin(
+        rows = search_plugins::run_plugin_ordered(
             default_plugin,
             &repo_full_path,
             branch,
@@ -261,6 +294,7 @@ pub fn execute_query_outcome(
             query.as_ref(),
             export_fields.as_deref(),
             limit,
+            order,
         )?;
     }
 
@@ -332,5 +366,5 @@ pub fn execute_search_outcome(
     collection: &str,
     limit: Option<usize>,
 ) -> anyhow::Result<QueryOutcome> {
-    execute_query_outcome(repo_root, repo_name, branch, query, collection, limit)
+    execute_query_outcome(repo_root, repo_name, branch, query, collection, limit, None)
 }

@@ -34,7 +34,7 @@ server:
 | Return | Behavior |
 |--------|----------|
 | `{ rows: [...] }` / array | Result from `search(ctx)` (preferred) or legacy CS-built rows |
-| `{ plugin, collection?, query?, limit? }` | Compat thin string router — Rust runs the named plugin |
+| `{ plugin, collection?, query?, limit?, order? }` | Compat thin string router — Rust runs the named plugin |
 | `null` | Fall through to `server.search.plugin` (default sqlite) |
 
 Compat string router (still accepted):
@@ -109,7 +109,7 @@ If **`server.hooks.query.branches`** is omitted, QUERY branch policy falls back 
 
 ## Script context
 
-- First parameter: `branch`, `collection`, `query`, `repo`, `defaultPlugin`, `limit`
+- First parameter: `branch`, `collection`, `query`, `repo`, `defaultPlugin`, `limit`, `order`
 - Search: `import { search } from '@relay/search/sqlite'` (or `@relay/search/redb`)
 - Git reads: `import { readFile } from '@relay/git'` (routing only — prefer search modules for QUERY)
 - **`@relay/image`** is not available on QUERY
@@ -132,6 +132,28 @@ curl -X QUERY "https://paradigm-threat-files.dfw1.relaygateway.net/" \
 curl -X QUERY "https://dfw1.relaygateway.net/paradigm-threat-files" \
   -H 'Content-Type: application/json' -H 'Accept: application/json' \
   --data '{"collection":"index","query":"venus"}'
+```
+
+### URL query string (allowlisted)
+
+`QUERY` also reads these query-string keys (JSON body overrides QS):
+
+| Key | Meaning |
+|-----|---------|
+| `q` | FTS string (max 200 chars) |
+| `collection` | Collection name (default `index`) |
+| `limit` | Row cap (`1..=10000`; **`1..=100` when `order=random`**) |
+| `order` | `path` (asc), `-path` (desc, default), or `random` |
+
+Unknown keys are ignored. Invalid `order` → HTTP 400. `order` selects fixed SQL `ORDER BY` templates only (never interpolated).
+
+```bash
+# Curl-friendly: no body
+curl -X QUERY 'https://paradigm-threat-files.dfw1.relaygateway.net/?q=venus&limit=10&order=-path' \
+  -H 'Accept: application/json'
+
+curl -X QUERY 'https://paradigm-threat-files.dfw1.relaygateway.net/?collection=index&order=random&limit=1' \
+  -H 'Accept: application/json'
 ```
 
 Optional: `X-Relay-Branch` (default `main`).

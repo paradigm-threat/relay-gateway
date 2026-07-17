@@ -32,10 +32,33 @@ pub fn run_plugin(
     fields: Option<&[String]>,
     limit: Option<usize>,
 ) -> anyhow::Result<Vec<Value>> {
+    run_plugin_ordered(
+        plugin,
+        repo_full_path,
+        branch,
+        collection,
+        query,
+        fields,
+        limit,
+        sqlite_index::QueryOrder::default(),
+    )
+}
+
+/// Like [`run_plugin`] with an explicit [`sqlite_index::QueryOrder`].
+pub fn run_plugin_ordered(
+    plugin: &str,
+    repo_full_path: &Path,
+    branch: &str,
+    collection: &str,
+    query: Option<&Value>,
+    fields: Option<&[String]>,
+    limit: Option<usize>,
+    order: sqlite_index::QueryOrder,
+) -> anyhow::Result<Vec<Value>> {
     match plugin {
         PLUGIN_SQLITE => {
             let db = branch_sqlite_path(repo_full_path, branch);
-            sqlite_index::query_collection(&db, collection, query, fields, limit)
+            sqlite_index::query_collection_ordered(&db, collection, query, fields, limit, order)
         }
         PLUGIN_REDB => {
             let (json_path, redb_path) = branch_index_paths(repo_full_path, branch);
@@ -48,11 +71,14 @@ pub fn run_plugin(
                 .as_array_mut()
                 .ok_or_else(|| anyhow::anyhow!("collection {} is not an array", collection))?;
             filter_redb_array(arr, query);
-            let rows: Vec<Value> = arr.clone();
+            // redb plugin: apply limit; random order is sqlite-only.
+            let lim = sqlite_index::clamp_query_limit(order, limit);
+            let rows: Vec<Value> = arr.iter().take(lim).cloned().collect();
             Ok(project_rows(rows, fields))
         }
         PLUGIN_CHAT => {
             let _ = collection; // chat plugin uses `chat_comments` table
+            let _ = order; // chat keeps its own path-desc ordering for now
             let db = branch_sqlite_path(repo_full_path, branch);
             let rows = chat_index::query_chat(&db, query, limit)?;
             Ok(project_rows(rows, fields))

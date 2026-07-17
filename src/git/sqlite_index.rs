@@ -380,6 +380,53 @@ fn row_matches_object_filter(item: &Value, q_obj: &Map<String, Value>) -> bool {
     true
 }
 
+/// Sort mode for QUERY. Selected via fixed SQL templates only (never interpolated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QueryOrder {
+    /// `ORDER BY path ASC`
+    PathAsc,
+    /// `ORDER BY path DESC` (default; newest-first for ISO8601-prefixed chat paths).
+    #[default]
+    PathDesc,
+    /// `ORDER BY RANDOM()` — full scan; callers should cap `limit` (see [`clamp_query_limit`]).
+    Random,
+}
+
+impl QueryOrder {
+    /// Parse allowlisted order tokens: `path`, `-path`, `random`.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim() {
+            "path" => Ok(Self::PathAsc),
+            "-path" | "" => Ok(Self::PathDesc),
+            "random" => Ok(Self::Random),
+            other => Err(format!(
+                "invalid order {other:?}; expected path, -path, or random"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PathAsc => "path",
+            Self::PathDesc => "-path",
+            Self::Random => "random",
+        }
+    }
+}
+
+/// Max rows for a normal QUERY.
+pub const QUERY_LIMIT_MAX: usize = 10_000;
+/// Hard cap when `order=random` (full collection shuffle is expensive).
+pub const QUERY_RANDOM_LIMIT_MAX: usize = 100;
+
+/// Clamp limit for the given order. Random defaults to 1 when omitted.
+pub fn clamp_query_limit(order: QueryOrder, limit: Option<usize>) -> usize {
+    match order {
+        QueryOrder::Random => limit.unwrap_or(1).clamp(1, QUERY_RANDOM_LIMIT_MAX),
+        _ => limit.unwrap_or(QUERY_LIMIT_MAX).clamp(1, QUERY_LIMIT_MAX),
+    }
+}
+
 /// QUERY against SQLite: string → FTS AND; object → exact field match; null → all rows.
 pub fn query_collection(
     db_path: &Path,
@@ -388,11 +435,23 @@ pub fn query_collection(
     fields: Option<&[String]>,
     limit: Option<usize>,
 ) -> anyhow::Result<Vec<Value>> {
+    query_collection_ordered(db_path, collection, query, fields, limit, QueryOrder::default())
+}
+
+/// Like [`query_collection`] with an explicit [`QueryOrder`].
+pub fn query_collection_ordered(
+    db_path: &Path,
+    collection: &str,
+    query: Option<&Value>,
+    fields: Option<&[String]>,
+    limit: Option<usize>,
+    order: QueryOrder,
+) -> anyhow::Result<Vec<Value>> {
     if !db_path.exists() {
         return Ok(vec![]);
     }
     let conn = Connection::open(db_path)?;
-    let lim = limit.unwrap_or(10_000).max(1);
+    let lim = clamp_query_limit(order, limit);
 
     let mut rows: Vec<Value> = Vec::new();
 
@@ -402,16 +461,36 @@ pub fn query_collection(
             if match_q.is_empty() {
                 return Ok(vec![]);
             }
-            // Newest-first by path (chat filenames are ISO8601-prefixed).
-            let mut stmt = conn.prepare(
-                "SELECT d.json FROM docs d
-                 WHERE d.collection = ?1
-                   AND d.id IN (
-                     SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?2
-                   )
-                 ORDER BY json_extract(d.json, '$.path') DESC
-                 LIMIT ?3",
-            )?;
+            let sql = match order {
+                QueryOrder::Random => {
+                    "SELECT d.json FROM docs d
+                     WHERE d.collection = ?1
+                       AND d.id IN (
+                         SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?2
+                       )
+                     ORDER BY RANDOM()
+                     LIMIT ?3"
+                }
+                QueryOrder::PathAsc => {
+                    "SELECT d.json FROM docs d
+                     WHERE d.collection = ?1
+                       AND d.id IN (
+                         SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?2
+                       )
+                     ORDER BY json_extract(d.json, '$.path') ASC
+                     LIMIT ?3"
+                }
+                QueryOrder::PathDesc => {
+                    "SELECT d.json FROM docs d
+                     WHERE d.collection = ?1
+                       AND d.id IN (
+                         SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?2
+                       )
+                     ORDER BY json_extract(d.json, '$.path') DESC
+                     LIMIT ?3"
+                }
+            };
+            let mut stmt = conn.prepare(sql)?;
             let iter = stmt.query_map(params![collection, match_q, lim as i64], |r| {
                 let json: String = r.get(0)?;
                 Ok(json)
@@ -424,10 +503,20 @@ pub fn query_collection(
             }
         }
         Some(Value::Object(q_obj)) => {
-            let mut stmt = conn.prepare(
-                "SELECT json FROM docs WHERE collection = ?1
-                 ORDER BY json_extract(json, '$.path') DESC",
-            )?;
+            let sql = match order {
+                QueryOrder::Random => {
+                    "SELECT json FROM docs WHERE collection = ?1 ORDER BY RANDOM()"
+                }
+                QueryOrder::PathAsc => {
+                    "SELECT json FROM docs WHERE collection = ?1
+                     ORDER BY json_extract(json, '$.path') ASC"
+                }
+                QueryOrder::PathDesc => {
+                    "SELECT json FROM docs WHERE collection = ?1
+                     ORDER BY json_extract(json, '$.path') DESC"
+                }
+            };
+            let mut stmt = conn.prepare(sql)?;
             let iter = stmt.query_map(params![collection], |r| {
                 let json: String = r.get(0)?;
                 Ok(json)
@@ -445,11 +534,24 @@ pub fn query_collection(
             }
         }
         _ => {
-            let mut stmt = conn.prepare(
-                "SELECT json FROM docs WHERE collection = ?1
-                 ORDER BY json_extract(json, '$.path') DESC
-                 LIMIT ?2",
-            )?;
+            let sql = match order {
+                QueryOrder::Random => {
+                    "SELECT json FROM docs WHERE collection = ?1
+                     ORDER BY RANDOM()
+                     LIMIT ?2"
+                }
+                QueryOrder::PathAsc => {
+                    "SELECT json FROM docs WHERE collection = ?1
+                     ORDER BY json_extract(json, '$.path') ASC
+                     LIMIT ?2"
+                }
+                QueryOrder::PathDesc => {
+                    "SELECT json FROM docs WHERE collection = ?1
+                     ORDER BY json_extract(json, '$.path') DESC
+                     LIMIT ?2"
+                }
+            };
+            let mut stmt = conn.prepare(sql)?;
             let iter = stmt.query_map(params![collection, lim as i64], |r| {
                 let json: String = r.get(0)?;
                 Ok(json)
@@ -666,5 +768,97 @@ mod tests {
         )
         .unwrap();
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn query_order_parse_allowlist() {
+        assert_eq!(QueryOrder::parse("path").unwrap(), QueryOrder::PathAsc);
+        assert_eq!(QueryOrder::parse("-path").unwrap(), QueryOrder::PathDesc);
+        assert_eq!(QueryOrder::parse("random").unwrap(), QueryOrder::Random);
+        assert!(QueryOrder::parse("drop table").is_err());
+    }
+
+    #[test]
+    fn random_limit_is_hard_capped() {
+        assert_eq!(clamp_query_limit(QueryOrder::Random, None), 1);
+        assert_eq!(clamp_query_limit(QueryOrder::Random, Some(40)), 40);
+        assert_eq!(
+            clamp_query_limit(QueryOrder::Random, Some(10_000)),
+            QUERY_RANDOM_LIMIT_MAX
+        );
+        assert_eq!(
+            clamp_query_limit(QueryOrder::PathDesc, Some(10_000)),
+            QUERY_LIMIT_MAX
+        );
+    }
+
+    #[test]
+    fn query_order_random_respects_limit() {
+        let dir = tempdir().unwrap();
+        let json_path = dir.path().join("index.db.json");
+        let db_path = dir.path().join("index.db");
+        let docs: Vec<_> = (0..50)
+            .map(|i| {
+                json!({
+                    "title": format!("Item {i}"),
+                    "path": format!("p/{i:02}"),
+                    "_meta_dir": format!("d{i}")
+                })
+            })
+            .collect();
+        std::fs::write(
+            &json_path,
+            json!({
+                "metadata": { "indexed_head": "h" },
+                "collections": { "index": docs }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        sync_json_to_sqlite(&json_path, &db_path).unwrap();
+        let hits = query_collection_ordered(
+            &db_path,
+            "index",
+            None,
+            None,
+            Some(5),
+            QueryOrder::Random,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 5);
+    }
+
+    #[test]
+    fn query_order_path_asc() {
+        let dir = tempdir().unwrap();
+        let json_path = dir.path().join("index.db.json");
+        let db_path = dir.path().join("index.db");
+        std::fs::write(
+            &json_path,
+            json!({
+                "metadata": { "indexed_head": "h" },
+                "collections": {
+                    "index": [
+                        { "title": "C", "path": "c", "_meta_dir": "c" },
+                        { "title": "A", "path": "a", "_meta_dir": "a" },
+                        { "title": "B", "path": "b", "_meta_dir": "b" }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        sync_json_to_sqlite(&json_path, &db_path).unwrap();
+        let hits = query_collection_ordered(
+            &db_path,
+            "index",
+            None,
+            None,
+            Some(10),
+            QueryOrder::PathAsc,
+        )
+        .unwrap();
+        assert_eq!(hits[0]["path"], "a");
+        assert_eq!(hits[2]["path"], "c");
     }
 }
