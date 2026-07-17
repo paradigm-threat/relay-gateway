@@ -66,12 +66,12 @@ reclone-repo flags:
 
 Examples:
   ./scripts/relay-fleet.sh ssh-check
-  ./scripts/relay-fleet.sh status --only=atlanta3.relaygateway.net
+  ./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net status
   ./scripts/relay-fleet.sh health
   ./scripts/relay-fleet.sh health --mcp
   ./scripts/relay-fleet.sh --build deploy-all
   ./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net --build update
-  ./scripts/relay-fleet.sh features-set --only=atlanta3.relaygateway.net --piper=0 --npm-pkgs=
+  ./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net features-set --piper=0 --npm-pkgs=
 EOF
   exit "${1:-0}"
 }
@@ -452,18 +452,9 @@ cmd_reclone_repo() {
   local h
   for h in "${FLEET_HOSTS[@]}"; do
     echo "[relay-fleet] reclone-repo $repo on $h …"
-    "${SSH_BATCH[@]}" "$(ssh_target "$h")" bash -s "$DATA_ROOT" "$CATALOG_PATH" "$GIT_PORT" "$repo" "${peer:-}" <<'EOS'
-set -euo pipefail
-DATA_ROOT="$1" CATALOG="$2" GIT_PORT="$3" REPO="$4" PEER="${5:-}"
-sudo systemctl stop relay-git-daemon 2>/dev/null || true
-sudo -u relay rm -rf "${DATA_ROOT}/${REPO}.git"
-sudo -u relay bash -lc "set -e; cd \"${CATALOG}\" && git pull origin main && RELAY_REPO_PATH=\"${DATA_ROOT}\" ./scripts/sync-relay-catalog.sh" || true
-if [[ -n "${PEER}" ]]; then
-  sudo -u relay git --git-dir="${DATA_ROOT}/${REPO}.git" fetch "git://${PEER}:${GIT_PORT}/${REPO}.git" '+refs/heads/*:refs/heads/*' --prune || true
-fi
-sudo systemctl start relay-git-daemon 2>/dev/null || true
-sudo systemctl restart relay-gateway relay-git-daemon
-EOS
+    "${SSH_BATCH[@]}" "$(ssh_target "$h")" \
+      bash -s -- "$DATA_ROOT" "$GIT_PORT" "$repo" "${peer:-}" \
+      < "$ROOT/scripts/relay-reclone-bare.sh"
     echo "[relay-fleet] reclone-repo end $h"
   done
 }

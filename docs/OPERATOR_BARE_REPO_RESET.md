@@ -10,16 +10,24 @@
 
 ## Full reclone of one catalog mirror (same forge URL)
 
-Run on the master (paths match the default **`/opt/relay`** layout; adjust if your **`relay.env`** differs).
+Use the fleet CLI from **`relay-gateway/`**:
 
-1. Optional: reduce races while deleting objects: **`sudo systemctl stop relay-git-daemon`** (restart it at the end).
-2. Remove the bare repo as **`relay`**:  
-   **`sudo -u relay rm -rf /opt/relay/data/<repo>.git`**
-3. Refresh the catalog worktree and repopulate mirrors:  
-   **`sudo -u relay bash -lc 'set -e; cd /opt/relay/src/relay-master && git pull origin main && RELAY_REPO_PATH=/opt/relay/data ./scripts/sync-relay-catalog.sh'`**
-4. Restart: **`sudo systemctl restart relay-gateway relay-git-daemon`**
+```bash
+./scripts/relay-fleet.sh --only=NODE.relaygateway.net reclone-repo REPO
+# If the forge is unavailable/private but another node has a healthy mirror:
+./scripts/relay-fleet.sh --only=NODE.relaygateway.net \
+  reclone-repo REPO --peer=HEALTHY-PEER.relaygateway.net
+```
 
-Confirm: **`curl -sS -X POST http://127.0.0.1:8080/api/config`** and check **`startup_catalog_sync.catalog_forge_sync_ok`** and **`authorized_repos`**.
+The command reads the repo URL, trusted root, and branch from the node’s currently
+served **`$RELAY_REPO_PATH/relay-master.git`**. It prepares and validates a staging
+clone while the existing mirror remains online, then briefly stops
+**`relay-git-daemon`** for a same-filesystem swap. A failed clone, peer fetch, or
+trust-root check leaves the existing mirror untouched. It does not depend on an
+optional **`/opt/relay/src/relay-master`** worktree.
+
+Confirm with **`QUERY`** against the affected repo and
+**`POST /api/config`** on the node.
 
 ## Changing upstream (different forge URL or new root)
 
@@ -48,9 +56,13 @@ Inspect **`startup_catalog_sync.catalog_output_tail`**. Common cases:
 
 **`ensure-bare`** only creates an **empty** bare repo when the path is missing; it is **not** HTTP-authenticated. Restrict it at the network layer if the route is reachable, or set **`RELAY_GIT_ENSURE_BARE_ENABLED=0`** in **`relay.env`** and create bare repos only via SSH. See [README.md](../README.md) and `post_ensure_bare` in the gateway source. **Deleting** or **recloning** mirrors remains an **SSH + filesystem** operation.
 
-## Stale bare directories
+## Removing catalog repos
 
-Removing a repo from the catalog does **not** delete **`/opt/relay/data/<name>.git`**. See [DEPLOY_LINODE.md](./DEPLOY_LINODE.md) (“Stale bare directories”). Remove the directory manually when no longer needed.
+Applying a **relay-master catalog tip change** removes the corresponding bare
+mirror when a repo entry is deleted. Running **`sync-relay-catalog.sh`** by itself
+only syncs entries that still exist and does not discover stale, unlisted bare
+directories. Prefer catalog tip application for removals; inspect and remove
+legacy stale directories manually only when they predate that mechanism.
 
 ## After a relay-master force-push or history rewrite
 

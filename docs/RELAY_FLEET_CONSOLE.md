@@ -53,7 +53,7 @@ Edit paths in **`scripts/relay-local-repos.map`**. Legacy **atlanta2** may still
 | **`deploy-all`** | Same as **`update`** (**`relay-linode-redeploy-seed.sh`** …). **`./scripts/deploy-all-masters.sh`** wraps **`relay-fleet.sh --build deploy-all`** (always repacks — use **`relay-fleet.sh deploy-all`** alone only if you intend to reuse an existing tarball). |
 | **`repair`** | Uploads **`target/relay-linode-deploy.tgz`**, extracts under **`/tmp`**, runs **`./install.sh repair`** (same pattern as **`relay-linode-redeploy-seed`** — **`install.sh` is not kept under `/opt/relay/bin`** on nodes). |
 | **`features-set`** | Same tarball staging, then **`./install.sh reconfigure-features`** with **`RELAY_INSTALL_NONINTERACTIVE=1`** and **`RELAY_FEAT_*`** from flags or your environment: **`--piper=0|1`**, **`--npm-pkgs=`**, **`--translation=0|1`**, **`--translation-pkgs=`**, **`--libretranslate=0|1`**. |
-| **`reclone-repo REPO`** | Stops **`relay-git-daemon`**, removes **`$RELAY_REPO_PATH/$REPO.git`**, **`git pull` + `sync-relay-catalog.sh`**, optional **`--peer=FQDN`** **`git fetch`** from **`git://`**, restarts daemons. See **[`OPERATOR_BARE_REPO_RESET.md`](./OPERATOR_BARE_REPO_RESET.md)**. |
+| **`reclone-repo REPO`** | Reads the repo URL/root/branch from the node’s served **`relay-master.git`**, clones and validates a staging bare (optional **`--peer=FQDN`** fetch), then briefly stops **`relay-git-daemon`** for an atomic swap. The existing mirror remains live and is preserved if preparation fails; no catalog worktree is required. See **[`OPERATOR_BARE_REPO_RESET.md`](./OPERATOR_BARE_REPO_RESET.md)**. |
 | **`bootstrap-ssh`** | One-shot **`root`** password (**`SSHPASS`** or **`RELAY_ROOT_PASSWORD`** env — never commit) + **`sshpass`** to append deploy **`*.pub`** to **`ari`’s `authorized_keys`**, then **`ssh-check`**. Not the same as laptop **`autossh`** tunnels — see production-ops rule. |
 | **`reinstall`** | **Safe default:** same as **`update`**. **Destructive:** with **`--danger-wipe-relay-data`**, **`--confirm-wipe=`**, and **`--only=`** exactly one host — stops units and **`rm -rf $RELAY_REPO_PATH/*.git`**, then **`update`**. |
 
@@ -71,7 +71,7 @@ Edit paths in **`scripts/relay-local-repos.map`**. Legacy **atlanta2** may still
 cd relay-gateway
 ./scripts/relay-fleet.sh hosts
 ./scripts/relay-fleet.sh ssh-check
-./scripts/relay-fleet.sh status --only=atlanta3.relaygateway.net
+./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net status
 ./scripts/relay-fleet.sh health
 ./scripts/relay-fleet.sh health --mcp
 ./scripts/relay-fleet.sh drift
@@ -79,8 +79,8 @@ cd relay-gateway
 ./scripts/relay-fleet.sh --build deploy-all
 # One node only:
 ./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net --build update
-./scripts/relay-fleet.sh features-set --only=atlanta3.relaygateway.net --piper=0 --npm-pkgs=
-./scripts/relay-fleet.sh reclone-repo paradigm-threat-files --peer=atlanta3.relaygateway.net --only=jp-osa.relaygateway.net
+./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net features-set --piper=0 --npm-pkgs=
+./scripts/relay-fleet.sh --only=jp-osa.relaygateway.net reclone-repo paradigm-threat-files --peer=atlanta3.relaygateway.net
 ```
 
 ## Mesh tip-notify (`git.origins`)

@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use tracing::{error, info, warn};
@@ -53,6 +54,20 @@ fn bare_path(root: &Path, slug: &str) -> PathBuf {
     root.join(format!("{}.git", slug))
 }
 
+fn sidecar_path(root: &Path, slug: &str, purpose: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    root.join(format!(
+        ".{}.git.relay-{}-{}-{}",
+        slug,
+        purpose,
+        std::process::id(),
+        nonce
+    ))
+}
+
 fn remove_bare(root: &Path, slug: &str) {
     let p = bare_path(root, slug);
     if p.exists() {
@@ -72,6 +87,30 @@ fn verify_commit_exists(bare: &Path, oid: &str) -> bool {
         .arg(format!("{}^{{commit}}", oid))
         .output()
         .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn branch_contains_root(bare: &Path, branch: &str, root_commit: &str) -> bool {
+    Command::new("git")
+        .arg("--git-dir")
+        .arg(bare)
+        .arg("merge-base")
+        .arg("--is-ancestor")
+        .arg(root_commit)
+        .arg(format!("refs/heads/{branch}"))
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn bare_is_shallow(bare: &Path) -> bool {
+    Command::new("git")
+        .arg("--git-dir")
+        .arg(bare)
+        .arg("rev-parse")
+        .arg("--is-shallow-repository")
+        .output()
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
         .unwrap_or(false)
 }
 
@@ -98,54 +137,126 @@ fn clone_bare(url: &str, dest: &Path, depth: Option<u32>) -> Result<(), String> 
     Ok(())
 }
 
-fn deepen_if_needed(bare: &Path, root_commit: &str) -> Result<(), String> {
-    if verify_commit_exists(bare, root_commit) {
-        return Ok(());
-    }
+fn deepen_and_verify_root(bare: &Path, branch: &str, root_commit: &str) -> Result<(), String> {
     let deepen = std::env::var("RELAY_CATALOG_AUTO_DEEPEN")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(256u32);
+    let max_rounds = std::env::var("RELAY_CATALOG_MAX_DEEPEN_ROUNDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8u32);
+
+    for round in 0..=max_rounds {
+        if verify_commit_exists(bare, root_commit)
+            && branch_contains_root(bare, branch, root_commit)
+        {
+            return Ok(());
+        }
+        if round == max_rounds || !bare_is_shallow(bare) {
+            break;
+        }
+        let out = Command::new("git")
+            .arg("--git-dir")
+            .arg(bare)
+            .arg("fetch")
+            .arg("--deepen")
+            .arg(deepen.to_string())
+            .arg("origin")
+            .output()
+            .map_err(|e| format!("deepen fetch: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "deepen fetch failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+    }
+
+    if !verify_commit_exists(bare, root_commit) {
+        return Err(format!(
+            "relayRootCommit {root_commit} missing after {max_rounds} deepen rounds"
+        ));
+    }
+    Err(format!(
+        "relayRootCommit {root_commit} is not an ancestor of refs/heads/{branch}"
+    ))
+}
+
+fn set_symbolic_head(bare: &Path, branch: &str) -> Result<(), String> {
     let out = Command::new("git")
         .arg("--git-dir")
         .arg(bare)
-        .arg("fetch")
-        .arg("--deepen")
-        .arg(deepen.to_string())
-        .arg("origin")
+        .arg("symbolic-ref")
+        .arg("HEAD")
+        .arg(format!("refs/heads/{branch}"))
         .output()
-        .map_err(|e| format!("deepen fetch: {}", e))?;
+        .map_err(|e| format!("symbolic-ref: {e}"))?;
     if !out.status.success() {
         return Err(format!(
-            "deepen fetch failed: {}",
+            "symbolic-ref failed: {}",
             String::from_utf8_lossy(&out.stderr)
-        ));
-    }
-    if !verify_commit_exists(bare, root_commit) {
-        return Err(format!(
-            "relayRootCommit {} still missing after deepen",
-            root_commit
         ));
     }
     Ok(())
 }
 
-fn set_branch_head(bare: &Path, branch: &str, tip: &str) -> Result<(), String> {
-    let out = Command::new("git")
-        .arg("--git-dir")
-        .arg(bare)
-        .arg("update-ref")
-        .arg(format!("refs/heads/{}", branch))
-        .arg(tip)
-        .output()
-        .map_err(|e| format!("update-ref: {}", e))?;
-    if !out.status.success() {
-        return Err(format!(
-            "update-ref failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ));
+/// Replace `slug.git` only after its candidate clone has been fully validated.
+///
+/// The previous mirror is renamed aside during the same-filesystem swap and
+/// restored if installing the candidate fails. A forge/auth/network failure
+/// therefore cannot delete a healthy served mirror.
+fn replace_bare_transactionally(
+    root: &Path,
+    slug: &str,
+    entry: &CatalogRepoEntry,
+    depth: Option<u32>,
+) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(root).map_err(|e| format!("mkdir data root: {e}"))?;
+    let dest = bare_path(root, slug);
+    let staging = sidecar_path(root, slug, "staging");
+    let backup = sidecar_path(root, slug, "backup");
+
+    let prepare = (|| {
+        clone_bare(&entry.url, &staging, depth)?;
+        deepen_and_verify_root(&staging, &entry.branch, &entry.relay_root_commit)?;
+        set_symbolic_head(&staging, &entry.branch)?;
+        Ok::<(), String>(())
+    })();
+    if let Err(e) = prepare {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
     }
-    Ok(())
+
+    let had_dest = dest.exists();
+    if had_dest {
+        if let Err(e) = std::fs::rename(&dest, &backup) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(format!("move existing mirror aside: {e}"));
+        }
+    }
+
+    if let Err(e) = std::fs::rename(&staging, &dest) {
+        if had_dest {
+            if let Err(restore_err) = std::fs::rename(&backup, &dest) {
+                return Err(format!(
+                    "install replacement failed: {e}; restoring previous mirror failed: {restore_err}"
+                ));
+            }
+        }
+        return Err(format!("install replacement failed: {e}"));
+    }
+
+    if had_dest {
+        if let Err(e) = std::fs::remove_dir_all(&backup) {
+            warn!(
+                error = %e,
+                path = %backup.display(),
+                "catalog apply: replacement succeeded but backup cleanup failed"
+            );
+        }
+    }
+    Ok(dest)
 }
 
 fn warm_index_if_needed(repo_path: &PathBuf, branch: &str, tip: &str) {
@@ -212,12 +323,8 @@ pub fn apply_catalog_tip_change(
         if !needs_reclone {
             continue;
         }
-        info!(%slug, url = %entry.url, "catalog apply: recloning bare");
-        remove_bare(&root, slug);
-        let dest = bare_path(&root, slug);
-        clone_bare(&entry.url, &dest, depth)?;
-        deepen_if_needed(&dest, &entry.relay_root_commit)?;
-        set_branch_head(&dest, &entry.branch, &entry.relay_root_commit)?;
+        info!(%slug, url = %entry.url, "catalog apply: preparing replacement bare");
+        let dest = replace_bare_transactionally(&root, slug, entry, depth)?;
         warm_index_if_needed(&dest, &entry.branch, &entry.relay_root_commit);
         touched.push(slug.clone());
     }
@@ -250,7 +357,12 @@ pub fn handle_relay_master_post_receive(ctx: &HookContext) {
 
     if let Ok(repo) = git2::Repository::open_bare(&ctx.repo_path) {
         if let Some(cfg) = read_relay_config(&repo, &ctx.new_commit) {
-            peer_notify::notify_after_push(CATALOG_RELAY_MASTER, &ctx.branch, &ctx.new_commit, &cfg);
+            peer_notify::notify_after_push(
+                CATALOG_RELAY_MASTER,
+                &ctx.branch,
+                &ctx.new_commit,
+                &cfg,
+            );
         }
     }
 }
@@ -367,15 +479,18 @@ mod tests {
     fn source_bare_with_main_commit(dir: &std::path::Path) -> (std::path::PathBuf, String) {
         let path = dir.join("source.git");
         let repo = Repository::init_bare(&path).unwrap();
-        let tip = commit_file(
-            &repo,
-            None,
-            "README.md",
-            b"fixture",
-            "main",
-            "init",
-        );
+        let tip = commit_file(&repo, None, "README.md", b"fixture", "main", "init");
         (path, tip)
+    }
+
+    fn source_bare_with_main_history(
+        dir: &std::path::Path,
+    ) -> (std::path::PathBuf, String, String) {
+        let path = dir.join("source-history.git");
+        let repo = Repository::init_bare(&path).unwrap();
+        let root = commit_file(&repo, None, "README.md", b"root", "main", "root");
+        let tip = commit_file(&repo, Some(&root), "README.md", b"tip", "main", "tip");
+        (path, root, tip)
     }
 
     #[test]
@@ -444,10 +559,7 @@ mod tests {
             .output()
             .unwrap();
         assert!(tip_out.status.success());
-        assert_eq!(
-            String::from_utf8_lossy(&tip_out.stdout).trim(),
-            source_tip
-        );
+        assert_eq!(String::from_utf8_lossy(&tip_out.stdout).trim(), source_tip);
 
         let removed_catalog = r#"{"repos":{}}"#;
         let removed_tip = commit_file(
@@ -473,5 +585,88 @@ mod tests {
                 None => std::env::remove_var("RELAY_CATALOG_CLONE_DEPTH"),
             }
         }
+    }
+
+    #[test]
+    fn failed_replacement_preserves_existing_bare_repo() {
+        let workspace = tempdir().unwrap();
+        let data_root = workspace.path().join("data");
+        std::fs::create_dir_all(&data_root).unwrap();
+        let (source_path, source_tip) = source_bare_with_main_commit(workspace.path());
+        let dest = bare_path(&data_root, "fixture-repo");
+        clone_bare(&format!("file://{}", source_path.display()), &dest, Some(0)).unwrap();
+
+        let bad_entry = CatalogRepoEntry {
+            url: format!(
+                "file://{}",
+                workspace.path().join("missing-source.git").display()
+            ),
+            relay_root_commit: source_tip.clone(),
+            branch: "main".into(),
+        };
+        let err = replace_bare_transactionally(&data_root, "fixture-repo", &bad_entry, Some(0))
+            .unwrap_err();
+        assert!(err.contains("git clone failed"), "{err}");
+
+        let tip_out = Command::new("git")
+            .args([
+                "--git-dir",
+                dest.to_str().unwrap(),
+                "rev-parse",
+                "refs/heads/main",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            tip_out.status.success(),
+            "existing mirror must remain usable"
+        );
+        assert_eq!(String::from_utf8_lossy(&tip_out.stdout).trim(), source_tip);
+        assert!(
+            std::fs::read_dir(&data_root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("relay-staging")),
+            "failed candidate clone should be cleaned up"
+        );
+    }
+
+    #[test]
+    fn replacement_preserves_validated_publish_branch_tip() {
+        let workspace = tempdir().unwrap();
+        let data_root = workspace.path().join("data");
+        let (source_path, root, tip) = source_bare_with_main_history(workspace.path());
+        let entry = CatalogRepoEntry {
+            url: format!("file://{}", source_path.display()),
+            relay_root_commit: root,
+            branch: "main".into(),
+        };
+
+        let dest =
+            replace_bare_transactionally(&data_root, "fixture-repo", &entry, Some(0)).unwrap();
+        let actual_tip = Command::new("git")
+            .args([
+                "--git-dir",
+                dest.to_str().unwrap(),
+                "rev-parse",
+                "refs/heads/main",
+            ])
+            .output()
+            .unwrap();
+        assert!(actual_tip.status.success());
+        assert_eq!(String::from_utf8_lossy(&actual_tip.stdout).trim(), tip);
+
+        let symbolic_head = Command::new("git")
+            .args(["--git-dir", dest.to_str().unwrap(), "symbolic-ref", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(symbolic_head.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&symbolic_head.stdout).trim(),
+            "refs/heads/main"
+        );
     }
 }

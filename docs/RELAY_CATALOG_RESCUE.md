@@ -10,7 +10,7 @@ On **`relay-master.git`** tip change (validated **`post-receive`** or **`POST /h
 
 1. Diff **`relay-catalog.json`** at **`old..new`** tip.
 2. **Removed slug** → delete **`$RELAY_REPO_PATH/<slug>.git`**.
-3. **Added or changed entry** → remove old bare, **`git clone --bare`** from catalog **`url`**, optional shallow depth (**`RELAY_CATALOG_CLONE_DEPTH`**, default `1`), **`git fetch --deepen`** if **`relayRootCommit`** missing (**`RELAY_CATALOG_AUTO_DEEPEN`**, default `256`), set branch head to **`relayRootCommit`**, warm SQLite index when the repo has an index hook.
+3. **Added or changed entry** → clone into a staging bare from catalog **`url`**; repeatedly **`git fetch --deepen`** when needed (**`RELAY_CATALOG_AUTO_DEEPEN`**, default `256`; **`RELAY_CATALOG_MAX_DEEPEN_ROUNDS`**, default `8`); require **`relayRootCommit`** to be an ancestor of the configured branch tip; then atomically replace the served mirror. Clone/trust failures preserve the existing mirror. The validated forge/peer branch tip remains published, and Relay warms SQLite when the repo has an index hook.
 4. Slack audit via **`RELAY_NOTIFY_SLACK_WEBHOOK_URL`** (best-effort).
 5. Mesh **next-hop** propagates the **`relay-master`** tip; each hop runs the same apply.
 
@@ -28,7 +28,7 @@ Idempotent: re-notify with the same **`new_sha`** skips fetch; catalog apply com
 
 1. **Prepare catalog change** in a **`relay-master`** worktree: edit **`relay-catalog.json`** (or run **`scripts/build-relay-catalog-json.sh`** after **`catalog/repos/<slug>.json`**), set **`url`**, **`relayRootCommit`**, **`branch`** for the affected slug.
 2. **Sign and push** to **`relay-master`** `main` (or configured publish branch) on one master.
-3. **Verify receiving master:** journal for `catalog apply`; check **`$RELAY_REPO_PATH/<slug>.git`** exists and **`refs/heads/<branch>`** matches **`relayRootCommit`**.
+3. **Verify receiving master:** journal for `catalog apply`; check **`$RELAY_REPO_PATH/<slug>.git`** exists, **`refs/heads/<branch>`** matches the intended source tip, and **`relayRootCommit`** is its ancestor.
 4. **Mesh propagation:** confirm next-hop **`POST /hooks/peer`** chain (default **`notifyMode: next`**) updates other masters; use **`relay-fleet.sh drift`** on **`relay-master`** tips.
 5. **Index warm:** optional **`POST https://<host>/api/index/warm/<slug>`** if QUERY lags; catalog apply already warms when index hooks exist.
 6. **Smoke:** **`relay-fleet.sh health`** or **`validate-relay-query.mjs`** on the repo.
