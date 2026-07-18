@@ -171,6 +171,8 @@ Only the **WASM embed** client (`embed.js` + its chunks + `wasm/`). The legacy R
 
 ## Open (ops only)
 
-1. **Forge URL** — create `gitlab.com/clevertree/relay-web-assets` (or confirm other).
-2. Catalog submodule + first signed push to mesh `release`.
-3. Set **`RELAY_WEB_ASSETS_REPO=relay-web-assets`** and **`RELAY_WEB_ASSETS_BRANCH=release`** on fleet after bare exists.
+1. ~~Forge URL~~ — `https://gitlab.com/clevertree/relay-web-assets` (private; catalog sync uses mesh `git://` until public).
+2. ~~Catalog + mesh push~~ — done (`publish_branch: release`, tip `9bd8ff7…`).
+3. ~~Fleet env + gateway~~ — `RELAY_WEB_ASSETS_REPO` / `BRANCH=release` set; binary deployed; clevertree HTML stamps `/assets/c/{oid}/`.
+
+**Follow-ups:** make GitLab project public (or give fleet deploy keys) so catalog apply can clone HTTPS; optional folder-named releases later.
