@@ -14,9 +14,10 @@ empty client-rendered embed shell (when `?embed=1`) or static `@relay/md` HTML (
 path is an entry route, not necessarily the blob rendered as the page. If SSR succeeds but client
 hydration fails, embed.js keeps the server DOM and prepends a light `.relay-hook-error` panel.
 
-**Web/CDN assets:** framework bundles (`embed.js`, chunks, WASM) are moving to a dedicated signed
-git repo with **commit-pinned** URLs (`/assets/c/{oid}/…`) so one page load never mixes two tips —
-see [`RELAY_WEB_ASSETS.md`](RELAY_WEB_ASSETS.md). Disk `/opt/relay/www` remains the local/dev fallback.
+**Web/CDN assets:** framework bundles (`embed.js`, chunks, WASM) live in a dedicated signed
+git repo with **commit-pinned** URLs (`/assets/c/{oid}/…`) so one page load never mixes two tips.
+Sites opt in by importing **`@relay/web-assets`** in `server.hooks.get` — see [`RELAY_WEB_ASSETS.md`](RELAY_WEB_ASSETS.md).
+Disk `/opt/relay/www` remains the local/dev fallback.
 
 ## Dependency policy (parked sites / embed)
 
@@ -105,7 +106,7 @@ The **embed** feature **reuses the same hook dispatch and JSON→HTTP contract**
 
 GET-hook returns are documented on **`get_hook_json_to_response`**: **`kind: "file"`**, **`contentType`**, **`bodyUtf8`** or **`bodyBase64`**, optional **`status`** and **`headers`**. Returning **`text/html`** is therefore **already valid** once the hook runs for the request.
 
-**Shipped behavior:** `git_resolve_and_respond` invokes **`server.hooks.get`** for markdown blobs when **`Accept` prefers `text/html` or `?embed=1`**, with **`embedMarkdownRequest: true`**. Repo-host **`/`** uses **`try_site_shell_for_root`** + **`siteShellRequest: true`**. The hook may return `ssrClientHookFromGetContext(ctx)` for SSR. Non-HTML + **`?embed=1`** → CSR embed shell; Accept-only non-HTML → static `@relay/md` when the hook handles `markdownHtmlRequest`.
+**Shipped behavior:** `git_resolve_and_respond` invokes **`server.hooks.get`** for markdown blobs when **`Accept` prefers `text/html` or `?embed=1`**, with **`embedMarkdownRequest: true`**. Repo-host **`/`** uses **`try_site_shell_for_root`** + **`siteShellRequest: true`**. **Missing non-asset paths** with a `server.hooks.get` and HTML Accept / `?embed=1` also get **`siteShellRequest: true`** (SPA routes like `/search`, remote article paths) — HTML only when the hook opts in; asset-like thin misses stay on the IPFS/get-hook path. The hook may return `ssrClientHookFromGetContext(ctx)` for SSR. Non-HTML + **`?embed=1`** → CSR embed shell; Accept-only non-HTML → static `@relay/md` when the hook handles `markdownHtmlRequest`.
 
 ## Implementation plan (phased)
 

@@ -32,19 +32,28 @@ pub async fn handle_get_file(
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
     info!(decoded = %decoded, "decoded path");
 
-    // Framework-owned embed/hydration resources must not be shadowed by a repository GET hook.
+    let repo_name_opt =
+        helpers::repo_from_host_or_default(&state, state.node_fqdn.as_deref(), &headers);
+    let branch = helpers::branch_for_request(&headers, &state, repo_name_opt.as_deref());
+
+    // Framework `/assets` + `/wasm` only when the site imports `@relay/web-assets` in get.cs.
+    // Opt-in is a cached source scan — never runs CleverScript for chunk/WASM GETs.
     if is_relay_runtime_static_path(&decoded) {
-        if let Some(resp) = crate::git::web_assets::try_pinned_web_asset(&state, &decoded) {
-            return resp;
-        }
-        if let Some(resp) = try_static(&state, &decoded).await {
+        if let Some(ref repo_name) = repo_name_opt {
+            if crate::git::web_assets::repo_opts_into_web_assets(&state, repo_name, &branch) {
+                if let Some(resp) = crate::git::web_assets::try_pinned_web_asset(&state, &decoded) {
+                    return resp;
+                }
+                if let Some(resp) = try_static(&state, &decoded).await {
+                    return resp;
+                }
+            }
+        } else if let Some(resp) = try_static(&state, &decoded).await {
+            // No Host→repo: disk static only (no catalog capture).
             return resp;
         }
     }
 
-    let repo_name_opt =
-        helpers::repo_from_host_or_default(&state, state.node_fqdn.as_deref(), &headers);
-    let branch = helpers::branch_for_request(&headers, &state, repo_name_opt.as_deref());
     let repo_name: String;
     if repo_name_opt.is_none() {
         if let Some(resp) = try_static(&state, &decoded).await {
@@ -129,6 +138,7 @@ mod static_path_tests {
 
     #[test]
     fn reserves_hydration_assets_without_allowing_traversal() {
+        // Path shape used for opt-in framework capture (see `@relay/web-assets`).
         assert!(is_relay_runtime_static_path("assets/embed.js"));
         assert!(is_relay_runtime_static_path(
             "assets/c/0123456789abcdef0123456789abcdef01234567/embed.js"

@@ -1,12 +1,12 @@
 # Relay web / CDN assets repository
 
-**Status:** plan + initial gateway support. Catalog listing and fleet cutover are gated on operator choices below.
+**Status:** catalog publish + gateway commit-pin URLs. Per-site opt-in via `@relay/web-assets`.
 
 **Related:** [`RELAY_EMBED_CLIENT_GET_INTERCEPT.md`](./RELAY_EMBED_CLIENT_GET_INTERCEPT.md), [`DEPLOY_WEB_AND_CI.md`](./DEPLOY_WEB_AND_CI.md), [`RELAY_POLICY_AND_PERFORMANCE.md`](./RELAY_POLICY_AND_PERFORMANCE.md), [`pack-linode-deploy.sh`](../scripts/pack-linode-deploy.sh).
 
 ## Problem (today)
 
-`relay-client-web` builds to `dist/`. Fleet deploy packs that tree into the Linode tarball as **`/opt/relay/www`** and serves it via **`RELAY_STATIC_DIR`**. Framework paths **`/assets/*`** and **`/wasm/*`** are reserved so repo hooks cannot shadow them.
+`relay-client-web` builds to `dist/`. Fleet deploy packs that tree into the Linode tarball as **`/opt/relay/www`** and serves it via **`RELAY_STATIC_DIR`**. Without a per-site plugin, framework bundles were either always intercepted or mixed into content repos.
 
 Consequences:
 
@@ -17,6 +17,34 @@ Consequences:
 ## Goal
 
 A **dedicated catalog git repo** (working name **`relay-web-assets`**) holds **pre-built** web/CDN trees. Developers build on a laptop, **signed-commit**, push to the mesh — same instant-deploy path as content repos. Gateway HTML **pins one commit OID** for the whole page load so a client never mixes files from two tips.
+
+Sites that need the embed CDN **opt in** by importing the standard plugin in `server.hooks.get` (see below). Sites that do not import it keep ownership of any `/assets/…` paths in their own tree.
+
+## Per-site opt-in: `@relay/web-assets`
+
+Framework `/assets/*` and `/wasm/*` capture is **not** global. A content repo enables it by importing the virtual module in CleverScript:
+
+```js
+import { pinnedPrefix, wasmPrefix } from '@relay/web-assets';
+import { ssrClientHookFromGetContext } from '@relay/ssr';
+// …
+```
+
+**Import ≠ invoke.** The gateway scans `server.hooks.get` source (cached by tip) for `'@relay/web-assets'` / `"@relay/web-assets"`. Chunk and WASM GETs never run CleverScript — only Host→repo, cache lookup, then Rust blob serve with immutable headers.
+
+| When | What runs |
+|------|-----------|
+| Tip / hook file changes | Cached source scan → opt-in bool |
+| `GET /assets/c/{oid}/…` (opted in) | Rust catalog blob serve |
+| `GET /assets/…` (not opted in) | Normal git / hook / 404 |
+| HTML embed / SSR stamp | `/assets/c/{oid}/…` only when opted in; else disk `/assets/embed.js` fallback |
+
+Helpers:
+
+- `pinnedPrefix()` → `"/assets/c/{oid}"` or `null` if catalog unset
+- `wasmPrefix()` → `"/wasm/c/{oid}"` (same tip)
+
+Node catalog remains **`RELAY_WEB_ASSETS_REPO`** / **`RELAY_WEB_ASSETS_BRANCH`**. The import only enables the site; it does not pick a different assets repo.
 
 ## Repo layout
 
@@ -67,12 +95,7 @@ If HTML references `/assets/embed.js` and that file imports `/assets/chunk-….j
 
 `{40hex}` is a full git commit object id of **`relay-web-assets`**.
 
-**HTML generation** (embed shell / SSR document) resolves the assets tip **once** and stamps:
-
-```html
-<link rel="stylesheet" href="/assets/c/{oid}/embed.css"/>
-<script type="module" src="/assets/c/{oid}/embed.js"></script>
-```
+HTML generation stamps `/assets/c/{oid}/…` **only for opted-in sites**. Others keep disk `/assets/embed.js` when serving the CSR embed fallback.
 
 ### Bundle requirement: relative chunk URLs
 

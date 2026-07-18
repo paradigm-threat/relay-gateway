@@ -3,17 +3,114 @@
 //! See `docs/RELAY_WEB_ASSETS.md`. URLs:
 //! - `/assets/c/{40hex}/{rel}` → blob `assets/{rel}` at that commit
 //! - `/wasm/c/{40hex}/{rel}` → blob `wasm/{rel}` at that commit
+//!
+//! Per-repo opt-in: `server.hooks.get` CleverScript must `import … from '@relay/web-assets'`.
+//! Route capture uses a cached source scan — never runs the GET hook for chunk/WASM GETs.
 
 use axum::{
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
 use git2::Repository;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
+use crate::git::index_policy;
+use crate::git::repo::read_relay_config;
 use crate::types::AppState;
 
 const OID_LEN: usize = 40;
+
+/// Virtual module specifiers sites import to opt into framework `/assets` + `/wasm`.
+pub const RELAY_WEB_ASSETS_MODULE: &str = "@relay/web-assets";
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct OptInKey {
+    repo: String,
+    commit: String,
+    hook_path: String,
+}
+
+fn opt_in_cache() -> &'static Mutex<HashMap<OptInKey, bool>> {
+    static CACHE: OnceLock<Mutex<HashMap<OptInKey, bool>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cache_enabled() -> bool {
+    std::env::var("RELAY_DISABLE_CONFIG_CACHE").ok().as_deref() != Some("1")
+}
+
+/// True when CleverScript source imports `@relay/web-assets` (static scan, not execution).
+pub fn source_imports_web_assets(source: &str) -> bool {
+    // Match common forms: from '@relay/web-assets' / from "@relay/web-assets"
+    source.contains("'@relay/web-assets'") || source.contains("\"@relay/web-assets\"")
+}
+
+fn opt_in_from_bare(bare: &Path, branch: &str) -> bool {
+    let repo = match Repository::open_bare(bare) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let refname = format!("refs/heads/{branch}");
+    let commit = match repo
+        .find_reference(&refname)
+        .and_then(|r| r.peel_to_commit())
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let commit_oid = commit.id().to_string();
+    let cfg = match read_relay_config(&repo, &commit_oid) {
+        Some(c) => c,
+        None => return false,
+    };
+    let Some(hook_path) = index_policy::clever_get_hook_path(&cfg) else {
+        return false;
+    };
+
+    let key = OptInKey {
+        repo: bare.to_string_lossy().into_owned(),
+        commit: commit_oid,
+        hook_path: hook_path.clone(),
+    };
+    if cache_enabled() {
+        if let Ok(guard) = opt_in_cache().lock() {
+            if let Some(hit) = guard.get(&key) {
+                return *hit;
+            }
+        }
+    }
+
+    let source = match crate::git::relay_config_cache::read_hook_source_cached(
+        bare, branch, &hook_path,
+    ) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let opted = source_imports_web_assets(&source);
+
+    if cache_enabled() {
+        if let Ok(mut guard) = opt_in_cache().lock() {
+            if guard.len() >= 512 {
+                guard.clear();
+            }
+            guard.insert(key, opted);
+        }
+    }
+    opted
+}
+
+/// Whether `repo_name` at `branch` opts into framework `/assets` + `/wasm` capture.
+pub fn repo_opts_into_web_assets(state: &AppState, repo_name: &str, branch: &str) -> bool {
+    let bare = state.repo_path.join(format!("{}.git", repo_name));
+    opt_in_from_bare(&bare, branch)
+}
+
+/// Same check when the CleverScript host only has the content bare path.
+pub fn content_bare_opts_into_web_assets(content_bare: &Path, branch: &str) -> bool {
+    opt_in_from_bare(content_bare, branch)
+}
 
 /// Parse `/assets/c/{oid}/…` or `/wasm/c/{oid}/…` into (kind, oid, tree-relative path).
 pub fn parse_pinned_framework_path(path: &str) -> Option<PinnedFrameworkPath<'_>> {
@@ -104,6 +201,13 @@ pub fn pinned_assets_url_prefix(state: &AppState) -> Option<String> {
     Some(format!("/assets/c/{}", oid))
 }
 
+/// `/wasm/c/{oid}` prefix (same catalog tip as assets).
+pub fn pinned_wasm_url_prefix(state: &AppState) -> Option<String> {
+    let (root, slug, branch) = assets_repo_config(state)?;
+    let oid = tip_commit_oid(&root, &slug, &branch)?;
+    Some(format!("/wasm/c/{}", oid))
+}
+
 /// Same as [`pinned_assets_url_prefix`], but repos root is the parent of a content bare
 /// (CleverScript host only has the content repo path).
 pub fn pinned_assets_url_prefix_from_content_bare(content_bare: &Path) -> Option<String> {
@@ -112,6 +216,27 @@ pub fn pinned_assets_url_prefix_from_content_bare(content_bare: &Path) -> Option
     let root = content_bare.parent()?;
     let oid = tip_commit_oid(root, &slug, &branch)?;
     Some(format!("/assets/c/{}", oid))
+}
+
+/// Same as [`pinned_wasm_url_prefix`] from a content bare's parent repos root.
+pub fn pinned_wasm_url_prefix_from_content_bare(content_bare: &Path) -> Option<String> {
+    let slug = env_assets_repo()?;
+    let branch = env_assets_branch();
+    let root = content_bare.parent()?;
+    let oid = tip_commit_oid(root, &slug, &branch)?;
+    Some(format!("/wasm/c/{}", oid))
+}
+
+/// Prefix for HTML stamping only when the content repo imports `@relay/web-assets`.
+pub fn pinned_assets_url_prefix_if_opted_in(
+    state: &AppState,
+    repo_name: &str,
+    branch: &str,
+) -> Option<String> {
+    if !repo_opts_into_web_assets(state, repo_name, branch) {
+        return None;
+    }
+    pinned_assets_url_prefix(state)
 }
 
 fn read_blob_at_commit(repos_root: &Path, slug: &str, commit: &str, tree_path: &str) -> Option<Vec<u8>> {
@@ -169,6 +294,70 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.tree_path(), "assets/embed.js");
+    }
+
+    #[test]
+    fn source_imports_detects_common_forms() {
+        assert!(source_imports_web_assets(
+            "import { pinnedPrefix } from '@relay/web-assets';\n"
+        ));
+        assert!(source_imports_web_assets(
+            "import { pinnedPrefix } from \"@relay/web-assets\";\n"
+        ));
+        assert!(!source_imports_web_assets(
+            "import { ssrClientHookFromGetContext } from '@relay/ssr';\n"
+        ));
+    }
+
+    fn bare_content_with_get_cs(root: &Path, slug: &str, get_cs: &str) {
+        let bare = root.join(format!("{slug}.git"));
+        let repo = Repository::init_bare(&bare).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+        let yaml = r#"
+server:
+  hooks:
+    get:
+      path: hooks/server/get.cs
+"#;
+        let yaml_oid = repo.blob(yaml.as_bytes()).unwrap();
+        let cs_oid = repo.blob(get_cs.as_bytes()).unwrap();
+        let mut tb_srv = repo.treebuilder(None).unwrap();
+        tb_srv.insert("get.cs", cs_oid, 0o100644).unwrap();
+        let srv_tid = tb_srv.write().unwrap();
+        let mut tb_hooks = repo.treebuilder(None).unwrap();
+        tb_hooks.insert("server", srv_tid, 0o040000).unwrap();
+        let hooks_tid = tb_hooks.write().unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert(".relay.yaml", yaml_oid, 0o100644).unwrap();
+        tb.insert("hooks", hooks_tid, 0o040000).unwrap();
+        let tree = tb.write().unwrap();
+        repo.commit(
+            Some("refs/heads/main"),
+            &sig,
+            &sig,
+            "init",
+            &repo.find_tree(tree).unwrap(),
+            &[],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn opt_in_requires_web_assets_import() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        bare_content_with_get_cs(
+            root,
+            "plain",
+            "import { markdownHtmlFromGetContext } from '@relay/md';\nexport default function run(ctx, next) { return next(); }\n",
+        );
+        bare_content_with_get_cs(
+            root,
+            "embed-site",
+            "import { pinnedPrefix } from '@relay/web-assets';\nexport default function run(ctx, next) { return next(); }\n",
+        );
+        assert!(!opt_in_from_bare(&root.join("plain.git"), "main"));
+        assert!(opt_in_from_bare(&root.join("embed-site.git"), "main"));
     }
 
     #[test]

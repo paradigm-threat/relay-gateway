@@ -7,7 +7,7 @@ use axum::{
 };
 use std::collections::HashMap;
 
-use crate::git::ipfs::{asset_error_response, fetch_cid_bytes, parse_wait_seconds};
+use crate::git::ipfs::{asset_error_response, asset_status_response, fetch_cid_bytes, parse_wait_seconds, wants_asset_status_only};
 use crate::handlers::helpers;
 use crate::types::AppState;
 
@@ -19,6 +19,9 @@ pub async fn handle_get_ipfs(
 ) -> impl IntoResponse {
     let cid = cid.trim().trim_start_matches('/').to_string();
     let qmap = query.map(|q| q.0).unwrap_or_default();
+    if wants_asset_status_only(&qmap, &headers) {
+        return asset_status_response(&cid, "", "", &format!("/ipfs/{cid}")).into_response();
+    }
     let wait_secs = parse_wait_seconds(&qmap, &headers);
 
     match fetch_cid_bytes(&cid, None, wait_secs) {

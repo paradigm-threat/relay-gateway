@@ -57,7 +57,7 @@ Implementation: [`src/git/relay_config_cache.rs`](../src/git/relay_config_cache.
 
 Immutable assets at a known commit may use long-lived `Cache-Control` at the CDN. Dynamic GET hook responses should set explicit cache headers in the hook `headers` object when safe.
 
-**Framework web bundles** (`embed.js`, split chunks, WASM) use commit-pinned URLs from the **`relay-web-assets`** repo (`/assets/c/{oid}/…`, immutable cache) — see [`RELAY_WEB_ASSETS.md`](./RELAY_WEB_ASSETS.md).
+**Framework web bundles** (`embed.js`, split chunks, WASM) use commit-pinned URLs from the **`relay-web-assets`** repo (`/assets/c/{oid}/…`, immutable cache) when the site imports **`@relay/web-assets`** in `server.hooks.get` — see [`RELAY_WEB_ASSETS.md`](./RELAY_WEB_ASSETS.md).
 
 ## fan-edits / desktop profile
 

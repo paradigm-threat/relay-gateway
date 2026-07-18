@@ -95,8 +95,11 @@ pub fn parse_query_options(
 
 /// Resolve repo for QUERY:
 /// - `{repo}.{node}` Host → that repo; full path is optional query text
+/// - parked catalog domain Host → that repo (same as GET/SSR)
 /// - apex `{node}` Host + first path segment matching a bare repo → that repo (like `/api/mcp/:repo`)
 /// - else apex default repo (`RELAY_DEFAULT_REPO` / `relay-master`)
+///
+/// Unknown Hosts (when a parked map is configured) resolve to `None` — same as GET.
 fn resolve_query_repo_and_path(
     state: &AppState,
     headers: &axum::http::HeaderMap,
@@ -105,12 +108,23 @@ fn resolve_query_repo_and_path(
     if let Some(name) = helpers::repo_from_host(state, state.node_fqdn.as_deref(), headers) {
         return Some((name, path.to_string()));
     }
+    if let Some(name) = helpers::repo_from_parked_domain(state, headers) {
+        return Some((name, path.to_string()));
+    }
     let names = crate::git::repo_names_for_state(state);
     let mut parts = path.splitn(2, '/');
     let first = parts.next().unwrap_or("");
     if !first.is_empty() && names.iter().any(|n| n == first) {
         let rest = parts.next().unwrap_or("").to_string();
         return Some((first.to_string(), rest));
+    }
+    let has_parked = state
+        .parked_domains
+        .as_ref()
+        .map(|m| !m.is_empty())
+        .unwrap_or(false);
+    if has_parked && !helpers::host_is_node_apex(state.node_fqdn.as_deref(), headers) {
+        return None;
     }
     helpers::default_http_repo_from_apex(state).map(|name| (name, path.to_string()))
 }

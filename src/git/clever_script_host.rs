@@ -27,6 +27,7 @@ pub const RELAY_IMAGE_MODULE: &str = "@relay/image";
 pub const RELAY_IPFS_MODULE: &str = "@relay/ipfs";
 pub const RELAY_MD_MODULE: &str = "@relay/md";
 pub const RELAY_SSR_MODULE: &str = "@relay/ssr";
+pub const RELAY_WEB_ASSETS_MODULE: &str = crate::git::web_assets::RELAY_WEB_ASSETS_MODULE;
 pub const RELAY_SEARCH_SQLITE_MODULE: &str = "@relay/search/sqlite";
 pub const RELAY_SEARCH_REDB_MODULE: &str = "@relay/search/redb";
 pub const RELAY_SEARCH_CHAT_MODULE: &str = "@relay/search/chat";
@@ -549,12 +550,19 @@ fn hook_file_object_bytes(bytes: &[u8], content_type: &str, cache_control: &str)
 }
 
 fn hook_file_object_asset_error(err: &AssetResolveError) -> CsValue {
-    let body = serde_json::json!({
-        "error": err.code.as_str(),
-        "message": err.message,
-        "cid": err.cid,
-        "retryable": err.code.retryable(),
-    })
+    let seed = err
+        .seed
+        .clone()
+        .unwrap_or_else(|| match err.cid.as_deref() {
+            Some(cid) => crate::git::ipfs::probe_seed_status(cid),
+            None => crate::git::ipfs::SeedStatus::unknown("no CID"),
+        });
+    let body = crate::git::ipfs::asset_status_body(
+        Some(err),
+        err.cid.as_deref(),
+        "",
+        &seed,
+    )
     .to_string();
     let mut headers = HashMap::new();
     headers.insert(
@@ -563,11 +571,25 @@ fn hook_file_object_asset_error(err: &AssetResolveError) -> CsValue {
     );
     headers.insert(
         "Cache-Control".to_string(),
-        CsValue::String("public, max-age=60".into()),
+        CsValue::String("public, max-age=30".into()),
+    );
+    headers.insert(
+        "Content-Type".to_string(),
+        CsValue::String("application/vnd.relay.asset-status+json; charset=utf-8".into()),
     );
     if let Some(ra) = err.retry_after_secs {
         headers.insert("Retry-After".to_string(), CsValue::String(ra.to_string()));
     }
+    if let Some(pct) = seed.progress_pct {
+        headers.insert(
+            "X-Relay-Asset-Progress".to_string(),
+            CsValue::String(pct.to_string()),
+        );
+    }
+    headers.insert(
+        "X-Relay-Asset-Seed-State".to_string(),
+        CsValue::String(seed.state.clone()),
+    );
     let mut file = HashMap::new();
     file.insert("kind".to_string(), CsValue::String("file".into()));
     file.insert(
@@ -576,7 +598,7 @@ fn hook_file_object_asset_error(err: &AssetResolveError) -> CsValue {
     );
     file.insert(
         "contentType".to_string(),
-        CsValue::String("application/json; charset=utf-8".into()),
+        CsValue::String("application/vnd.relay.asset-status+json; charset=utf-8".into()),
     );
     file.insert("bodyUtf8".to_string(), CsValue::String(body));
     file.insert("headers".to_string(), CsValue::Object(headers));
@@ -756,8 +778,14 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             return Ok(CsValue::Null);
         };
         let client_hook_http = format!("/{}", client_hook_path);
-        let assets_prefix =
-            crate::git::web_assets::pinned_assets_url_prefix_from_content_bare(&repo_root);
+        let assets_prefix = if crate::git::web_assets::content_bare_opts_into_web_assets(
+            &repo_root,
+            request_branch,
+        ) {
+            crate::git::web_assets::pinned_assets_url_prefix_from_content_bare(&repo_root)
+        } else {
+            None
+        };
         let html = crate::git::embed_html::embed_html_document_with_assets(
             repo,
             request_branch,
@@ -777,6 +805,43 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
     module.insert(
         "ssrClientHookFromGetContext".to_string(),
         CsValue::NativeFn(NativeFnClosure(render)),
+    );
+    CsValue::Object(module)
+}
+
+/// `@relay/web-assets`: declare catalog CDN routes + read commit-pinned URL prefixes.
+fn web_assets_exports(repo_root: PathBuf) -> CsValue {
+    let pinned = {
+        let repo_root = repo_root.clone();
+        Rc::new(move |_args: &[CsValue]| -> Result<CsValue, String> {
+            Ok(
+                match crate::git::web_assets::pinned_assets_url_prefix_from_content_bare(&repo_root)
+                {
+                    Some(p) => CsValue::String(p),
+                    None => CsValue::Null,
+                },
+            )
+        })
+    };
+    let wasm = {
+        let repo_root = repo_root.clone();
+        Rc::new(move |_args: &[CsValue]| -> Result<CsValue, String> {
+            Ok(
+                match crate::git::web_assets::pinned_wasm_url_prefix_from_content_bare(&repo_root) {
+                    Some(p) => CsValue::String(p),
+                    None => CsValue::Null,
+                },
+            )
+        })
+    };
+    let mut module = HashMap::new();
+    module.insert(
+        "pinnedPrefix".to_string(),
+        CsValue::NativeFn(NativeFnClosure(pinned)),
+    );
+    module.insert(
+        "wasmPrefix".to_string(),
+        CsValue::NativeFn(NativeFnClosure(wasm)),
     );
     CsValue::Object(module)
 }
@@ -892,6 +957,57 @@ fn fetch_ipfs_bytes_from_get_context_native(
     }
 }
 
+fn ctx_wants_asset_status(m: &HashMap<String, CsValue>) -> bool {
+    if let Some(CsValue::Object(q)) = m.get("query") {
+        if let Some(CsValue::String(s)) = q.get("relayAssetStatus") {
+            let t = s.trim();
+            if t == "1" || t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("yes") {
+                return true;
+            }
+        }
+    }
+    if let Some(CsValue::Object(headers)) = m.get("headers") {
+        for (k, v) in headers {
+            if k.eq_ignore_ascii_case("accept") {
+                if let CsValue::String(a) = v {
+                    if a.contains("application/vnd.relay.asset-status+json") {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn hook_file_object_asset_status_ok(cid: &str, rel: &str) -> CsValue {
+    let seed = ipfs::SeedStatus::cached();
+    let body = ipfs::asset_status_body(None, Some(cid), rel, &seed).to_string();
+    let mut headers = HashMap::new();
+    headers.insert(
+        "Cache-Control".to_string(),
+        CsValue::String("public, max-age=60".into()),
+    );
+    headers.insert(
+        "X-Relay-Asset-Seed-State".to_string(),
+        CsValue::String("cached".into()),
+    );
+    headers.insert(
+        "X-Relay-Asset-Progress".to_string(),
+        CsValue::String("100".into()),
+    );
+    let mut file = HashMap::new();
+    file.insert("kind".to_string(), CsValue::String("file".into()));
+    file.insert("status".to_string(), CsValue::Number(200.0));
+    file.insert(
+        "contentType".to_string(),
+        CsValue::String("application/vnd.relay.asset-status+json; charset=utf-8".into()),
+    );
+    file.insert("bodyUtf8".to_string(), CsValue::String(body));
+    file.insert("headers".to_string(), CsValue::Object(headers));
+    CsValue::Object(file)
+}
+
 /// IPFS pointer or manifest-backed path ⇒ fetch CID (disk cache, then gateway). Returns **`null`** if not eligible.
 fn resolve_ipfs_from_get_context_native(
     repo_root: PathBuf,
@@ -905,6 +1021,51 @@ fn resolve_ipfs_from_get_context_native(
         return Err("@relay/ipfs resolveIpfsFromGetContext: first arg must be an object".into());
     };
     let opts = parse_ipfs_resolve_options(args);
+    let status_only = ctx_wants_asset_status(m);
+    if status_only {
+        let rel = cs_obj_str(m, "relPath")
+            .unwrap_or("")
+            .trim_start_matches('/');
+        if rel.is_empty() {
+            return Ok(CsValue::Null);
+        }
+        let inline = optional_body_bytes_from_ctx(m, &repo_root, &branch)?;
+        let Some(pointer) =
+            resolve_pointer_with_options(&opts, &repo_root, &branch, rel, inline.as_deref())
+        else {
+            return Ok(CsValue::Null);
+        };
+        let seed = ipfs::probe_seed_status(&pointer.cid);
+        if seed.state == "cached" {
+            return Ok(hook_file_object_asset_status_ok(&pointer.cid, rel));
+        }
+        let err = if seed.state == "unavailable" {
+            AssetResolveError::new(
+                ipfs::AssetErrorCode::IpfsNotFound,
+                "CID has no known providers",
+                Some(pointer.cid.clone()),
+            )
+            .with_seed(seed)
+            .with_retry_after(None)
+        } else if seed.state == "fetching" {
+            AssetResolveError::new(
+                ipfs::AssetErrorCode::IpfsBusy,
+                "fetch already in progress on this node",
+                Some(pointer.cid.clone()),
+            )
+            .with_seed(seed)
+            .with_retry_after(Some(2))
+        } else {
+            AssetResolveError::new(
+                ipfs::AssetErrorCode::IpfsPending,
+                "CID not ready on this gateway yet",
+                Some(pointer.cid.clone()),
+            )
+            .with_seed(seed)
+            .with_retry_after(Some(5))
+        };
+        return Ok(hook_file_object_asset_error(&err));
+    }
     match fetch_ipfs_bytes_inner(m, &repo_root, &branch, &opts)? {
         FetchIpfsOutcome::Ok(fetched) => Ok(hook_file_object_bytes(
             &fetched.bytes,
@@ -1012,6 +1173,7 @@ pub struct CleverScriptServerHost {
     ipfs_exports: Option<CsValue>,
     md_exports: Option<CsValue>,
     ssr_exports: Option<CsValue>,
+    web_assets_exports: Option<CsValue>,
     #[allow(dead_code)]
     image_disk_cache: Option<Arc<ImageDiskCache>>,
 }
@@ -1054,6 +1216,11 @@ impl CleverScriptServerHost {
         } else {
             None
         };
+        let web_assets_exports = if include_image {
+            Some(web_assets_exports(repo_root.clone()))
+        } else {
+            None
+        };
         let ipfs_exports = if include_image {
             Some(ipfs_exports(repo_root.clone(), branch.clone()))
         } else {
@@ -1069,6 +1236,7 @@ impl CleverScriptServerHost {
             ipfs_exports,
             md_exports,
             ssr_exports,
+            web_assets_exports,
             image_disk_cache,
         }
     }
@@ -1119,6 +1287,11 @@ impl Host for CleverScriptServerHost {
                 .ok_or_else(|| format!("unknown module {:?}", path)),
             RELAY_SSR_MODULE => self
                 .ssr_exports
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| format!("unknown module {:?}", path)),
+            RELAY_WEB_ASSETS_MODULE => self
+                .web_assets_exports
                 .as_ref()
                 .cloned()
                 .ok_or_else(|| format!("unknown module {:?}", path)),

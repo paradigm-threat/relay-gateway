@@ -94,16 +94,25 @@ pub async fn head_file(
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
     let qmap = query.as_ref().map(|q| &q.0);
 
+    let repo_name_opt =
+        helpers::repo_from_host_or_default(&state, state.node_fqdn.as_deref(), &headers);
+    let branch = helpers::branch_for_request(&headers, &state, repo_name_opt.as_deref());
+
     if decoded.starts_with("assets/") || decoded.starts_with("wasm/") {
-        if let Some(resp) = crate::git::web_assets::try_pinned_web_asset(&state, &decoded) {
-            let branch = helpers::branch_for_request(&headers, &state, None);
+        if let Some(ref repo_name) = repo_name_opt {
+            if crate::git::web_assets::repo_opts_into_web_assets(&state, repo_name, &branch) {
+                if let Some(resp) = crate::git::web_assets::try_pinned_web_asset(&state, &decoded) {
+                    return headify_response(resp, &branch, repo_name);
+                }
+                if let Some(resp) = try_static(&state, &decoded).await {
+                    return headify_response(resp, &branch, repo_name);
+                }
+            }
+        } else if let Some(resp) = try_static(&state, &decoded).await {
             return headify_response(resp, &branch, "");
         }
     }
 
-    let repo_name_opt =
-        helpers::repo_from_host_or_default(&state, state.node_fqdn.as_deref(), &headers);
-    let branch = helpers::branch_for_request(&headers, &state, repo_name_opt.as_deref());
     let repo_name: String;
     if repo_name_opt.is_none() {
         // No repo selected: treat as Git 404 and check static for existence

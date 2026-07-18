@@ -82,6 +82,7 @@ For catalog `thin_ipfs_assets` repos, **GET** on a logical path **missing from t
 | `RELAY_IPFS_CACHE_ROOT` | `/tmp/ipfs-cache` |
 | `RELAY_IPFS_CACHE_MAX_BYTES` | 2 GiB |
 | `RELAY_IPFS_GATEWAY` | `https://ipfs.io` |
+| `RELAY_IPFS_API` | *(unset)* — Kubo HTTP API for `block/stat` + `routing/findprovs` seed probes |
 | `RELAY_IPFS_GATEWAY_ALLOWLIST` | *(unset)* — comma-separated allowed gateway hosts |
 | `RELAY_IPFS_GATEWAY_ALLOW_PRIVATE` | `0` — set `1` for `http://127.0.0.1:8080` (local Kubo / sidecar) |
 | `RELAY_IPFS_MAX_FETCH_BYTES` | 100 MiB (max per CID fetch) |
@@ -94,9 +95,68 @@ Gateway URLs must be `http`/`https` without embedded credentials. Private/loopba
 - **GET** assets — hook chooses **`resolveIpfsFromGetContext`** (full file) vs **`fetchIpfsBytesFromGetContext`** + **`optimizeRasterFromGetContext(ctx, bytes, { width })`** when **`queryWidth(ctx)`** is set.
 - **GET** `/ipfs/{cid}` — cache-backed route on the gateway node.
 
-### Error header
+### Error / seed status
 
-`X-Relay-Asset-Error`: `repo-not-found` | `invalid-cid` | `ipfs-not-found` (410) | `ipfs-gateway-timeout` (504) | …
+When a logical asset (or `GET /ipfs/{cid}`) cannot return bytes yet, Relay responds with **JSON** (not a bare empty 404):
+
+| Code | HTTP | Meaning |
+|------|------|---------|
+| `ipfs-pending` | **425** Too Early | CID known (git pointer) but not on this gateway yet — **retryable** |
+| `ipfs-busy` | **503** | Another fetch for this CID is in flight — **retryable** |
+| `ipfs-gateway-timeout` | **504** | Upstream gateway timed out — **retryable** |
+| `ipfs-gateway-error` | **502** | Upstream error — usually **retryable** |
+| `ipfs-not-found` | **410** Gone | No providers (when `RELAY_IPFS_API` probe finds zero) — not retryable |
+
+`Content-Type`: `application/vnd.relay.asset-status+json`
+
+Body schema `relay.asset-status.v1`:
+
+```json
+{
+  "schema": "relay.asset-status.v1",
+  "error": "ipfs-pending",
+  "message": "CID not on IPFS gateway yet (still seeding)",
+  "cid": "bafy…",
+  "path": "book/cover.png",
+  "retryable": true,
+  "retryAfterSecs": 5,
+  "seed": {
+    "state": "missing",
+    "progressPct": 0,
+    "bytesReceived": null,
+    "bytesTotal": null,
+    "providers": 3,
+    "localBlock": false,
+    "hint": "not on this gateway yet; retry while peers seed"
+  }
+}
+```
+
+`seed.state`: `cached` | `fetching` | `missing` | `unavailable` | `unknown`.
+
+While a gateway fetch is streaming, `seed.state` is `fetching` and `progressPct` reflects bytes received vs `Content-Length` when known.
+
+**Status-only probe** (no long `wait`): append `?relayAssetStatus=1` or send  
+`Accept: application/vnd.relay.asset-status+json`.  
+Cached CIDs return **200** with `seed.state: "cached"` / `progressPct: 100`.
+
+Headers: `X-Relay-Asset-Error`, `X-Relay-Asset-Seed-State`, `X-Relay-Asset-Progress` (0–100), `Retry-After`.
+
+Optional Kubo API for richer probes: `RELAY_IPFS_API=http://127.0.0.1:5001` (same SSRF rules as the gateway URL; use `RELAY_IPFS_GATEWAY_ALLOW_PRIVATE=1` for loopback).
+
+### Opt-in UI: `RelayImage` vs `<img>`
+
+- **`<img src={url}>`** — browser behaves normally; a 425 JSON body simply fails to paint. No Relay chrome is injected.
+- **`RelayImage`** — site must import and render the component explicitly. It polls `?relayAssetStatus=1`, shows seed/progress copy, retries with backoff, then shows `<img>` when ready (or a failed state with manual Retry).
+
+Canonical CleverScript example (copy into your site’s `hooks/client/components/` and register in `hooks.json`):
+`paradigm-threat-web/hooks/client/components/RelayImage.jsx` (see park canary).
+
+```jsx
+import RelayImage from 'hooks/client/components/RelayImage.jsx'
+// …
+<RelayImage src="/book/cover.png" alt="Cover" className="pt-img" />
+```
 
 ## Migration (operators)
 

@@ -70,6 +70,59 @@ impl RepoFetchHost {
         let path = path.split('#').next().unwrap_or(path);
         Some(path.trim_start_matches('/').to_string())
     }
+
+    /// Same-repo QUERY for SSR (client hooks cannot self-HTTP QUERY during render).
+    fn ssr_query(&self, url: &str, options: Option<&Value>) -> Result<Value, String> {
+        let rel = self.repo_rel_from_url(url).unwrap_or_default();
+        if !rel.is_empty() && rel != "query" {
+            return Ok(host_fetch_object(
+                false,
+                400.0,
+                "",
+                Some(format!("SSR QUERY only supported on collection root, got path {rel}")),
+            ));
+        }
+
+        let body_str = options
+            .and_then(|o| match o {
+                Value::Object(m) => m.get("body"),
+                _ => None,
+            })
+            .and_then(|v| match v {
+                Value::String(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .unwrap_or("{}");
+        let body: serde_json::Value =
+            serde_json::from_str(body_str).unwrap_or_else(|_| serde_json::json!({}));
+        let collection = body
+            .get("collection")
+            .and_then(|v| v.as_str())
+            .unwrap_or("index");
+        let limit = body
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
+        let query = body.get("query").cloned();
+
+        let db = crate::git::indexing::branch_sqlite_path(&self.repo_path, &self.branch);
+        let rows = crate::git::sqlite_index::query_collection(
+            &db,
+            collection,
+            query.as_ref(),
+            None,
+            limit,
+        )
+        .unwrap_or_default();
+        let envelope = serde_json::json!({
+            "results": rows,
+            "count": rows.len(),
+            "collection": collection,
+            "query": query.unwrap_or(serde_json::Value::String(String::new())),
+        });
+        let text = serde_json::to_string(&envelope).unwrap_or_else(|_| "{\"results\":[]}".into());
+        Ok(host_fetch_object(true, 200.0, text, None))
+    }
 }
 
 impl Host for RepoFetchHost {
@@ -84,12 +137,17 @@ impl Host for RepoFetchHost {
                 _ => None,
             })
             .unwrap_or("GET");
+
+        if method.eq_ignore_ascii_case("QUERY") {
+            return self.ssr_query(url, options);
+        }
+
         if !method.eq_ignore_ascii_case("GET") && !method.eq_ignore_ascii_case("HEAD") {
             return Ok(host_fetch_object(
                 false,
                 405.0,
                 "",
-                Some(format!("SSR host only supports GET/HEAD, got {method}")),
+                Some(format!("SSR host only supports GET/HEAD/QUERY, got {method}")),
             ));
         }
 
@@ -111,6 +169,7 @@ impl Host for RepoFetchHost {
                     }
                 }
             }
+            // Empty rel (`/`): no blob — fall through (QUERY handled above).
         }
 
         if url.starts_with("http://") || url.starts_with("https://") {

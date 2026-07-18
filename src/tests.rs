@@ -460,6 +460,49 @@ server:
         );
     }
 
+    /// Parked Host QUERY must hit the parked repo (not apex `relay-master`).
+    #[tokio::test]
+    async fn test_query_parked_host_selects_repo() {
+        let (_tmp, mut state) = query_text_fixture(QUERY_DEFAULT_YAML);
+        let mut map = std::collections::HashMap::new();
+        map.insert("relay.paradigmthreat.net".to_string(), "repo".to_string());
+        state.parked_domains = Some(std::sync::Arc::new(map));
+        // Apex default also present so a regression would silently query the wrong tip.
+        let _ = Repository::init_bare(state.repo_path.join("relay-master.git")).unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, "relay.paradigmthreat.net".parse().unwrap());
+        headers.insert(HEADER_BRANCH, "main".parse().unwrap());
+        headers.insert(ACCEPT, "application/json".parse().unwrap());
+
+        let query_body = serde_json::json!({
+            "collection": "index",
+            "query": { "title": "Test Item" }
+        });
+
+        let response = handlers::handle_query(
+            State(state),
+            headers,
+            AxPath("".to_string()),
+            None,
+            Some(Json(query_body)),
+        )
+        .await;
+
+        let (parts, body) = response.into_response().into_parts();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        assert_eq!(
+            parts.status,
+            StatusCode::OK,
+            "body={}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let results = json["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["title"], "Test Item");
+    }
+
     /// Test bare_repo_names correctly lists repos
     #[tokio::test]
     async fn test_bare_repo_names() {

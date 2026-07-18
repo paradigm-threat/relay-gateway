@@ -4,6 +4,7 @@ use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -81,12 +82,89 @@ impl AssetErrorCode {
     }
 }
 
+/// Live seeding / availability snapshot for UI (opt-in clients poll this).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeedStatus {
+    /// `cached` | `fetching` | `missing` | `unavailable` | `unknown`
+    pub state: String,
+    /// 0–100 when known (in-flight byte progress or fully cached).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress_pct: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_received: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_total: Option<u64>,
+    /// Provider count from Kubo `routing/findprovs` when `RELAY_IPFS_API` is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub providers: Option<u32>,
+    /// Whether the block is present on the configured Kubo API node.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_block: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+impl SeedStatus {
+    pub fn cached() -> Self {
+        Self {
+            state: "cached".into(),
+            progress_pct: Some(100),
+            bytes_received: None,
+            bytes_total: None,
+            providers: None,
+            local_block: Some(true),
+            hint: None,
+        }
+    }
+
+    pub fn unknown(hint: impl Into<String>) -> Self {
+        Self {
+            state: "unknown".into(),
+            progress_pct: None,
+            bytes_received: None,
+            bytes_total: None,
+            providers: None,
+            local_block: None,
+            hint: Some(hint.into()),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct AssetResolveError {
     pub code: AssetErrorCode,
     pub message: String,
     pub cid: Option<String>,
     pub retry_after_secs: Option<u64>,
+    pub seed: Option<SeedStatus>,
+}
+
+impl AssetResolveError {
+    pub fn new(
+        code: AssetErrorCode,
+        message: impl Into<String>,
+        cid: Option<String>,
+    ) -> Self {
+        let retry_after_secs = if code.retryable() { Some(5) } else { None };
+        Self {
+            code,
+            message: message.into(),
+            cid,
+            retry_after_secs,
+            seed: None,
+        }
+    }
+
+    pub fn with_seed(mut self, seed: SeedStatus) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+
+    pub fn with_retry_after(mut self, secs: Option<u64>) -> Self {
+        self.retry_after_secs = secs;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -134,7 +212,8 @@ fn validated_gateway_base() -> Result<String, AssetResolveError> {
         message,
         cid: None,
         retry_after_secs: None,
-    })?;
+            seed: None,
+        })?;
     Ok(base)
 }
 
@@ -167,6 +246,230 @@ pub fn parse_wait_seconds(query: &HashMap<String, String>, headers: &HeaderMap) 
         })
     });
     from_q.max(from_pref.unwrap_or(0)).min(wait_max_from_env())
+}
+
+/// True when the client wants a seed/status JSON probe instead of (or before) binary bytes.
+///
+/// Triggers: `?relayAssetStatus=1` / `true`, or
+/// `Accept: application/vnd.relay.asset-status+json`.
+pub fn wants_asset_status_only(query: &HashMap<String, String>, headers: &HeaderMap) -> bool {
+    if query
+        .get("relayAssetStatus")
+        .map(|s| {
+            let t = s.trim();
+            t == "1" || t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("yes")
+        })
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|a| a.contains("application/vnd.relay.asset-status+json"))
+}
+
+fn api_base_from_env() -> Option<String> {
+    std::env::var("RELAY_IPFS_API")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[derive(Debug, Clone)]
+struct InFlightFetch {
+    bytes_received: u64,
+    bytes_total: Option<u64>,
+    started: Instant,
+}
+
+static IN_FLIGHT: OnceLock<Mutex<HashMap<String, InFlightFetch>>> = OnceLock::new();
+
+fn in_flight_map() -> &'static Mutex<HashMap<String, InFlightFetch>> {
+    IN_FLIGHT.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn begin_in_flight(cid: &str, bytes_total: Option<u64>) {
+    if let Ok(mut m) = in_flight_map().lock() {
+        m.insert(
+            cid.to_string(),
+            InFlightFetch {
+                bytes_received: 0,
+                bytes_total,
+                started: Instant::now(),
+            },
+        );
+    }
+}
+
+fn update_in_flight(cid: &str, bytes_received: u64, bytes_total: Option<u64>) {
+    if let Ok(mut m) = in_flight_map().lock() {
+        if let Some(e) = m.get_mut(cid) {
+            e.bytes_received = bytes_received;
+            if bytes_total.is_some() {
+                e.bytes_total = bytes_total;
+            }
+        }
+    }
+}
+
+fn end_in_flight(cid: &str) {
+    if let Ok(mut m) = in_flight_map().lock() {
+        m.remove(cid);
+    }
+}
+
+fn in_flight_seed(cid: &str) -> Option<SeedStatus> {
+    let m = in_flight_map().lock().ok()?;
+    let e = m.get(cid)?;
+    let pct = match e.bytes_total {
+        Some(total) if total > 0 => Some(((e.bytes_received * 100) / total).min(99) as u8),
+        _ => None,
+    };
+    Some(SeedStatus {
+        state: "fetching".into(),
+        progress_pct: pct,
+        bytes_received: Some(e.bytes_received),
+        bytes_total: e.bytes_total,
+        providers: None,
+        local_block: None,
+        hint: Some(format!(
+            "gateway fetch in progress ({}s)",
+            e.started.elapsed().as_secs()
+        )),
+    })
+}
+
+fn probe_kubo_local_block(cid: &str) -> Option<bool> {
+    let api = api_base_from_env()?;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .ok()?;
+    let url = format!("{api}/api/v0/block/stat?arg={cid}");
+    let resp = client.post(&url).send().ok()?;
+    Some(resp.status().is_success())
+}
+
+fn probe_kubo_providers(cid: &str) -> Option<u32> {
+    let api = api_base_from_env()?;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .ok()?;
+    let url = format!("{api}/api/v0/routing/findprovs?arg={cid}&num-providers=20");
+    let resp = client.post(&url).send().ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    // NDJSON lines from findprovs — count Objects / ID fields roughly.
+    let text = resp.text().ok()?;
+    let mut n = 0u32;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if t.contains("\"ID\"") || t.contains("\"Addrs\"") || t.contains("\"ID\":") {
+            n = n.saturating_add(1);
+        }
+    }
+    Some(n)
+}
+
+/// Build the best-effort seed snapshot for a CID (cache / in-flight / optional Kubo API).
+pub fn probe_seed_status(cid: &str) -> SeedStatus {
+    if !is_plausible_cid(cid) {
+        return SeedStatus::unknown("invalid CID");
+    }
+    if read_cached_bytes(cid).ok().flatten().is_some() {
+        return SeedStatus::cached();
+    }
+    if let Some(s) = in_flight_seed(cid) {
+        return s;
+    }
+    let local_block = probe_kubo_local_block(cid);
+    let providers = probe_kubo_providers(cid);
+    if local_block == Some(true) {
+        return SeedStatus {
+            state: "cached".into(),
+            progress_pct: Some(100),
+            bytes_received: None,
+            bytes_total: None,
+            providers,
+            local_block: Some(true),
+            hint: Some("present on RELAY_IPFS_API node; disk cache miss".into()),
+        };
+    }
+    if providers == Some(0) {
+        return SeedStatus {
+            state: "unavailable".into(),
+            progress_pct: Some(0),
+            bytes_received: None,
+            bytes_total: None,
+            providers,
+            local_block,
+            hint: Some("no DHT providers found for this CID".into()),
+        };
+    }
+    if providers.is_some() || local_block.is_some() {
+        return SeedStatus {
+            state: "missing".into(),
+            progress_pct: Some(0),
+            bytes_received: None,
+            bytes_total: None,
+            providers,
+            local_block,
+            hint: Some("not on this gateway yet; retry while peers seed".into()),
+        };
+    }
+    SeedStatus {
+        state: "missing".into(),
+        progress_pct: None,
+        bytes_received: None,
+        bytes_total: None,
+        providers: None,
+        local_block: None,
+        hint: Some(
+            "not in relay disk cache; set RELAY_IPFS_API for provider/local probes".into(),
+        ),
+    }
+}
+
+/// JSON body shared by HTTP asset errors and status probes (`relay.asset-status.v1`).
+pub fn asset_status_body(
+    err: Option<&AssetResolveError>,
+    cid: Option<&str>,
+    rel_path: &str,
+    seed: &SeedStatus,
+) -> serde_json::Value {
+    let (error, message, retryable, retry_after) = match err {
+        Some(e) => (
+            e.code.as_str(),
+            e.message.as_str(),
+            e.code.retryable(),
+            e.retry_after_secs,
+        ),
+        None => (
+            "ok",
+            "asset available",
+            false,
+            None,
+        ),
+    };
+    let mut body = serde_json::json!({
+        "schema": "relay.asset-status.v1",
+        "error": error,
+        "message": message,
+        "cid": cid,
+        "path": rel_path,
+        "retryable": retryable,
+        "seed": seed,
+    });
+    if let Some(ra) = retry_after {
+        body["retryAfterSecs"] = serde_json::json!(ra);
+    }
+    body
 }
 
 pub fn is_plausible_cid(cid: &str) -> bool {
@@ -571,6 +874,7 @@ pub fn fetch_cid_bytes(
             message: "invalid CID".into(),
             cid: Some(cid.to_string()),
             retry_after_secs: None,
+            seed: None,
         });
     }
 
@@ -586,6 +890,7 @@ pub fn fetch_cid_bytes(
             message: "fetch lock poisoned".into(),
             cid: Some(cid.to_string()),
             retry_after_secs: None,
+            seed: None,
         })?;
 
     if let Ok(Some((bytes, ct))) = read_cached_bytes(cid) {
@@ -600,11 +905,13 @@ pub fn fetch_cid_bytes(
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
+            let seed = probe_seed_status(cid);
             return Err(AssetResolveError {
                 code: AssetErrorCode::IpfsPending,
                 message: "fetch still in progress".into(),
                 cid: Some(cid.to_string()),
                 retry_after_secs: Some(5),
+                seed: Some(seed),
             });
         }
         match do_fetch(cid, content_type_hint, remaining.min(fetch_timeout_from_env())) {
@@ -637,17 +944,20 @@ fn do_fetch(
             message: e.to_string(),
             cid: Some(cid.to_string()),
             retry_after_secs: None,
+            seed: None,
         })?;
 
     let base = validated_gateway_base()?;
     let url = format!("{}/ipfs/{}", base, cid);
     let resp = client.get(&url).send().map_err(|e| {
+        let seed = probe_seed_status(cid);
         if e.is_timeout() {
             AssetResolveError {
                 code: AssetErrorCode::IpfsGatewayTimeout,
                 message: e.to_string(),
                 cid: Some(cid.to_string()),
                 retry_after_secs: Some(5),
+                seed: Some(seed),
             }
         } else {
             AssetResolveError {
@@ -655,25 +965,45 @@ fn do_fetch(
                 message: e.to_string(),
                 cid: Some(cid.to_string()),
                 retry_after_secs: Some(5),
+                seed: Some(seed),
             }
         }
     })?;
 
     let status = resp.status();
+    // Known CIDs from git pointers that are not yet on this gateway are *pending*, not Gone.
+    // 410 is reserved for truly unavailable CIDs (e.g. zero providers when API probe says so).
     if status.as_u16() == 404 {
+        let seed = probe_seed_status(cid);
+        let (code, message, retry) = if seed.state == "unavailable" {
+            (
+                AssetErrorCode::IpfsNotFound,
+                "CID has no known providers".to_string(),
+                None,
+            )
+        } else {
+            (
+                AssetErrorCode::IpfsPending,
+                "CID not on IPFS gateway yet (still seeding)".to_string(),
+                Some(5),
+            )
+        };
         return Err(AssetResolveError {
-            code: AssetErrorCode::IpfsNotFound,
-            message: "CID not found on IPFS gateway".into(),
+            code,
+            message,
             cid: Some(cid.to_string()),
-            retry_after_secs: None,
+            retry_after_secs: retry,
+            seed: Some(seed),
         });
     }
     if !status.is_success() {
+        let seed = probe_seed_status(cid);
         return Err(AssetResolveError {
             code: AssetErrorCode::IpfsGatewayError,
             message: format!("gateway returned {}", status),
             cid: Some(cid.to_string()),
             retry_after_secs: Some(5),
+            seed: Some(seed),
         });
     }
 
@@ -684,7 +1014,8 @@ fn do_fetch(
         .map(|s| s.to_string())
         .or_else(|| content_type_hint.map(|s| s.to_string()));
 
-    if let Some(len) = resp.content_length() {
+    let content_length = resp.content_length();
+    if let Some(len) = content_length {
         let max = max_fetch_bytes_from_env() as u64;
         if len > max {
             return Err(AssetResolveError {
@@ -692,35 +1023,55 @@ fn do_fetch(
                 message: format!("gateway Content-Length {len} exceeds RELAY_IPFS_MAX_FETCH_BYTES ({max})"),
                 cid: Some(cid.to_string()),
                 retry_after_secs: None,
+                seed: None,
             });
         }
     }
 
-    let bytes = resp.bytes().map_err(|e| AssetResolveError {
-        code: AssetErrorCode::IpfsGatewayError,
-        message: e.to_string(),
-        cid: Some(cid.to_string()),
-        retry_after_secs: Some(5),
-    })?;
-
+    begin_in_flight(cid, content_length);
     let max = max_fetch_bytes_from_env();
-    if bytes.len() > max {
-        return Err(AssetResolveError {
-            code: AssetErrorCode::IpfsGatewayError,
-            message: format!(
-                "gateway body {} bytes exceeds RELAY_IPFS_MAX_FETCH_BYTES ({max})",
-                bytes.len()
-            ),
-            cid: Some(cid.to_string()),
-            retry_after_secs: None,
-        });
-    }
+    let mut buf: Vec<u8> = match content_length {
+        Some(n) if n <= max as u64 => Vec::with_capacity(n as usize),
+        _ => Vec::new(),
+    };
+    let mut reader = resp;
+    let mut chunk = [0u8; 64 * 1024];
+    let read_result = (|| -> Result<Vec<u8>, AssetResolveError> {
+        loop {
+            let n = reader.read(&mut chunk).map_err(|e| AssetResolveError {
+                code: AssetErrorCode::IpfsGatewayError,
+                message: e.to_string(),
+                cid: Some(cid.to_string()),
+                retry_after_secs: Some(5),
+                seed: Some(probe_seed_status(cid)),
+            })?;
+            if n == 0 {
+                break;
+            }
+            if buf.len() + n > max {
+                return Err(AssetResolveError {
+                    code: AssetErrorCode::IpfsGatewayError,
+                    message: format!(
+                        "gateway body exceeds RELAY_IPFS_MAX_FETCH_BYTES ({max})"
+                    ),
+                    cid: Some(cid.to_string()),
+                    retry_after_secs: None,
+                    seed: None,
+                });
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            update_in_flight(cid, buf.len() as u64, content_length);
+        }
+        Ok(buf)
+    })();
+    end_in_flight(cid);
+    let bytes = read_result?;
 
     if let Err(e) = write_cache(cid, &bytes, ct.as_deref()) {
         warn!(?e, %cid, "ipfs cache write failed");
     }
 
-    Ok((bytes.to_vec(), ct))
+    Ok((bytes, ct))
 }
 
 pub fn asset_error_response(
@@ -729,16 +1080,20 @@ pub fn asset_error_response(
     repo: &str,
     rel_path: &str,
 ) -> Response {
-    let body = serde_json::json!({
-        "error": err.code.as_str(),
-        "message": err.message,
-        "cid": err.cid,
-        "path": rel_path,
-        "retryable": err.code.retryable(),
-    });
+    let seed = err
+        .seed
+        .clone()
+        .unwrap_or_else(|| match err.cid.as_deref() {
+            Some(cid) => probe_seed_status(cid),
+            None => SeedStatus::unknown("no CID"),
+        });
+    let body = asset_status_body(Some(err), err.cid.as_deref(), rel_path, &seed);
     let mut res = (
         err.code.status(),
-        [("Content-Type", "application/json; charset=utf-8")],
+        [(
+            "Content-Type",
+            "application/vnd.relay.asset-status+json; charset=utf-8",
+        )],
         body.to_string(),
     )
         .into_response();
@@ -752,7 +1107,78 @@ pub fn asset_error_response(
     if let Some(ra) = err.retry_after_secs {
         h.insert("Retry-After", ra.to_string().parse().expect("retry-after"));
     }
+    if let Some(pct) = seed.progress_pct {
+        h.insert(
+            "X-Relay-Asset-Progress",
+            pct.to_string().parse().expect("progress header"),
+        );
+    }
+    h.insert(
+        "X-Relay-Asset-Seed-State",
+        seed.state.parse().expect("seed state header"),
+    );
     res
+}
+
+/// Status-only probe (no long wait): cached → 200; else pending/unavailable JSON.
+pub fn asset_status_response(
+    cid: &str,
+    branch: &str,
+    repo: &str,
+    rel_path: &str,
+) -> Response {
+    if read_cached_bytes(cid).ok().flatten().is_some() {
+        let seed = SeedStatus::cached();
+        let body = asset_status_body(None, Some(cid), rel_path, &seed);
+        let mut res = (
+            StatusCode::OK,
+            [(
+                "Content-Type",
+                "application/vnd.relay.asset-status+json; charset=utf-8",
+            )],
+            body.to_string(),
+        )
+            .into_response();
+        let h = res.headers_mut();
+        h.insert(HEADER_BRANCH, branch.parse().expect("branch header"));
+        h.insert(HEADER_REPO, repo.parse().expect("repo header"));
+        h.insert(
+            "X-Relay-Asset-Seed-State",
+            "cached".parse().expect("seed state"),
+        );
+        h.insert(
+            "X-Relay-Asset-Progress",
+            "100".parse().expect("progress"),
+        );
+        return res;
+    }
+    let seed = probe_seed_status(cid);
+    let err = if seed.state == "unavailable" {
+        AssetResolveError::new(
+            AssetErrorCode::IpfsNotFound,
+            "CID has no known providers",
+            Some(cid.to_string()),
+        )
+        .with_seed(seed.clone())
+        .with_retry_after(None)
+    } else if seed.state == "fetching" {
+        AssetResolveError::new(
+            AssetErrorCode::IpfsBusy,
+            "fetch already in progress on this node",
+            Some(cid.to_string()),
+        )
+        .with_seed(seed.clone())
+        .with_retry_after(Some(2))
+    } else {
+        AssetResolveError::new(
+            AssetErrorCode::IpfsPending,
+            "CID not ready on this gateway yet",
+            Some(cid.to_string()),
+        )
+        .with_seed(seed.clone())
+        .with_retry_after(Some(5))
+    };
+    asset_error_response(&err, branch, repo, rel_path)
 }
 
 pub fn resolve_pointer_blob(
@@ -864,5 +1290,36 @@ mod tests {
         assert!(validate_gateway_base("https://evil.example").is_err());
         assert!(validate_gateway_base("https://ipfs.io").is_ok());
         std::env::remove_var("RELAY_IPFS_GATEWAY_ALLOWLIST");
+    }
+
+    #[test]
+    fn asset_status_body_includes_seed() {
+        let seed = SeedStatus {
+            state: "missing".into(),
+            progress_pct: Some(0),
+            bytes_received: None,
+            bytes_total: None,
+            providers: Some(2),
+            local_block: Some(false),
+            hint: Some("retry".into()),
+        };
+        let err = AssetResolveError::new(
+            AssetErrorCode::IpfsPending,
+            "seeding",
+            Some("bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi".into()),
+        )
+        .with_seed(seed.clone());
+        let body = asset_status_body(Some(&err), err.cid.as_deref(), "a.png", &seed);
+        assert_eq!(body["schema"], "relay.asset-status.v1");
+        assert_eq!(body["error"], "ipfs-pending");
+        assert_eq!(body["retryable"], true);
+        assert_eq!(body["seed"]["state"], "missing");
+        assert_eq!(body["seed"]["providers"], 2);
+    }
+
+    #[test]
+    fn pending_status_is_too_early() {
+        assert_eq!(AssetErrorCode::IpfsPending.status(), StatusCode::TOO_EARLY);
+        assert!(AssetErrorCode::IpfsPending.retryable());
     }
 }

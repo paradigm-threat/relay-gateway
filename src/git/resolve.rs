@@ -319,11 +319,22 @@ pub fn git_resolve_and_respond(
             let thin = catalog_for_repo_name(repo_name)
                 .map(|c| c.thin_ipfs_assets())
                 .unwrap_or(false);
-            if has_get_hook || (thin && is_asset_like_path(rel)) {
+            let asset_like = is_asset_like_path(rel);
+            if has_get_hook || (thin && asset_like) {
                 let ct = mime_guess::from_path(rel)
                     .first_or_octet_stream()
                     .essence_str()
                     .to_string();
+                // Multi-page CS shells: missing non-asset paths with HTML Accept / ?embed=1
+                // get the same siteShellRequest opt-in as repo-host `/` (relPath → initialPath).
+                let wants_shell = has_get_hook
+                    && !asset_like
+                    && (accept_prefers_html(headers) || embed_query_flag(&qmap));
+                let extra = if wants_shell {
+                    serde_json::json!({ "siteShellRequest": true })
+                } else {
+                    serde_json::json!({})
+                };
                 if let Some(resp) = try_server_get_hook(
                     &repo,
                     branch,
@@ -335,9 +346,15 @@ pub fn git_resolve_and_respond(
                     &ct,
                     None,
                     &qmap,
-                    serde_json::json!({}),
+                    extra,
                 ) {
-                    return GitResolveResult::Respond(resp);
+                    if wants_shell {
+                        if response_content_type_is_html(&resp) {
+                            return GitResolveResult::Respond(merge_vary_accept(resp));
+                        }
+                    } else {
+                        return GitResolveResult::Respond(resp);
+                    }
                 }
             }
             return GitResolveResult::NotFound(rel.to_string());
@@ -421,7 +438,9 @@ pub fn git_resolve_and_respond(
 
                     if embed_query_flag(&qmap) {
                         let assets_prefix =
-                            crate::git::web_assets::pinned_assets_url_prefix(state);
+                            crate::git::web_assets::pinned_assets_url_prefix_if_opted_in(
+                                state, repo_name, branch,
+                            );
                         return GitResolveResult::Respond(
                             crate::git::embed_html::fallback_embed_html_response_with_ssr_and_assets(
                                 repo_name,
@@ -1007,6 +1026,40 @@ export default function run(ctx, next) {
         assert!(html.contains("data-relay-ssr=\"1\""), "{html}");
         assert!(html.contains("Opt-in SSR"), "{html}");
         assert!(html.contains("/assets/embed.js"), "{html}");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn missing_path_accept_html_opts_into_site_shell_ssr() {
+        let (_dir, root) = bare_ssr_opt_in_repo();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
+        headers.insert(header::HOST, HeaderValue::from_static("doc.example.test"));
+        headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &headers, "main", "doc", "search", None);
+        let GitResolveResult::Respond(resp) = r else {
+            panic!("expected Respond for missing SPA path");
+        };
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let html = String::from_utf8(axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec())
+            .unwrap();
+        assert!(html.contains("data-relay-ssr=\"1\""), "{html}");
+        assert!(html.contains("Opt-in SSR"), "{html}");
+        assert!(html.contains("/assets/embed.js"), "{html}");
+        let vary = parts
+            .headers
+            .get(header::VARY)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            vary.to_ascii_lowercase().contains("accept"),
+            "missing-path shell must Vary: Accept, got {vary:?}"
+        );
     }
 
     #[tokio::test]
