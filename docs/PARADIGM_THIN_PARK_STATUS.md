@@ -8,12 +8,14 @@
 - **Assets:** `relay-web-assets` for embed/WASM.
 - Hard markdown components **disabled** — see `hooks/COMPONENTS_DISABLED.md` in files thin.
 
-## Tips (dfw1)
+## Tips (fleet 2026-07-18)
 
 | Repo | Tip (approx) |
 |------|----------------|
-| paradigm-threat-files | `4a4d793` (home article list + Index; GitLab thin `main`) |
-| paradigm-threat-timeline | `4070449` |
+| paradigm-threat-files | `e09be61` (ThemeToggle SSR + Icons; GitLab thin `main`) |
+| paradigm-threat-timeline | `a4d9497` (ThemeToggle SSR; GitLab thin `main`) |
+| relay-web-assets | `0f03522` (SVG hydrate + computed-member WASM/JS) |
+| relay-runtime / client-web | `8a6f5d4` / `eb5c884` (fleet deploy-all clean) |
 | relay-master catalog | `dd6847a` (park domain on files; web domains cleared) |
 
 ## Force push / thin invariant
