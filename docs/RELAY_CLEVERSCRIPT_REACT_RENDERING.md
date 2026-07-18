@@ -16,8 +16,25 @@ This document states **product and engineering requirements** for the CleverScri
 3. **Complex, state-heavy, or high-churn UI belongs in native components**  
    When a surface needs animation, lists with constant updates, media, maps, etc., the **host** should own the widget; CleverScript supplies configuration and high-level commands, not per-frame reconciliation.
 
-4. **Deliberately simple renderer**  
+4. **npm React is not the CleverScript renderer**  
+   CleverScript JSX is executed by **relay-runtime** (WASM / JNI / desktop). Parked sites and
+   **`embed.js`** must not depend on the React npm package
+   ([`RELAY_EMBED_CLIENT_GET_INTERCEPT.md`](RELAY_EMBED_CLIENT_GET_INTERCEPT.md) § Dependency policy).
+   If npm React is ever required for a host feature, treat it as a **native component** (same
+   pattern as Android/desktop host widgets) — planned later; not an embed dependency.
+
+5. **Deliberately simple renderer**  
    The CleverScript → VNode → DOM/native path should stay **easy to reason about**: one hook run produces one tree; event handlers are registered in a predictable way. We avoid “JavaScript framework style” mitigations (weak maps, identity caches, manual GC tuning) as a **default** answer.
+
+6. **Platform-agnostic UI; host owns the surface**  
+   CleverScript must **not** call into `document` / `window` (or Android/desktop view APIs) directly.
+   Web glue adapts VNodes and host natives to the browser; the same hooks should run without knowing
+   they are on web unless the author explicitly opts into a platform probe. See
+   [`RELAY_EMBED_CLIENT_GET_INTERCEPT.md`](RELAY_EMBED_CLIENT_GET_INTERCEPT.md) § Host boundary.
+
+7. **No leaking WASM/runtime state to page scripts**  
+   Session theme, handler registries, and other runtime cells stay inside relay-runtime (WASM/native).
+   Page JS only uses the published glue API — not ad-hoc `window.__relay_*` dumps of internal state.
 
 ## Handler registry and re-renders
 
@@ -74,4 +91,5 @@ Hosts should map native input into a **small, documented event record** (see pla
 ## See also
 
 - [`RELAY_MARKDOWN_IR.md`](RELAY_MARKDOWN_IR.md) — markdown + `anchorOnClick` contract.
+- [`RELAY_EMBED_CLIENT_GET_INTERCEPT.md`](RELAY_EMBED_CLIENT_GET_INTERCEPT.md) — parked-site embed is WASM-only (no npm React); React-as-native deferred.
 - [`relay-runtime/docs/CROSS_PLATFORM_OS_SUPPORT_PLAN.md`](../../relay-runtime/docs/CROSS_PLATFORM_OS_SUPPORT_PLAN.md) — native components and host-owned media/UI.

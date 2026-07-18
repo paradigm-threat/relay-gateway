@@ -756,7 +756,9 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             return Ok(CsValue::Null);
         };
         let client_hook_http = format!("/{}", client_hook_path);
-        let html = crate::git::embed_html::embed_html_document_with_css(
+        let assets_prefix =
+            crate::git::web_assets::pinned_assets_url_prefix_from_content_bare(&repo_root);
+        let html = crate::git::embed_html::embed_html_document_with_assets(
             repo,
             request_branch,
             &initial_path,
@@ -767,6 +769,7 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             } else {
                 Some(rendered.css.as_str())
             },
+            assets_prefix.as_deref(),
         );
         Ok(hook_file_object_ssr_html(html))
     });

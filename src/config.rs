@@ -161,6 +161,16 @@ impl Config {
 
         let git_ensure_bare_enabled = env_truthy_or_default("RELAY_GIT_ENSURE_BARE_ENABLED", true);
 
+        let web_assets_repo = std::env::var("RELAY_WEB_ASSETS_REPO")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let web_assets_branch = std::env::var("RELAY_WEB_ASSETS_BRANCH")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "release".to_string());
+
         Ok(Config {
             state: AppState {
                 repo_path,
@@ -172,6 +182,8 @@ impl Config {
                 parked_domains,
                 features_manifest,
                 git_ensure_bare_enabled,
+                web_assets_repo,
+                web_assets_branch,
             },
             http_addr,
             https_port,
@@ -199,6 +211,8 @@ impl Config {
             parked_domains: None,
             features_manifest: None,
             git_ensure_bare_enabled: false,
+            web_assets_repo: None,
+            web_assets_branch: "release".to_string(),
         }
     }
 

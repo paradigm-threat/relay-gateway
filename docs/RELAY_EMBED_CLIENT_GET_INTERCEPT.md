@@ -14,10 +14,72 @@ empty client-rendered embed shell (when `?embed=1`) or static `@relay/md` HTML (
 path is an entry route, not necessarily the blob rendered as the page. If SSR succeeds but client
 hydration fails, embed.js keeps the server DOM and prepends a light `.relay-hook-error` panel.
 
+**Web/CDN assets:** framework bundles (`embed.js`, chunks, WASM) are moving to a dedicated signed
+git repo with **commit-pinned** URLs (`/assets/c/{oid}/…`) so one page load never mixes two tips —
+see [`RELAY_WEB_ASSETS.md`](RELAY_WEB_ASSETS.md). Disk `/opt/relay/www` remains the local/dev fallback.
+
+## Dependency policy (parked sites / embed)
+
+Parked content sites (e.g. **clevertree.net**) and the **`/assets/embed.js`** bootloader must stay
+**free of npm React / ReactDOM** (and other UI-framework deps). Site UI is CleverScript +
+relay-runtime WASM only. Enforce with **`scripts/assert-embed-no-react.mjs`** on embed builds.
+
+- **esbuild** is allowed as a packager for the slim WASM hydrate glue.
+- **npm** is limited to build/runtime necessities for that glue (TypeScript, esbuild, wasm-bindgen
+  output) — not application UI libraries.
+- CleverScript JSX is **React-like syntax**, not the React npm package
+  ([`RELAY_CLEVERSCRIPT_REACT_RENDERING.md`](RELAY_CLEVERSCRIPT_REACT_RENDERING.md)).
+
+### Deferred: React as a native component
+
+If a surface truly needs the React npm runtime (legacy widgets, third-party React trees), it must
+be introduced the same way as other **host-owned native components** (Android / desktop pattern:
+CleverScript configures a host widget; the host owns the heavy tree — see
+[`relay-runtime/docs/CROSS_PLATFORM_OS_SUPPORT_PLAN.md`](../../relay-runtime/docs/CROSS_PLATFORM_OS_SUPPORT_PLAN.md)
+and video/native-component notes). That work is **not** in scope for embed or parked sites; do
+**not** pull React into `embed.js` as an interim CSR shell.
+
+The optional **`main.js`** React tabbed shell is **not** part of the CDN (`relay-web-assets`)
+deployment. That profile is embed + WASM only; a separate release may include React later
+([`RELAY_WEB_ASSETS.md`](RELAY_WEB_ASSETS.md)).
+
+## Host boundary (security + cross-platform UI)
+
+Relay UI (CleverScript hooks) is **platform-agnostic**. The same hook tree runs under WASM (web),
+Android JNI, and desktop hosts. **Web glue** (`relay-runtime-web.js` / `embed.js`) exists only to
+map VNodes, handlers, fetch, and theme onto the browser — not to make hooks “web apps.”
+
+### CleverScript must not touch the DOM (or other platform surfaces) directly
+
+Hooks must **not** use `document`, `window`, `localStorage` (except via host APIs the runtime
+exposes), or other browser globals to mutate UI. Effects that need the host (theme class, print,
+navigation) go through:
+
+- **declared props** (`onClick`, `dataTheme` → host attributes), and/or
+- **host natives** (`@clevertree/style-internal` `setCurrentTheme`, `isClientLive`, …), and/or
+- **host event delegation** in the web glue (`data-theme`, `data-relay-action`).
+
+Reaching into `document` from a hook breaks Android/desktop and is a security footgun (XSS-shaped
+capabilities inside untrusted-ish repo content).
+
+### Web page scripts must not read WASM/runtime internals
+
+Browser JavaScript outside the controlled glue must **not** inspect CleverScript run-state,
+handler registries, session theme cells, or other WASM thread-local / module-private state.
+The public contract is the **documented wasm-bindgen / glue API** (`renderHook`, `invoke_handler`,
+`setCurrentTheme`, …) and DOM attributes the glue intentionally mirrors (e.g. `html.light` /
+`html.dark` after a theme change). Do not export raw session stores or handler maps to `window`.
+
+### Platform awareness is opt-in
+
+By default, hooks should not branch on “am I on web?”. Prefer host features that work everywhere
+(`fetch`, theme, navigation). Explicit platform probes (if any) are for authors who **choose** to
+specialize — not required for parked sites like clevertree.net.
+
 **Implementation (relay monorepo):**
 
 - Gateway: `relay-gateway/src/git/embed_html.rs` (fallback HTML + `Vary` / cache / `X-Relay-*` parity), `relay-gateway/src/git/resolve.rs` (markdown + `Accept` / `?embed=` + `server.hooks.get`), `relay-gateway/src/handlers/general.rs` (`/` site shell), `relay-gateway/src/handlers/head.rs` (query map parity with GET).
-- Client: `relay-client-web/src/embed-main.tsx`, `relay-client-web/src/EmbedApp.tsx`, esbuild entry **`embed`** → `dist/assets/embed.js` + `embed.css`.
+- Client embed: `relay-client-web/src/embed-main.ts` → esbuild entry **`embed`** → `dist/assets/embed.js` + `embed.css`. Boot is **WASM-only** (`bootEmbedRoot` / `renderHook` / `hydrateVnode`): same `hooks/client/get.jsx` as SSR; **no React** on this graph (`scripts/assert-embed-no-react.mjs`).
 - Template hook comments: `relay-template/hooks/server/get.cs` (`embedMarkdownRequest` / `siteShellRequest`).
 
 ## Product requirement
@@ -49,11 +111,14 @@ GET-hook returns are documented on **`get_hook_json_to_response`**: **`kind: "fi
 
 ### Phase A — `relay-client-web` **embed** entry (minimal shell)
 
-- Add a **second** HTML entry (e.g. **`embed.html`**) and **`src/embed-main.tsx`** (names TBD).
-- Bootstrap **only** what is needed to run the **client GET hook** at full viewport: **`RepoFetchProvider`**, **`ThemedHookRenderer`** (or future WASM hook mount), **`relay-runtime` WASM**, CSS reset (`html, body, #root { height: 100%; margin: 0 }`).
-- **Configuration** via build-time **`import.meta.env`** (e.g. **`RELAY_PUBLIC_EMBED_DEFAULT_ORIGIN`**) and/or **query/hash** parsed once at load — **no** peer discovery UI.
-- **esbuild** (or Vite) **split**: **`embed.js`** must not pull **PeersView**, **TabBar**, **SettingsTab** (tree-shake / separate entry).
-- **Deliverable:** static **`embed.html` + `embed-*.js` + CSS** suitable for placement under **`--static`** or next to the main SPA.
+**Shipped (WASM-only, no npm React):** `src/embed-main.ts` → `/assets/embed.js` boots
+`bootEmbedRoot` (hydrate SSR or CSR-mount the same client hook). Gate: `assert-embed-no-react.mjs`.
+
+Historical notes (superseded for embed): React `EmbedApp` / `ThemedHookRenderer` were an interim
+CSR shell and must not return to the embed graph. Any future React integration is **native-component
+only** (see Dependency policy above) — not a shared chunk with parked sites.
+
+Optional **`main.js`** admin chrome may keep React separately until retired.
 
 ### Phase B — **Gateway** `resolve.rs` (or HTTP handler) conditions
 

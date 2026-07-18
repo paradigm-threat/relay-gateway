@@ -28,6 +28,7 @@ pub mod relay_config_cache;
 pub mod repo;
 pub mod request_headers;
 pub mod resolve;
+pub mod web_assets;
 pub mod worktree;
 
 #[cfg(test)]

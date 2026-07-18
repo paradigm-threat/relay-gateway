@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use tracing::error;
 
 use crate::git::clever_hooks::run_clever_hook;
-use crate::git::embed_html::{fallback_embed_html_response, merge_vary_accept};
+use crate::git::embed_html::merge_vary_accept;
 use crate::git::clever_script_host::augment_get_context_headers;
 use crate::git::get_hook_http::{get_hook_execution_error_response, get_hook_json_to_response};
 use crate::git::index_policy;
@@ -420,12 +420,18 @@ pub fn git_resolve_and_respond(
                     }
 
                     if embed_query_flag(&qmap) {
-                        return GitResolveResult::Respond(fallback_embed_html_response(
-                            repo_name,
-                            branch,
-                            &initial_path,
-                            &client_hook_http,
-                        ));
+                        let assets_prefix =
+                            crate::git::web_assets::pinned_assets_url_prefix(state);
+                        return GitResolveResult::Respond(
+                            crate::git::embed_html::fallback_embed_html_response_with_ssr_and_assets(
+                                repo_name,
+                                branch,
+                                &initial_path,
+                                &client_hook_http,
+                                None,
+                                assets_prefix.as_deref(),
+                            ),
+                        );
                     }
                 }
 
@@ -544,6 +550,8 @@ mod tests {
             parked_domains: None,
             features_manifest: None,
             git_ensure_bare_enabled: false,
+            web_assets_repo: None,
+            web_assets_branch: "release".to_string(),
         }
     }
 

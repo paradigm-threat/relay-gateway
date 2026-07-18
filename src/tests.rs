@@ -23,6 +23,8 @@ mod tests {
             parked_domains: None,
             features_manifest: None,
             git_ensure_bare_enabled: true,
+            web_assets_repo: None,
+            web_assets_branch: "release".to_string(),
         }
     }
 

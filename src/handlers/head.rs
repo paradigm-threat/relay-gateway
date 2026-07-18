@@ -94,6 +94,13 @@ pub async fn head_file(
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
     let qmap = query.as_ref().map(|q| &q.0);
 
+    if decoded.starts_with("assets/") || decoded.starts_with("wasm/") {
+        if let Some(resp) = crate::git::web_assets::try_pinned_web_asset(&state, &decoded) {
+            let branch = helpers::branch_for_request(&headers, &state, None);
+            return headify_response(resp, &branch, "");
+        }
+    }
+
     let repo_name_opt =
         helpers::repo_from_host_or_default(&state, state.node_fqdn.as_deref(), &headers);
     let branch = helpers::branch_for_request(&headers, &state, repo_name_opt.as_deref());

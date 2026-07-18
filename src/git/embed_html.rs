@@ -102,6 +102,9 @@ pub fn embed_html_document(
 }
 
 /// Like [`embed_html_document`], with optional SSR stylesheet.
+///
+/// `assets_url_prefix` is normally `"/assets"` (disk) or `"/assets/c/{40hex}"` (commit-pinned
+/// web-assets repo). See `docs/RELAY_WEB_ASSETS.md`.
 pub fn embed_html_document_with_css(
     repo: &str,
     branch: &str,
@@ -109,6 +112,27 @@ pub fn embed_html_document_with_css(
     client_hook_path: &str,
     ssr_body_html: Option<&str>,
     ssr_css: Option<&str>,
+) -> String {
+    embed_html_document_with_assets(
+        repo,
+        branch,
+        rel_path,
+        client_hook_path,
+        ssr_body_html,
+        ssr_css,
+        None,
+    )
+}
+
+/// Like [`embed_html_document_with_css`], with an explicit assets URL prefix.
+pub fn embed_html_document_with_assets(
+    repo: &str,
+    branch: &str,
+    rel_path: &str,
+    client_hook_path: &str,
+    ssr_body_html: Option<&str>,
+    ssr_css: Option<&str>,
+    assets_url_prefix: Option<&str>,
 ) -> String {
     let initial_path = if rel_path.starts_with('/') {
         rel_path.to_string()
@@ -138,6 +162,10 @@ pub fn embed_html_document_with_css(
         }
         _ => String::new(),
     };
+    let assets = assets_url_prefix
+        .map(|s| s.trim_end_matches('/'))
+        .filter(|s| !s.is_empty())
+        .unwrap_or("/assets");
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -146,13 +174,13 @@ pub fn embed_html_document_with_css(
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="color-scheme" content="light dark"/>
   <title>{title_repo} — Relay</title>
-  <link rel="stylesheet" href="/assets/embed.css"/>
+  <link rel="stylesheet" href="{assets}/embed.css"/>
   <style>html,body,#root{{margin:0;height:100%;}}</style>{theme_style}
 </head>
 <body>
   <div id="root"{root_attrs}>{root_inner}</div>
   <script type="application/json" id="relay-embed-config">{json}</script>
-  <script type="module" src="/assets/embed.js"></script>
+  <script type="module" src="{assets}/embed.js"></script>
 </body>
 </html>"#,
     )
@@ -180,13 +208,34 @@ pub fn fallback_embed_html_response_with_ssr(
     client_hook_path: &str,
     ssr_body_html: Option<&str>,
 ) -> Response {
-    use crate::types::{HEADER_BRANCH, HEADER_REPO};
-    let html = embed_html_document(
+    fallback_embed_html_response_with_ssr_and_assets(
         repo,
         branch,
         rel_path,
         client_hook_path,
         ssr_body_html,
+        None,
+    )
+}
+
+/// Like [`fallback_embed_html_response_with_ssr`], with commit-pinned assets prefix.
+pub fn fallback_embed_html_response_with_ssr_and_assets(
+    repo: &str,
+    branch: &str,
+    rel_path: &str,
+    client_hook_path: &str,
+    ssr_body_html: Option<&str>,
+    assets_url_prefix: Option<&str>,
+) -> Response {
+    use crate::types::{HEADER_BRANCH, HEADER_REPO};
+    let html = embed_html_document_with_assets(
+        repo,
+        branch,
+        rel_path,
+        client_hook_path,
+        ssr_body_html,
+        None,
+        assets_url_prefix,
     );
 
     let mut resp = html.into_response();

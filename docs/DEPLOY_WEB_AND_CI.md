@@ -6,7 +6,7 @@ Normative **product / ops** notes for serving **relay-server** and **multiple st
 
 **Code status:** This document describes **planned** behavior. Implementations should update the “Implementation status” section at the bottom as pieces land.
 
-**Related:** **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (VM install), **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)** (**`relay.env`**, rotation, shared deploy SSH key), **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** (**`relay-master`** catalog, submodules + **`relayRootCommit`**, emitted **`authorized-repos.yaml`**), **[`LAUNCH_AND_TEST_PLAN.md`](./LAUNCH_AND_TEST_PLAN.md)** (default repo resolution, **`RELAY_DEFAULT_REPO=relay-master`**), **[`SERVER_HOOKS.md`](./SERVER_HOOKS.md)** (per-repo `.relay.yaml`, hooks).
+**Related:** **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (VM install), **[`RELAY_WEB_ASSETS.md`](./RELAY_WEB_ASSETS.md)** (signed git CDN for `embed.js` / WASM), **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)** (**`relay.env`**, rotation, shared deploy SSH key), **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** (**`relay-master`** catalog, submodules + **`relayRootCommit`**, emitted **`authorized-repos.yaml`**), **[`LAUNCH_AND_TEST_PLAN.md`](./LAUNCH_AND_TEST_PLAN.md)** (default repo resolution, **`RELAY_DEFAULT_REPO=relay-master`**), **[`SERVER_HOOKS.md`](./SERVER_HOOKS.md)** (per-repo `.relay.yaml`, hooks).
 
 **Note:** **Git hooks** may run **CleverScript** (`.cs`) validation scripts defined **in** repositories — that is separate from hosting a long-lived Next/Node **HTTP** stack for public sites.
 

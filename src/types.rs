@@ -48,6 +48,10 @@ pub struct AppState {
     pub features_manifest: Option<Arc<serde_json::Value>>,
     /// When true, `POST /api/git/ensure-bare/:repo` may create `RELAY_REPO_PATH/<repo>.git` so anonymous `git push` over git:// succeeds.
     pub git_ensure_bare_enabled: bool,
+    /// Bare repo slug for commit-pinned web/CDN assets (`RELAY_WEB_ASSETS_REPO`). Empty/`None` disables.
+    pub web_assets_repo: Option<String>,
+    /// Publish branch tip used when stamping HTML (`RELAY_WEB_ASSETS_BRANCH`, default `main`).
+    pub web_assets_branch: String,
 }
 
 #[derive(Deserialize, Debug)]

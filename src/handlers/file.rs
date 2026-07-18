@@ -34,6 +34,9 @@ pub async fn handle_get_file(
 
     // Framework-owned embed/hydration resources must not be shadowed by a repository GET hook.
     if is_relay_runtime_static_path(&decoded) {
+        if let Some(resp) = crate::git::web_assets::try_pinned_web_asset(&state, &decoded) {
+            return resp;
+        }
         if let Some(resp) = try_static(&state, &decoded).await {
             return resp;
         }
@@ -127,6 +130,9 @@ mod static_path_tests {
     #[test]
     fn reserves_hydration_assets_without_allowing_traversal() {
         assert!(is_relay_runtime_static_path("assets/embed.js"));
+        assert!(is_relay_runtime_static_path(
+            "assets/c/0123456789abcdef0123456789abcdef01234567/embed.js"
+        ));
         assert!(is_relay_runtime_static_path(
             "/wasm/relay_runtime_pkg/relay_runtime_bg.wasm"
         ));
