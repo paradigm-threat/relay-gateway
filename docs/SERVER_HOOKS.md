@@ -160,7 +160,7 @@ if (wantsSiteShell(ctx)) {
 
 The gateway always sets **`X-Relay-Branch`** and **`X-Relay-Repo`** after your headers; values in `headers` for those names are ignored.
 
-Valid module specifiers: **`@relay/git`**, **`@relay/search/sqlite`**, **`@relay/search/redb`**, and (when the host allows GET native modules) **`@relay/image`**, **`@relay/ipfs`**, **`@relay/md`**, **`@relay/ssr`**. Anything else fails at load time.
+Valid module specifiers: **`@relay/git`**, **`@relay/search/sqlite`**, **`@relay/search/redb`**, **`@relay/util`**, **`@relay/path`**, **`@relay/date`**, **`@relay/catalog`**, **`@relay/ui`**, and (when the host allows GET native modules) **`@relay/image`**, **`@relay/ipfs`**, **`@relay/md`**, **`@relay/ssr`**. Anything else fails at load time.
 
 **Node.js / `RelayHost.mjs` is not supported.**
 

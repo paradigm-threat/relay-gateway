@@ -1273,6 +1273,9 @@ impl Host for CleverScriptServerHost {
     }
 
     fn load_module(&self, path: &str) -> Result<CsValue, String> {
+        if let Some(m) = relay_runtime::relay_modules::try_load_relay_module(path) {
+            return Ok(m);
+        }
         match path {
             RELAY_GIT_MODULE => Ok(self.git_exports.clone()),
             RELAY_SEARCH_SQLITE_MODULE => Ok(self.search_sqlite_exports.clone()),
