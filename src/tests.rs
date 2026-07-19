@@ -503,6 +503,102 @@ server:
         assert_eq!(results[0]["title"], "Test Item");
     }
 
+    /// Parked Host with broken client hook → 500 SSR error, not Unknown Host.
+    #[tokio::test]
+    #[serial]
+    async fn test_parked_host_ssr_failure_returns_500_not_unknown_host() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let repo_path = root.join("park-site.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+
+        let yaml_oid = repo
+            .blob(
+                br#"
+client:
+  hooks:
+    get:
+      path: hooks/client/get.jsx
+server:
+  hooks:
+    get:
+      path: hooks/server/get.cs
+"#,
+            )
+            .unwrap();
+        let get_cs_oid = repo
+            .blob(
+                br#"import { ssrClientHookFromGetContext } from '@relay/ssr';
+export default function run(ctx, next) {
+  try { if (ctx.siteShellRequest === true) {
+    var ssr = ssrClientHookFromGetContext(ctx);
+    if (ssr !== null) { return ssr; }
+  } } catch (e) {}
+  return next();
+}"#,
+            )
+            .unwrap();
+        let client_get_oid = repo
+            .blob(
+                br#"export default function App() {
+  for (var i = 0; i < 1; i++)
+    return <main>broken</main>;
+}"#,
+            )
+            .unwrap();
+
+        let mut server = repo.treebuilder(None).unwrap();
+        server.insert("get.cs", get_cs_oid, 0o100644).unwrap();
+        let server_id = server.write().unwrap();
+        let mut client = repo.treebuilder(None).unwrap();
+        client
+            .insert("get.jsx", client_get_oid, 0o100644)
+            .unwrap();
+        let client_id = client.write().unwrap();
+        let mut hooks = repo.treebuilder(None).unwrap();
+        hooks.insert("server", server_id, 0o040000).unwrap();
+        hooks.insert("client", client_id, 0o040000).unwrap();
+        let hooks_id = hooks.write().unwrap();
+
+        let mut root_tree = repo.treebuilder(None).unwrap();
+        root_tree
+            .insert(".relay.yaml", yaml_oid, 0o100644)
+            .unwrap();
+        root_tree.insert("hooks", hooks_id, 0o040000).unwrap();
+        let tree_id = root_tree.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        let state = parked_state(
+            root,
+            &[("relay.paradigmthreat.net", "park-site")],
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, "relay.paradigmthreat.net".parse().unwrap());
+        headers.insert(ACCEPT, "text/html".parse().unwrap());
+
+        let resp = handlers::get_root(State(state), headers, None).await;
+        let (parts, body) = resp.into_response().into_parts();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert_eq!(
+            parts.status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "body={text}"
+        );
+        assert!(
+            text.contains("Site shell / SSR failed"),
+            "expected SSR wording, got: {text}"
+        );
+        assert!(
+            !text.contains("Unknown Host"),
+            "must not mask SSR failure as Unknown Host: {text}"
+        );
+    }
+
     /// Test bare_repo_names correctly lists repos
     #[tokio::test]
     async fn test_bare_repo_names() {

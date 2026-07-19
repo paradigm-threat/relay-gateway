@@ -125,6 +125,13 @@ pub fn embed_html_document_with_css(
 }
 
 /// Like [`embed_html_document_with_css`], with an explicit assets URL prefix.
+fn document_title(repo: &str, site_title: Option<&str>) -> String {
+    match site_title.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(title) => escape_html_text(title),
+        None => format!("{} — Relay", escape_html_text(repo)),
+    }
+}
+
 pub fn embed_html_document_with_assets(
     repo: &str,
     branch: &str,
@@ -133,6 +140,29 @@ pub fn embed_html_document_with_assets(
     ssr_body_html: Option<&str>,
     ssr_css: Option<&str>,
     assets_url_prefix: Option<&str>,
+) -> String {
+    embed_html_document_with_assets_and_title(
+        repo,
+        branch,
+        rel_path,
+        client_hook_path,
+        ssr_body_html,
+        ssr_css,
+        assets_url_prefix,
+        None,
+    )
+}
+
+/// Like [`embed_html_document_with_assets`], with optional catalog `name` for `<title>`.
+pub fn embed_html_document_with_assets_and_title(
+    repo: &str,
+    branch: &str,
+    rel_path: &str,
+    client_hook_path: &str,
+    ssr_body_html: Option<&str>,
+    ssr_css: Option<&str>,
+    assets_url_prefix: Option<&str>,
+    site_title: Option<&str>,
 ) -> String {
     let initial_path = if rel_path.starts_with('/') {
         rel_path.to_string()
@@ -147,7 +177,7 @@ pub fn embed_html_document_with_assets(
     };
     let json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
     let json = escape_json_for_html_script(&json);
-    let title_repo = escape_html_text(repo);
+    let title_repo = document_title(repo, site_title);
     let (root_attrs, root_inner) = match ssr_body_html {
         Some(body) if !body.trim().is_empty() => {
             (" data-relay-ssr=\"1\"", sanitize_ssr_body_html(body))
@@ -173,7 +203,7 @@ pub fn embed_html_document_with_assets(
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="color-scheme" content="light dark"/>
-  <title>{title_repo} — Relay</title>
+  <title>{title_repo}</title>
   <link rel="stylesheet" href="{assets}/embed.css"/>
   <style>html,body,#root{{margin:0;height:100%;}}</style>{theme_style}
 </head>

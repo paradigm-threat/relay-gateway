@@ -786,7 +786,14 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
         } else {
             None
         };
-        let html = crate::git::embed_html::embed_html_document_with_assets(
+        let site_title = crate::git::relay_config_cache::read_relay_config_at_path_cached(
+            &repo_root,
+            request_branch,
+        )
+        .and_then(|cfg| cfg.name)
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty());
+        let html = crate::git::embed_html::embed_html_document_with_assets_and_title(
             repo,
             request_branch,
             &initial_path,
@@ -798,6 +805,7 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                 Some(rendered.css.as_str())
             },
             assets_prefix.as_deref(),
+            site_title.as_deref(),
         );
         Ok(hook_file_object_ssr_html(html))
     });

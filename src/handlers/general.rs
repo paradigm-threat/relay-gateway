@@ -536,6 +536,27 @@ pub async fn options_capabilities(
     )
 }
 
+fn site_shell_ssr_failed_response() -> axum::response::Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [("Content-Type", "text/html; charset=utf-8")],
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Site shell error</title>
+</head>
+<body>
+<h1>Site shell / SSR failed</h1>
+<p>This parked domain or repo host resolved, but the client hook did not produce HTML.</p>
+<p>Check server logs: <code>journalctl -u relay-gateway</code> and filter for <code>relay_ssr</code>.</p>
+</body>
+</html>"#,
+    )
+        .into_response()
+}
+
 pub async fn get_root(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -552,6 +573,7 @@ pub async fn get_root(
         {
             return resp;
         }
+        return site_shell_ssr_failed_response();
     }
     let has_parked = state
         .parked_domains
