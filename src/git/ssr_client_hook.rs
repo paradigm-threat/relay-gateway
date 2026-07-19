@@ -388,8 +388,11 @@ fn theme_yaml_from_repo(repo_path: &PathBuf, branch: &str) -> String {
 
 /// Try to SSR the client GET hook. Returns `None` on any failure (caller falls back to empty shell).
 pub fn try_ssr_client_hook(req: &ClientHookSsrRequest<'_>) -> Option<ClientHookSsrResult> {
+    let t0 = std::time::Instant::now();
     let entry = req.client_hook_rel.trim_start_matches('/');
     let source = read_repo_text(req.repo_path, req.branch, entry)?;
+    let ms_read = t0.elapsed().as_millis() as u64;
+    let t_mods = std::time::Instant::now();
     let (modules, mut hooks_val) = load_module_map(req.repo_path, req.branch, entry);
     if let Value::Object(ref mut map) = hooks_val {
         let base = req.asset_base_url.trim_end_matches('/');
@@ -411,6 +414,7 @@ pub fn try_ssr_client_hook(req: &ClientHookSsrRequest<'_>) -> Option<ClientHookS
         );
     }
     let theme = theme_yaml_from_repo(req.repo_path, req.branch);
+    let ms_mods = t_mods.elapsed().as_millis() as u64;
 
     let host: HostHandle = Rc::new(RefCell::new(RepoFetchHost {
         repo_path: req.repo_path.clone(),
@@ -419,6 +423,7 @@ pub fn try_ssr_client_hook(req: &ClientHookSsrRequest<'_>) -> Option<ClientHookS
         inner: MockHost::new(),
     }));
 
+    let t_hook = std::time::Instant::now();
     let run = run_hook_to_vnode_stable_isolated(
         &source,
         host,
@@ -432,16 +437,34 @@ pub fn try_ssr_client_hook(req: &ClientHookSsrRequest<'_>) -> Option<ClientHookS
         e
     })
     .ok()?;
+    let ms_hook = t_hook.elapsed().as_millis() as u64;
 
+    let t_html = std::time::Instant::now();
     let opts = HtmlRenderOptions {
         asset_base_url: req.asset_base_url.to_string(),
         stamp_handler_attrs: true,
     };
     let body_html = vnode_to_html(&run.vnode, &opts);
+    let ms_html = t_html.elapsed().as_millis() as u64;
+    let ms_total = t0.elapsed().as_millis() as u64;
     if body_html.trim().is_empty() {
         tracing::debug!(target: "relay_ssr", "SSR produced empty HTML; falling back");
         return None;
     }
+    tracing::info!(
+        target: "relay_ssr",
+        path = %req.initial_path,
+        hook = %entry,
+        ms_read,
+        ms_mods,
+        ms_hook,
+        ms_html,
+        ms_total,
+        html_bytes = body_html.len(),
+        css_bytes = run.css.len(),
+        stable_passes = run.stable_passes,
+        "client hook SSR ok"
+    );
     Some(ClientHookSsrResult {
         body_html,
         css: run.css,
