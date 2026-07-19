@@ -223,6 +223,101 @@ fn read_repo_text(repo_path: &PathBuf, branch: &str, rel: &str) -> Option<String
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Local tip import specs (`hooks/...`, `./...`, `../...`) — not `@relay/*` / packages.
+fn local_import_specs(source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = source;
+    while let Some(idx) = rest.find(" from ") {
+        let after = &rest[idx + 6..];
+        let after = after.trim_start();
+        let (q, body) = if let Some(b) = after.strip_prefix('\'') {
+            ('\'', b)
+        } else if let Some(b) = after.strip_prefix('"') {
+            ('"', b)
+        } else {
+            rest = &rest[idx + 6..];
+            continue;
+        };
+        if let Some(end) = body.find(q) {
+            let spec = &body[..end];
+            if spec.starts_with("hooks/")
+                || spec.starts_with("./")
+                || spec.starts_with("../")
+                || spec.ends_with(".jsx")
+                || spec.ends_with(".js")
+                || spec.ends_with(".yaml")
+                || spec.ends_with(".yml")
+            {
+                out.push(spec.to_string());
+            }
+            rest = &body[end + 1..];
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+fn insert_module(modules: &mut HashMap<String, String>, rel: &str, src: String) {
+    let rel = rel.trim_start_matches('/');
+    modules.insert(rel.to_string(), src.clone());
+    modules.insert(format!("/{rel}"), src);
+}
+
+fn resolve_import_rel(importer: &str, spec: &str) -> String {
+    if spec.starts_with("hooks/") || !spec.starts_with('.') {
+        return spec.trim_start_matches('/').to_string();
+    }
+    let importer = importer.trim_start_matches('/');
+    let base = std::path::Path::new(importer)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""));
+    let joined = base.join(spec);
+    let mut parts = Vec::new();
+    for c in joined.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
+            std::path::Component::Normal(s) => parts.push(s.to_string_lossy().into_owned()),
+            std::path::Component::CurDir => {}
+            _ => {}
+        }
+    }
+    parts.join("/")
+}
+
+fn preload_import_closure(
+    repo_path: &PathBuf,
+    branch: &str,
+    modules: &mut HashMap<String, String>,
+) {
+    let mut queue: Vec<String> = modules
+        .keys()
+        .filter(|k| !k.starts_with('/'))
+        .cloned()
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    while let Some(path) = queue.pop() {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let Some(src) = modules.get(&path).cloned() else {
+            continue;
+        };
+        for spec in local_import_specs(&src) {
+            let rel = resolve_import_rel(&path, &spec);
+            if modules.contains_key(&rel) {
+                continue;
+            }
+            if let Some(body) = read_repo_text(repo_path, branch, &rel) {
+                insert_module(modules, &rel, body);
+                queue.push(rel);
+            }
+        }
+    }
+}
+
 fn load_module_map(
     repo_path: &PathBuf,
     branch: &str,
@@ -231,8 +326,7 @@ fn load_module_map(
     let mut modules = HashMap::new();
     let entry = entry_rel.trim_start_matches('/');
     if let Some(src) = read_repo_text(repo_path, branch, entry) {
-        modules.insert(entry.to_string(), src.clone());
-        modules.insert(format!("/{entry}"), src);
+        insert_module(&mut modules, entry, src);
     }
 
     let mut hooks_json = serde_json::json!({
@@ -246,9 +340,11 @@ fn load_module_map(
                 for h in arr {
                     if let Some(path) = h.get("path").and_then(|p| p.as_str()) {
                         let p = path.trim_start_matches('/');
+                        if modules.contains_key(p) {
+                            continue;
+                        }
                         if let Some(src) = read_repo_text(repo_path, branch, p) {
-                            modules.insert(p.to_string(), src.clone());
-                            modules.insert(path.to_string(), src);
+                            insert_module(&mut modules, p, src);
                         }
                     }
                 }
@@ -267,9 +363,12 @@ fn load_module_map(
             continue;
         }
         if let Some(src) = read_repo_text(repo_path, branch, extra) {
-            modules.insert(extra.to_string(), src);
+            insert_module(&mut modules, extra, src);
         }
     }
+
+    // Follow tip-local imports so new components work without editing hooks.json.
+    preload_import_closure(repo_path, branch, &mut modules);
 
     (modules, Value::from_json(&hooks_json))
 }
