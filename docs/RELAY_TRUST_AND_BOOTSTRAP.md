@@ -18,21 +18,25 @@ Each entry under **`repos`** in **`relay-master/relay-catalog.json`** defines on
 
 Relay policy is **`url` + `relayRootCommit` + `branch`** (no git submodules in **`relay-master`**).
 
-### Public forge URL vs private body (copyright / ops)
+### Forge URL: thin full history (default) vs stub + shallow (opt-in)
 
-For any repository listed in **`relay-master`**, the **`url`** in **`relay-catalog.json`** is what relay nodes **clone or fetch** from the forge. Treat that URL as **public-facing policy**: it should point at a Git history whose **first commit is intentionally minimal** (typically **README-only**), so operators and **`sync-relay-catalog.sh`** can use:
+For any repository listed in **`relay-master`**, the **`url`** in **`relay-catalog.json`** is what relay nodes **clone or fetch**.
+
+**Production / thin repos (default):** point **`url`** at the real forge history (e.g. GitLab). **`sync-relay-catalog.sh`** defaults to a **full** bare clone (**`RELAY_CATALOG_CLONE_DEPTH=0`**). Thin trees (no in-git binaries) make full history cheap; keeping ancestry avoids lost **`merge-base`** / go-live breakage.
+
+**Free-tier / copyright stub (opt-in):** set **`RELAY_CATALOG_CLONE_DEPTH=1`** (or **N**) and use a **README-only** forge tip so nodes can:
 
 ```bash
 git clone --depth 1 <repository_URL>
 ```
 
-**Why:** **`--depth 1`** keeps forge bandwidth and disk small, avoids publishing large or restricted trees on GitLab/GitHub, and still gives **`relay-gateway`** a valid **`relayRootCommit`** (the trusted root) that remains an ancestor of the default branch tip. **Full history and payloads stay private**; **control of what the mesh actually serves** stays with operators who **`git push`** into the relay bare mirror (**`git://<node>:9418/<repo>.git`**, etc.) after the catalog sync has created the bare repo from the shallow public tip.
+In stub mode, **full payloads** stay off the public forge; operators **`git push`** the real mirror to **`git://<node>:9418/<repo>.git`** after catalog sync creates the bare. Do **not** leave production thin paradigm repos on depth-1 — that is how Relays previously served timeline with only a few shallow commits.
 
 **Rules of thumb:**
 
-- **`relayRootCommit`** = **`git rev-list --max-parents=0 <branch>`** on the **forge** clone (the minimal root you allowlisted).
-- If you add **new commits on the forge** (e.g. README edits), ensure **`git clone --depth 1`** still reaches **`relayRootCommit`** (with the default **`RELAY_CATALOG_CLONE_DEPTH=1`**, that means the root must be the **tip** or you must increase depth — see **`relay-master/scripts/sync-relay-catalog.sh`**).
-- **Never** point the catalog **`url`** at a private dump you refuse to host publicly; use a **stub repo** + push the real tree to relay only.
+- **`relayRootCommit`** = **`git rev-list --max-parents=0 <branch>`** on the **forge** clone you allowlisted (for multi-root histories, pick the canonical root and document it).
+- Shallow mode: the shallow slice must still contain **`relayRootCommit`** (with depth **1**, that usually means root == tip, or raise depth — see **`relay-master/scripts/sync-relay-catalog.sh`**).
+- **Never** point the catalog **`url`** at a private dump you refuse to host publicly unless you intentionally use the stub + shallow path above.
 
 **Authentication on nodes:** **`sync-relay-catalog.sh`** runs **`git clone` / `git fetch`** as the **`relay`** (or equivalent) UNIX user. If the forge project is **private**, that user needs **non-interactive** read access (e.g. **Public** or **Internal** visibility for a README-only stub, a **read-only deploy token** in **`git credential`**, or an **SSH `url`** in **`relay-catalog.json`** plus a deploy key). Otherwise **`fatal: could not read Username for 'https://gitlab.com'`** is expected.
 

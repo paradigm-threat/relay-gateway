@@ -44,7 +44,7 @@ sudo -u relay bash -lc 'cd /opt/relay/src/relay-master && git pull origin main &
 sudo systemctl restart relay-gateway
 ```
 
-**Catalog URLs and shallow clones:** each **`url`** in **`relay-catalog.json`** should use forge repos whose **first commit is minimal** (README-only stub) so **`sync-relay-catalog.sh`** can **`git clone --bare --depth 1`** and keep GitLab/GitHub free of private payloads. Full trees arrive via **`git push git://…:9418/…`** to the node. See **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** § “Public forge URL vs private body”.
+**Catalog URLs and clone depth:** **`sync-relay-catalog.sh`** defaults to a **full** bare clone (**`RELAY_CATALOG_CLONE_DEPTH=0`**) for thin / GitLab-backed repos. Opt into shallow with **`RELAY_CATALOG_CLONE_DEPTH=1`** only for free-tier stub forges. See **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** § “Forge URL: thin full history vs stub + shallow”.
 
 Add to **`/opt/relay/relay.env`** (example):
 
