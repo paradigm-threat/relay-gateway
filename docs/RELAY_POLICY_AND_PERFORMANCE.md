@@ -59,6 +59,23 @@ Immutable assets at a known commit may use long-lived `Cache-Control` at the CDN
 
 **Framework web bundles** (`embed.js`, split chunks, WASM) use commit-pinned URLs from the **`relay-web-assets`** repo (`/assets/c/{oid}/…`, immutable cache) when the site imports **`@relay/web-assets`** in `server.hooks.get` — see [`RELAY_WEB_ASSETS.md`](./RELAY_WEB_ASSETS.md).
 
+### SSR HTML cache (Phase D)
+
+Site-shell HTML from `ssrClientHookFromGetContext` is expensive (full client-hook render). Gateway keeps an **in-process LRU** keyed by:
+
+`(contentBarePath, branch, tipCommitOID, initialPath, clientHookPath, webAssetsOID)`
+
+| Behavior | Detail |
+|----------|--------|
+| **Hit** | Return cached document; `Cache-Control: public, s-maxage=60, stale-while-revalidate=3600` |
+| **Miss** | Render once, store, same headers |
+| **Invalidation** | New tip commit or new `relay-web-assets` tip → new key (no stale cross-tip bleed) |
+| **Disable** | `RELAY_DISABLE_SSR_HTML_CACHE=1` |
+
+Tip hygiene remains authoritative: **P0 article + P1 static chrome** on SSR; **P2 catalog / P3 interactive** on hydrate only (see park `hooks/CLEVERSCRIPT_TIP.md`). Cache does not excuse heavy catalog work inside the hook.
+
+Implementation: [`src/git/ssr_html_cache.rs`](../src/git/ssr_html_cache.rs). Related: [`RELAY_EMBED_CLIENT_GET_INTERCEPT.md`](./RELAY_EMBED_CLIENT_GET_INTERCEPT.md) Phase D.
+
 ## fan-edits / desktop profile
 
 - Catalog reads: on-tree GETs (`index.json`, `hooks/client/get.jsx`, project `.md`) — no `server.hooks.get`.

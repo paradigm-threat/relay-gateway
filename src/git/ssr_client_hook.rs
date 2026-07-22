@@ -47,7 +47,9 @@ impl RepoFetchHost {
             return None;
         }
         if !(u.starts_with("http://") || u.starts_with("https://")) {
-            return Some(u.trim_start_matches('/').to_string());
+            let path = u.split('?').next().unwrap_or(u);
+            let path = path.split('#').next().unwrap_or(path);
+            return Some(path.trim_start_matches('/').to_string());
         }
         let base = self.asset_base_url.trim_end_matches('/');
         if base.is_empty() {

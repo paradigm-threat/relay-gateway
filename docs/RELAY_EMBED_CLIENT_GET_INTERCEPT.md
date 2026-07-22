@@ -138,7 +138,7 @@ Optional **`main.js`** admin chrome may keep React separately until retired.
 ### Phase D — Security, perf, ops
 
 - **XSS:** HTML is generated server-side from repo hook — treat as **trusted** only for that repo; sanitize or restrict inline scripts if hooks are **tenant-supplied**.
-- **Caching:** Key by repo, branch, commit, blob OID, **`Accept`**, embed flag, and **asset version** of embed bundle.
+- **Caching (shipped):** SSR HTML LRU keyed by content tip commit + path + web-assets OID; response `public, s-maxage=60, stale-while-revalidate=3600`. See [`RELAY_POLICY_AND_PERFORMANCE.md`](./RELAY_POLICY_AND_PERFORMANCE.md) § SSR HTML cache; `RELAY_DISABLE_SSR_HTML_CACHE=1` to disable.
 - **CORS / cookies:** Embed page origin may equal the gateway; document **same-origin** expectations for WASM and fetch.
 
 ### Verification

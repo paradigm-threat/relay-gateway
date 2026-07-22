@@ -32,7 +32,8 @@ services:
     container_name: relay-gateway-dev
     # Kubo gateway is 127.0.0.1:8080 on the host; bridge networks cannot reach it on Linux.
     network_mode: host
-    restart: unless-stopped
+    # Manual start only — do not keep a local relay/git-daemon always-on on the workstation.
+    restart: "no"
     environment:
       RUST_LOG: info
       RELAY_HTTP_PORT: ${RELAY_DEV_HTTP_PORT:-18080}

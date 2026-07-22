@@ -25,6 +25,7 @@ pub mod search_config;
 pub mod search_plugins;
 pub mod sqlite_index;
 pub mod relay_config_cache;
+pub mod ssr_html_cache;
 pub mod repo;
 pub mod request_headers;
 pub mod resolve;

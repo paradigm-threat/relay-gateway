@@ -627,7 +627,7 @@ fn hook_file_object_ssr_html(html: String) -> CsValue {
     let mut headers = HashMap::new();
     headers.insert(
         "Cache-Control".to_string(),
-        CsValue::String("private, no-store".into()),
+        CsValue::String(crate::git::ssr_html_cache::SSR_HTML_CACHE_CONTROL.into()),
     );
     headers.insert("Vary".to_string(), CsValue::String("Accept".into()));
     let mut file = HashMap::new();
@@ -766,6 +766,20 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             .map(str::to_string)
             .unwrap_or_else(|| ssr_public_origin(ctx));
 
+        if let Some(cached) = crate::git::ssr_html_cache::get(
+            &repo_root,
+            request_branch,
+            &initial_path,
+            client_hook_path,
+        ) {
+            tracing::debug!(
+                target: "relay_ssr",
+                path = %initial_path,
+                "SSR HTML cache hit"
+            );
+            return Ok(hook_file_object_ssr_html(cached));
+        }
+
         let Some(rendered) = crate::git::ssr_client_hook::try_ssr_client_hook(
             &crate::git::ssr_client_hook::ClientHookSsrRequest {
                 repo_path: &repo_root,
@@ -806,6 +820,13 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             },
             assets_prefix.as_deref(),
             site_title.as_deref(),
+        );
+        crate::git::ssr_html_cache::put(
+            &repo_root,
+            request_branch,
+            &initial_path,
+            client_hook_path,
+            html.clone(),
         );
         Ok(hook_file_object_ssr_html(html))
     });
