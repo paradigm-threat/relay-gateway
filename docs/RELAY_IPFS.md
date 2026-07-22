@@ -54,23 +54,23 @@ Same resolution as **`resolveIpfsFromGetContext`**, but returns **`{ bodyBase64,
 
 Width comes only from **`queryWidth(ctx)`** (`ctx.query`, default keys **`w`**, **`width`**, **`maxWidth`**). The gateway does **not** inject **`ctx.w`** or auto-resize on **`?w=`**.
 
-**Legacy thin repos** (inline stubs at public paths until re-migrated):
+**Forbidden for paradigm-threat-files (fat):** do **not** store `relay-ipfs-v1` text at public media paths (`.png`, `.jpg`, …). That layout caused a production outage when a thin tip was grafted onto the fat spine (2026-07-21). Fat repos keep **real binaries** in Git; use **`assets.manifest.json`** (and optional **`.relay/assets/*.ipfs`**) as the index. See `paradigm-threat-files/docs/MEDIA_AND_IPFS.md`.
 
-```cs
-var ipfsOpts = { sources: ["inline", "manifest"], manifestPath: "assets.manifest.json" };
-var maxW = queryWidth(ctx);
-if (maxW !== null) {
-  var bytes = fetchIpfsBytesFromGetContext(ctx, ipfsOpts);
-  var webp = optimizeRasterFromGetContext(ctx, bytes, { width: maxW });
-  if (webp !== null) { return webp; }
-}
-return resolveIpfsFromGetContext(ctx, ipfsOpts);
-```
+**Legacy only** (migrate away): `sources: ["inline", …]` reads a stub *at the public path*. Prefer **`centralDir` + `manifest`**, or fat Git bytes first.
 
-**Target layout** (defaults):
+**Target layout** (defaults — central `.ipfs` stubs, not inline at `hero.png`):
 
 ```cs
 var file = resolveIpfsFromGetContext(ctx);
+```
+
+**Fat content repo** (binaries in Git; manifest as IPFS index / fallback):
+
+```cs
+var optimized = optimizeRasterFromGetContext(ctx);
+if (optimized !== null) { return optimized; }
+var ipfsOpts = { sources: ["manifest"], manifestPath: "assets.manifest.json" };
+return resolveIpfsFromGetContext(ctx, ipfsOpts);
 ```
 
 For catalog `thin_ipfs_assets` repos, **GET** on a logical path **missing from the Git tree** still runs `server.hooks.get` (so central-dir + manifest resolution works).
