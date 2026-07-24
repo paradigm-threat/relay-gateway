@@ -38,9 +38,17 @@ if [[ ! -d "$BARE" ]]; then
   git clone --bare "$SRC" "$BARE"
 fi
 
+REUSE_MANIFEST="${REUSE_MANIFEST:-}"
+if [[ -z "$REUSE_MANIFEST" && -f "$SRC/assets.manifest.json" ]]; then
+  REUSE_MANIFEST="$SRC/assets.manifest.json"
+fi
 echo "==> pin all historical binary blobs (resume with --resume on re-run)"
-python3 "$SCRIPT_DIR/relay-ipfs-migrate-history.py" "$BARE" \
-  --workdir "$MIGRATE" --branch "$BRANCH" --resume
+MIGRATE_ARGS=(--workdir "$MIGRATE" --branch "$BRANCH" --resume)
+if [[ -n "$REUSE_MANIFEST" ]]; then
+  echo "==> reuse-manifest: $REUSE_MANIFEST"
+  MIGRATE_ARGS+=(--reuse-manifest "$REUSE_MANIFEST")
+fi
+python3 "$SCRIPT_DIR/relay-ipfs-migrate-history.py" "$BARE" "${MIGRATE_ARGS[@]}"
 
 echo "==> git filter-repo on bare mirror"
 cd "$BARE"

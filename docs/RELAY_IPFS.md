@@ -160,15 +160,18 @@ import RelayImage from 'hooks/client/components/RelayImage.jsx'
 
 ## Migration (operators)
 
-Initial history rewrite (binaries → inline stubs): `relay-ipfs-thin-repo.sh`, `relay-ipfs-migrate-history.py`.
+Rebuild from a **fat** source tip (never re-graft thin onto fat `main`):
 
-**Move inline stubs to central dir** (remove fake `.png` text at public paths):
+1. `relay-ipfs-thin-repo.sh` / `relay-ipfs-migrate-history.py` — pin historical binaries; filter-repo → temporary **inline** stubs + `assets.manifest.json`. Prefer `--reuse-manifest` / `REUSE_MANIFEST` against the fat tip’s `assets.manifest.json` when Kubo `ipfs add` wedges under bulk load.
+2. **Required finish:** `relay-ipfs-migrate-to-central-dir.py` so public media paths are **absent** and pointers live under `.relay/assets/{path}.ipfs`. Tip `hooks/server/get.cs` must use `sources: ["centralDir","manifest"]` (not `inline`).
+3. `relay-ipfs-verify-thin.sh` — no raw binaries, pins present, no `relay-ipfs-v1` at `*.png`/`*.jpg`.
+4. Push only the **`-thin`** GitLab forge. Local proof: `docs/DOCKER_IPFS_DEV.md` / `docker-ipfs-dev.sh` before any fleet cutover.
+
+**Do not** `reclone-repo` a **production fat** slug from an inline-stub or `-thin` tip (2026-07-21 outage). Catalog production URLs stay on fat until cutover is explicit; optional separate thin slug later.
 
 ```bash
 ./relay-ipfs-migrate-to-central-dir.py /path/to/bare-or-checkout.git
 ```
-
-Then `relay-ipfs-verify-thin.sh`, update catalog `relay_root_commit`, `relay-fleet.sh reclone-repo`.
 
 ## Cache GC
 

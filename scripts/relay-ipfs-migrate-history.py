@@ -66,17 +66,77 @@ def guess_mime(path: str) -> str:
     return t or "application/octet-stream"
 
 
-def ipfs_add(data: bytes, suffix: str = ".bin") -> str:
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
-        f.write(data)
-        tmp = f.name
-    try:
-        proc = run(["ipfs", "add", "--pin", "--quieter", "--cid-version=1", tmp])
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr or proc.stdout or "ipfs add failed")
-        return proc.stdout.strip().split()[-1]
-    finally:
-        Path(tmp).unlink(missing_ok=True)
+def load_sha_cid_map(manifest_path: Path | None) -> dict[str, str]:
+    """Reuse CIDs already listed in a fat assets.manifest.json (sha256 -> cid)."""
+    if not manifest_path or not manifest_path.is_file():
+        return {}
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    out: dict[str, str] = {}
+    for asset in raw.get("assets") or []:
+        sha = asset.get("sha256")
+        cid = asset.get("ipfs")
+        if isinstance(sha, str) and isinstance(cid, str) and sha and cid:
+            out[sha] = cid
+    return out
+
+
+def ipfs_daemon_ok() -> bool:
+    return run(["timeout", "5", "ipfs", "id"]).returncode == 0
+
+
+def restart_ipfs_daemon() -> None:
+    """Best-effort local Kubo bounce when adds start hanging."""
+    sys.stderr.write("restarting local ipfs daemon after hung add...\n")
+    run(["pkill", "-9", "-f", "/usr/local/bin/ipfs add"])
+    run(["pkill", "-TERM", "-f", "/usr/local/bin/ipfs daemon"])
+    import time
+
+    time.sleep(2)
+    run(["pkill", "-9", "-f", "/usr/local/bin/ipfs daemon"])
+    time.sleep(1)
+    Path.home().joinpath(".ipfs/repo.lock").unlink(missing_ok=True)
+    subprocess.Popen(
+        ["/usr/local/bin/ipfs", "daemon"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    for _ in range(40):
+        if ipfs_daemon_ok():
+            return
+        time.sleep(1)
+    raise RuntimeError("ipfs daemon failed to come back after restart")
+
+
+def ipfs_add(data: bytes, suffix: str = ".bin", *, timeout_sec: int = 60) -> str:
+    """Add bytes to Kubo; bounce daemon and retry once on timeout/cancel."""
+    last_err = ""
+    for attempt in range(2):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
+            f.write(data)
+            tmp = f.name
+        try:
+            # pin=false avoids some Kubo lockups under bulk add; verify step pins later.
+            proc = run(
+                [
+                    "timeout",
+                    str(timeout_sec),
+                    "ipfs",
+                    "add",
+                    "--pin=false",
+                    "--quieter",
+                    "--cid-version=1",
+                    tmp,
+                ]
+            )
+            if proc.returncode == 0:
+                return proc.stdout.strip().split()[-1]
+            last_err = (proc.stderr or proc.stdout or "ipfs add failed").strip()
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+        if attempt == 0:
+            restart_ipfs_daemon()
+    raise RuntimeError(last_err or "ipfs add failed")
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -152,6 +212,12 @@ def main() -> int:
     ap.add_argument("--branch", default="main")
     ap.add_argument("--max-blobs", type=int, default=0, help="0 = unlimited")
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument(
+        "--reuse-manifest",
+        type=Path,
+        default=None,
+        help="assets.manifest.json to reuse sha256→CID (skip ipfs add when known)",
+    )
     args = ap.parse_args()
 
     repo = args.repo.resolve()
@@ -167,11 +233,16 @@ def main() -> int:
         sys.stderr.write("ipfs daemon not reachable; start with: ipfs daemon\n")
         return 1
 
+    sha_cid = load_sha_cid_map(args.reuse_manifest.resolve() if args.reuse_manifest else None)
+    if sha_cid:
+        print(f"reuse-manifest: {len(sha_cid)} sha256→CID entries", flush=True)
+
     seen_oids: set[str] = set()
     blobs = iter_all_blobs(repo)
     print(f"scanning {len(blobs)} object lines from rev-list...", flush=True)
     pinned = 0
     skipped = 0
+    reused = 0
 
     for oid, path_hint in blobs:
         if oid in seen_oids:
@@ -188,7 +259,15 @@ def main() -> int:
         mime = guess_mime(path_hint or "application/octet-stream")
         sha = sha256_bytes(data)
         try:
-            cid = ipfs_add(data, suffix=Path(path_hint).suffix if path_hint else ".bin")
+            if sha in sha_cid:
+                cid = sha_cid[sha]
+                st = run(["timeout", "8", "ipfs", "block", "stat", cid])
+                if st.returncode == 0:
+                    reused += 1
+                else:
+                    cid = ipfs_add(data, suffix=Path(path_hint).suffix if path_hint else ".bin")
+            else:
+                cid = ipfs_add(data, suffix=Path(path_hint).suffix if path_hint else ".bin")
         except RuntimeError as e:
             sys.stderr.write(f"ipfs add failed for {oid} {path_hint}: {e}\n")
             return 1
@@ -205,7 +284,10 @@ def main() -> int:
             print(f"pinned {pinned} blobs (last {path_hint} -> {cid})", flush=True)
 
     oid_path.write_text(json.dumps(oid_stubs, indent=2), encoding="utf-8")
-    print(f"oid-stubs: {len(oid_stubs)} binaries pinned ({pinned} new, {skipped} resumed)")
+    print(
+        f"oid-stubs: {len(oid_stubs)} binaries pinned "
+        f"({pinned} new, {skipped} resumed, {reused} reused-from-manifest)"
+    )
 
     rows = []
     assets = []

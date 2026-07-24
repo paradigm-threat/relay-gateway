@@ -89,7 +89,14 @@ def _tree_from_dict(repo: Path, node: dict) -> str:
 
 
 def rewrite_tree(repo: Path, tree_oid: str) -> str:
-    proc = run(["git", "-C", str(repo), "ls-tree", tree_oid])
+    """Rewrite one commit tree.
+
+    Must use `ls-tree -r` with full paths. A recursive per-subtree walk only sees
+    basenames, which incorrectly nests `.relay/assets/` under each directory
+    (e.g. `book/.relay/assets/foo.png.ipfs`) instead of repo-root
+    `.relay/assets/book/foo.png.ipfs`.
+    """
+    proc = run(["git", "-C", str(repo), "ls-tree", "-r", tree_oid])
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr or f"ls-tree {tree_oid}")
     root: dict = {}
@@ -100,17 +107,15 @@ def rewrite_tree(repo: Path, tree_oid: str) -> str:
         mode, typ, sha, name = line.split(maxsplit=3)
         if name.startswith('"') and name.endswith('"'):
             name = bytes(name[1:-1], "utf-8").decode("unicode_escape")
-        if typ == "tree":
-            sub_sha = rewrite_tree(repo, sha)
-            _insert_path(root, name.split("/"), "040000", "tree", sub_sha)
-        elif typ == "blob":
-            if is_asset_path(name) and is_inline_pointer(repo, sha):
-                central = f"{ASSETS_PREFIX}{name}{IPFS_SUFFIX}"
-                _insert_path(root, central.split("/"), mode, "blob", sha)
-                continue
-            _insert_path(root, name.split("/"), mode, "blob", sha)
-        else:
+        if typ != "blob":
+            # rare: submodule / gitlink — keep at path
             _insert_path(root, name.split("/"), mode, typ, sha)
+            continue
+        if is_asset_path(name) and is_inline_pointer(repo, sha):
+            central = f"{ASSETS_PREFIX}{name}{IPFS_SUFFIX}"
+            _insert_path(root, central.split("/"), mode, "blob", sha)
+            continue
+        _insert_path(root, name.split("/"), mode, "blob", sha)
 
     return _tree_from_dict(repo, root)
 

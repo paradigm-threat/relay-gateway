@@ -5,9 +5,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GW_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DATA_DIR="${RELAY_DEV_DATA_DIR:-$GW_DIR/docker-data/ipfs-dev/data}"
-THIN_FILES_SRC="${THIN_FILES_BARE:-$GW_DIR/../../pt/thin-migrate/paradigm-threat-files/thin.git}"
-THIN_FILES_CHECKOUT="${THIN_FILES_CHECKOUT:-$GW_DIR/../../pt/thin-migrate/paradigm-threat-files/checkout}"
-THIN_TIMELINE_SRC="${THIN_TIMELINE_BARE:-$GW_DIR/../../pt/thin-migrate/paradigm-threat-timeline/thin.git}"
+# Prefer dated 2026-07-22 rebuild (centralDir); fall back to legacy Jul-18 paths.
+_DEFAULT_FILES_BARE="$GW_DIR/../../pt/thin-migrate/paradigm-threat-files-20260722/thin.git"
+_DEFAULT_FILES_CHECKOUT="$GW_DIR/../../pt/thin-migrate/paradigm-threat-files-20260722/checkout"
+[[ -d "$_DEFAULT_FILES_BARE" ]] || _DEFAULT_FILES_BARE="$GW_DIR/../../pt/thin-migrate/paradigm-threat-files/thin.git"
+[[ -d "$_DEFAULT_FILES_CHECKOUT" ]] || _DEFAULT_FILES_CHECKOUT="$GW_DIR/../../pt/thin-migrate/paradigm-threat-files/checkout"
+THIN_FILES_SRC="${THIN_FILES_BARE:-$_DEFAULT_FILES_BARE}"
+THIN_FILES_CHECKOUT="${THIN_FILES_CHECKOUT:-$_DEFAULT_FILES_CHECKOUT}"
+_DEFAULT_TL_BARE="$GW_DIR/../../pt/thin-migrate/paradigm-threat-timeline-20260722/thin.git"
+[[ -d "$_DEFAULT_TL_BARE" ]] || _DEFAULT_TL_BARE="$GW_DIR/../../pt/thin-migrate/paradigm-threat-timeline/thin.git"
+THIN_TIMELINE_SRC="${THIN_TIMELINE_BARE:-$_DEFAULT_TL_BARE}"
 
 log() { echo "[docker-ipfs-dev-prepare] $*" >&2; }
 
