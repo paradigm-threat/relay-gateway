@@ -376,7 +376,8 @@ EOS
 cmd_update() {
   source_env
   parse_hosts_to_array
-  local h tgz
+  local h tgz health_gate
+  health_gate="${RELAY_FLEET_UPDATE_HEALTH:-1}"
   tgz="$(default_tgz)"
   if [[ "$BUILD" -eq 1 || ! -f "$tgz" ]]; then
     log "running pack-linode-deploy.sh …"
@@ -389,11 +390,20 @@ cmd_update() {
   for h in "${FLEET_HOSTS[@]}"; do
     echo "[relay-fleet] update begin $h"
     "$ROOT/scripts/relay-linode-redeploy-seed.sh" "$h" "$tgz"
-    echo "[relay-fleet] update end $h"
-  done
-  for h in "${FLEET_HOSTS[@]}"; do
     echo "[relay-fleet] restart relay-gateway relay-git-daemon $h"
     "${SSH_BATCH[@]}" "$(ssh_target "$h")" 'sudo systemctl restart relay-gateway relay-git-daemon'
+    case "${health_gate,,}" in
+      0|no|false|off) ;;
+      *)
+        echo "[relay-fleet] post-update health gate $h (POST /api/config)"
+        local curl_t="${RELAY_FLEET_CURL_TIMEOUT:-25}"
+        if ! curl -sfS --max-time "$curl_t" -X POST "https://${h}/api/config" >/dev/null; then
+          die "post-update health gate failed for $h — fix node before continuing (set RELAY_FLEET_UPDATE_HEALTH=0 to skip)"
+        fi
+        echo "[relay-fleet] health gate OK $h"
+        ;;
+    esac
+    echo "[relay-fleet] update end $h"
   done
 }
 

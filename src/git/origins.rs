@@ -116,6 +116,35 @@ pub fn next_hop_after(hosts: &[String], self_host: &str) -> Option<String> {
     Some(hosts[0].clone())
 }
 
+/// Next hop after `self_host`, skipping hosts in `exclude` (dead peers). Tries up to one full ring.
+pub fn next_hop_after_excluding(
+    hosts: &[String],
+    self_host: &str,
+    exclude: &[String],
+) -> Option<String> {
+    if hosts.is_empty() {
+        return None;
+    }
+    let me = self_host.trim().to_ascii_lowercase();
+    let start = next_hop_after(hosts, self_host)?;
+    let mut cand = start.clone();
+    for _ in 0..hosts.len() {
+        let cand_l = cand.to_ascii_lowercase();
+        if cand_l != me
+            && !exclude
+                .iter()
+                .any(|e| e.trim().eq_ignore_ascii_case(&cand_l))
+        {
+            return Some(cand);
+        }
+        cand = next_hop_after(hosts, &cand)?;
+        if cand.eq_ignore_ascii_case(&start) {
+            break;
+        }
+    }
+    None
+}
+
 /// Hop-forward after peer-fetch: next after `self_host`, respecting `via` loop guard.
 pub fn hop_forward_target(
     git: &GitConfig,
@@ -179,6 +208,19 @@ mod tests {
         ];
         assert_eq!(next_hop_after(&h, "b.example").as_deref(), Some("c.example"));
         assert_eq!(next_hop_after(&h, "c.example").as_deref(), Some("a.example"));
+    }
+
+    #[test]
+    fn next_hop_excluding_skips_dead() {
+        let h = vec![
+            "a.example".to_string(),
+            "b.example".to_string(),
+            "c.example".to_string(),
+        ];
+        assert_eq!(
+            next_hop_after_excluding(&h, "a.example", &["b.example".into()]).as_deref(),
+            Some("c.example")
+        );
     }
 
     #[test]

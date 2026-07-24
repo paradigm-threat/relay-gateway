@@ -104,8 +104,21 @@ When a commit is pushed via the Git protocol:
 4.  It then runs the CleverScript `pre-receive` hook if configured (same contract as pre-commit).
 5.  If any step fails, the push is rejected.
 
+### Post-receive (side effects — non-blocking on modern builds)
+
+After the ref is updated, **`relay-hook-handler`** schedules (does **not** block the git client on):
+
+1. Slack commit notify (thread; see `RELAY_SLACK_TIMEOUT_SECS`)
+2. SQLite index warm via **`spawn_ensure_indexed`** (QUERY may wait on the branch mutex until warm finishes)
+3. **`autoPush`** in a thread with **`RELAY_AUTOPUSH_TIMEOUT_SECS`** per origin (`timeout(1)` + `git push`) — prefer tip-notify over autoPush
+4. Mesh tip-notify (`spawn_notify_after_push`) with **`RELAY_PEER_NOTIFY_TIMEOUT_SECS`**; `notifyMode: next` retries **next+1** once on failure
+
+See **[`RELAY_MESH_OPS.md`](./RELAY_MESH_OPS.md)** for hung-push runbook and deploy order. **Do not** put heavy corpus work in CleverScript `pre-receive` — only changed `ctx.files`.
+
 ### Index hook (`server.hooks.index`)
 When QUERY (or MCP search) needs an up-to-date index, the gateway runs **Rust** indexing of `data/**/meta.yaml` into `index.db.json`, syncs **SQLite** `index.db` (default search plugin) and legacy **redb**, ingests catalog `index.json` / `data/events.json` when present, then optionally runs `server.hooks.index` CleverScript for thin extra logic. Paths must be `.cs`. See [`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md).
+
+Post-receive warms the same path asynchronously; QUERY JIT still calls `ensure_indexed` under a per-branch mutex if the tip is stale.
 
 ### QUERY hook (`server.hooks.query`)
 Thin CleverScript that **`import { search } from '@relay/search/sqlite'`** (or redb) and returns `search(ctx)`. Do not implement corpus scan/rank in CS. Normative details: [`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md).

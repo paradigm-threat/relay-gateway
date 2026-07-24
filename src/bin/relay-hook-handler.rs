@@ -107,7 +107,8 @@ fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
 
-        // Special handling for post-receive (Auto-Push + index refresh)
+        // Special handling for post-receive: schedule side effects, return quickly so
+        // `git push` ACK is not blocked on index / Slack / mesh / autoPush.
         if hook_name == "post-receive" {
             let repo_slug = relay_server::notify::normalize_repo_slug(
                 ctx.repo_path
@@ -119,7 +120,7 @@ fn main() -> anyhow::Result<()> {
             let node = std::env::var("RELAY_PUBLIC_HOSTNAME")
                 .or_else(|_| std::env::var("RELAY_NODE_FQDN"))
                 .ok();
-            relay_server::notify::commit_update_notify_blocking(
+            relay_server::notify::spawn_commit_update_notify_blocking(
                 "git_push",
                 &repo_slug,
                 &ctx.branch,
@@ -127,23 +128,20 @@ fn main() -> anyhow::Result<()> {
                 sid.as_deref(),
                 node.as_deref(),
             );
-            // Warm SQLite index after validated push (same path as QUERY JIT).
-            if let Ok(repo) = git2::Repository::open_bare(&ctx.repo_path) {
-                if let Some(cfg) = relay_server::git::read_relay_config(&repo, &ctx.new_commit) {
-                    if relay_server::git::has_index_hook(&cfg) {
-                        let lock = relay_server::git::branch_operation_mutex(
-                            ctx.repo_path.clone(),
-                            ctx.branch.clone(),
-                        );
-                        let _guard = lock.lock().unwrap();
-                        if let Err(e) = relay_server::git::ensure_indexed(&ctx) {
-                            error!("post-receive ensure_indexed failed: {}", e);
-                        }
+            // Warm SQLite index off the push critical path (QUERY JIT still waits on mutex).
+            relay_server::git::spawn_ensure_indexed(
+                ctx.repo_path.clone(),
+                ctx.branch.clone(),
+                ctx.new_commit.clone(),
+            );
+            // autoPush can hang on a dead peer — run with per-origin timeout in a thread.
+            {
+                let ctx_ap = ctx.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = handle_auto_push(&ctx_ap) {
+                        error!("Auto-push failed: {}", e);
                     }
-                }
-            }
-            if let Err(e) = handle_auto_push(&ctx) {
-                error!("Auto-push failed: {}", e);
+                });
             }
 
             let repo_slug = relay_server::notify::normalize_repo_slug(
@@ -153,14 +151,15 @@ fn main() -> anyhow::Result<()> {
                     .unwrap_or("unknown.git"),
             );
             if relay_server::git::catalog_apply::is_relay_master_slug(&repo_slug) {
+                // Catalog apply stays sync (reclone wiring); still prefer not to grow this.
                 relay_server::git::catalog_apply::handle_relay_master_post_receive(&ctx);
             } else if let Ok(repo) = git2::Repository::open_bare(&ctx.repo_path) {
                 if let Some(cfg) = relay_server::git::read_relay_config(&repo, &ctx.new_commit) {
-                    relay_server::peer_notify::notify_after_push(
-                        &repo_slug,
-                        &ctx.branch,
-                        &ctx.new_commit,
-                        &cfg,
+                    relay_server::peer_notify::spawn_notify_after_push(
+                        repo_slug,
+                        ctx.branch.clone(),
+                        ctx.new_commit.clone(),
+                        cfg,
                     );
                 }
             }
@@ -181,6 +180,14 @@ fn enforce_branch_rules(ctx: &HookContext) -> anyhow::Result<()> {
         &ctx.branch,
     )
     .map_err(|e| anyhow::anyhow!("{}", e))
+}
+
+fn autopush_timeout_secs() -> u64 {
+    std::env::var("RELAY_AUTOPUSH_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(60)
 }
 
 fn handle_auto_push(ctx: &HookContext) -> anyhow::Result<()> {
@@ -225,6 +232,7 @@ fn handle_auto_push(ctx: &HookContext) -> anyhow::Result<()> {
         .and_then(|s| s.to_str())
         .unwrap_or("unknown.git");
 
+    let timeout_secs = autopush_timeout_secs();
     let mut any_failed = false;
     for origin in auto_push.origin_list {
         let push_url = if origin.contains("://") || origin.contains("@") {
@@ -233,15 +241,20 @@ fn handle_auto_push(ctx: &HookContext) -> anyhow::Result<()> {
             format!("git://{}/{}", origin, repo_name)
         };
 
-        info!("Pushing {} to {}", ctx.branch, push_url);
+        info!(
+            "Pushing {} to {} (timeout {}s)",
+            ctx.branch, push_url, timeout_secs
+        );
         eprintln!(
-            "[relay-hook-handler] Pushing {} to {}",
-            ctx.branch, push_url
+            "[relay-hook-handler] Pushing {} to {} (timeout {}s)",
+            ctx.branch, push_url, timeout_secs
         );
 
-        // Construct git push command
-        let mut cmd = std::process::Command::new("git");
-        cmd.arg("-C")
+        // Bound wait: `timeout(1)` from coreutils on fleet Linux.
+        let mut cmd = std::process::Command::new("timeout");
+        cmd.arg(format!("{}s", timeout_secs))
+            .arg("git")
+            .arg("-C")
             .arg(&ctx.repo_path)
             .arg("push")
             .arg(&push_url)
@@ -250,7 +263,13 @@ fn handle_auto_push(ctx: &HookContext) -> anyhow::Result<()> {
 
         match cmd.output() {
             Ok(output) => {
-                if !output.status.success() {
+                // GNU timeout: 124 = timed out
+                if output.status.code() == Some(124) {
+                    any_failed = true;
+                    let detail = format!("auto-push timed out after {}s", timeout_secs);
+                    error!("Failed to push to {}: {}", origin, detail);
+                    relay_server::notify::notify_auto_push_error(&origin, &detail);
+                } else if !output.status.success() {
                     any_failed = true;
                     let detail = String::from_utf8_lossy(&output.stderr).to_string();
                     error!("Failed to push to {}: {}", origin, detail);

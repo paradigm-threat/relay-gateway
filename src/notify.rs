@@ -56,6 +56,26 @@ fn object_sha_ok(sha: &str) -> bool {
     t.len() == 40 && t.chars().all(|c| c.is_ascii_hexdigit()) && !t.chars().all(|c| c == '0')
 }
 
+/// `RELAY_SLACK_TIMEOUT_SECS` (default 12) for webhook POSTs.
+fn slack_http_timeout() -> Duration {
+    let secs = std::env::var("RELAY_SLACK_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(12);
+    Duration::from_secs(secs)
+}
+
+/// History lookup timeout: same env, default 10 (legacy).
+fn slack_history_timeout() -> Duration {
+    let secs = std::env::var("RELAY_SLACK_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(10);
+    Duration::from_secs(secs)
+}
+
 /// Incoming Webhook URL (same as mesh Slack path).
 pub fn slack_webhook_url() -> Option<String> {
     std::env::var("RELAY_NOTIFY_SLACK_WEBHOOK_URL")
@@ -84,7 +104,7 @@ fn slack_history_has_commit_marker_blocking(channel_id: &str, repo: &str, sha: &
     };
     let marker = commit_dedup_marker(repo, sha);
     let client = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .timeout(slack_history_timeout())
         .build()
     {
         Ok(c) => c,
@@ -222,7 +242,7 @@ pub async fn post_slack_webhook(
 
 pub fn post_slack_webhook_blocking(url: &str, text: &str) -> Result<(), String> {
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(12))
+        .timeout(slack_http_timeout())
         .build()
         .map_err(|e| e.to_string())?;
     let body = serde_json::json!({ "text": text });
@@ -247,7 +267,7 @@ pub fn spawn_slack_text(text: String) {
     };
     tokio::spawn(async move {
         let client = match reqwest::Client::builder()
-            .timeout(Duration::from_secs(12))
+            .timeout(slack_http_timeout())
             .build()
         {
             Ok(c) => c,
@@ -307,7 +327,7 @@ pub fn spawn_commit_update_notify(
             node_fqdn.as_deref(),
         );
         let client = match reqwest::Client::builder()
-            .timeout(Duration::from_secs(12))
+            .timeout(slack_http_timeout())
             .build()
         {
             Ok(c) => c,
@@ -345,6 +365,33 @@ pub fn commit_update_notify_blocking(
     if post_slack_webhook_blocking(&url, &text).is_ok() {
         mark_commit_update_seen(repo, sha);
     }
+}
+
+/// Fire-and-forget Slack commit update for processes **without** a Tokio runtime
+/// (`relay-hook-handler`). Prefer [`spawn_commit_update_notify`] inside `relay-gateway`.
+pub fn spawn_commit_update_notify_blocking(
+    source: &'static str,
+    repo: &str,
+    branch: &str,
+    sha: &str,
+    relay_server_id: Option<&str>,
+    node_fqdn: Option<&str>,
+) {
+    let repo = repo.to_string();
+    let branch = branch.to_string();
+    let sha = sha.to_string();
+    let sid = relay_server_id.map(|s| s.to_string());
+    let node = node_fqdn.map(|s| s.to_string());
+    std::thread::spawn(move || {
+        commit_update_notify_blocking(
+            source,
+            &repo,
+            &branch,
+            &sha,
+            sid.as_deref(),
+            node.as_deref(),
+        );
+    });
 }
 
 pub fn notify_server_started(node_fqdn: Option<&str>, relay_server_id: Option<&str>) {

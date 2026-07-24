@@ -51,7 +51,7 @@ Edit paths in **`scripts/relay-local-repos.map`**. Legacy **atlanta2** may still
 | **`status`** | Parallel **`POST https://<host>/api/config`**; prints **`relay_server_id`**, **`catalog_forge_sync_ok`**, **`authorized_repos`** summary. |
 | **`health`** | Per-host HTTP **QUERY** smoke via **`scripts/validate-relay-query.mjs`** (default repos **`paradigm-threat-files`**, **`paradigm-threat-timeline`**, query **`venus`**). Optional **`--mcp`** also runs **`validate-relay-mcp.mjs`**. Override with **`RELAY_FLEET_HEALTH_REPOS`**, **`RELAY_FLEET_HEALTH_QUERY`**. Requires local **`node`**. |
 | **`drift`** | **`git -C $RELAY_MASTER_CATALOG_PATH rev-parse HEAD`** per host (default path **`/opt/relay/src/relay-master`**); flags mismatches. |
-| **`update`** | **`relay-linode-redeploy-seed.sh`** per host with **`RELAY_REDEPLOY_SKIP_SEED=1`**, then **`systemctl restart relay-gateway relay-git-daemon`**. |
+| **`update`** | Per host: **`relay-linode-redeploy-seed.sh`**, restart **`relay-gateway`** + **`relay-git-daemon`**, then **post-update health gate** (`POST /api/config`) unless **`RELAY_FLEET_UPDATE_HEALTH=0`**. Prefer canary order lon1 → hkg1 → dfw1 (`--only=`). See **[`RELAY_MESH_OPS.md`](./RELAY_MESH_OPS.md)**. |
 | **`deploy-all`** | Same as **`update`** (**`relay-linode-redeploy-seed.sh`** …). **`./scripts/deploy-all-masters.sh`** wraps **`relay-fleet.sh --build deploy-all`** (always repacks — use **`relay-fleet.sh deploy-all`** alone only if you intend to reuse an existing tarball). |
 | **`repair`** | Uploads **`target/relay-linode-deploy.tgz`**, extracts under **`/tmp`**, runs **`./install.sh repair`** (same pattern as **`relay-linode-redeploy-seed`** — **`install.sh` is not kept under `/opt/relay/bin`** on nodes). |
 | **`features-set`** | Same tarball staging, then **`./install.sh reconfigure-features`** with **`RELAY_INSTALL_NONINTERACTIVE=1`** and **`RELAY_FEAT_*`** from flags or your environment: **`--piper=0|1`**, **`--npm-pkgs=`**, **`--translation=0|1`**, **`--translation-pkgs=`**, **`--libretranslate=0|1`**. |
@@ -67,6 +67,7 @@ Edit paths in **`scripts/relay-local-repos.map`**. Legacy **atlanta2** may still
 | **`RELAY_FLEET_CURL_TIMEOUT`** | 25 | Seconds for **`status`** HTTPS. |
 | **`RELAY_FLEET_MAX_PARALLEL`** | 4 | Parallel **`ssh-check`** / **`status`** jobs. |
 | **`RELAY_FLEET_STRICT_HOST_KEY`** | accept-new | Passed to **`ssh` / `scp`**. |
+| **`RELAY_FLEET_UPDATE_HEALTH`** | `1` | After each host update+restart, require **`POST /api/config`** before next host (`0` to skip). |
 
 ## Examples
 

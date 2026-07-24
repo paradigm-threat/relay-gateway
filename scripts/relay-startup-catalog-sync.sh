@@ -12,6 +12,7 @@
 #   RELAY_GIT_PORT               peer git daemon port (default: 9418)
 #   RELAY_PUBLIC_HOSTNAME        this node FQDN — used to skip self in RELAY_MASTER_PEER_LIST
 #   RELAY_MASTER_PEER_LIST       semicolon-separated master FQDNs (other peers to fetch from)
+#   RELAY_PEER_FETCH_TIMEOUT_SECS  per peer `git fetch` timeout seconds (default: 30)
 #   RELAY_SERVER_ID              optional, included in Slack lines
 #   RELAY_NOTIFY_SLACK_WEBHOOK_URL  optional; progress posted as Incoming Webhook JSON
 #
@@ -193,6 +194,7 @@ peer_fetch_other_masters() {
   slack ":arrows_counterclockwise: *Relay startup sync* — \`${node_label:-unknown}\` — fetching catalog repos from peers: \`${peers[*]}\`"
 
   local name peer url summary_ok summary_fail
+  local fetch_timeout="${RELAY_PEER_FETCH_TIMEOUT_SECS:-30}"
   summary_ok=0
   summary_fail=0
   while IFS= read -r name; do
@@ -204,7 +206,7 @@ peer_fetch_other_masters() {
     fi
     for peer in "${peers[@]}"; do
       url="git://${peer}:${git_port}/${name}.git"
-      if git --git-dir="$bare" fetch "$url" '+refs/heads/*:refs/heads/*' --prune 2>/dev/null; then
+      if timeout "${fetch_timeout}s" git --git-dir="$bare" fetch "$url" '+refs/heads/*:refs/heads/*' --prune 2>/dev/null; then
         echo "[relay-startup-catalog-sync] fetched $name from $peer" >&2
         ((summary_ok++)) || true
       else

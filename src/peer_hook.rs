@@ -191,6 +191,50 @@ pub fn fetch_from_peer_url(
     branch: &str,
     cfg: Option<&authorized_repos::AuthorizedReposFile>,
 ) -> Result<PeerHookResponse, PeerFetchError> {
+    let timeout_secs = std::env::var("RELAY_PEER_FETCH_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(60);
+
+    let bare_path = bare_path.to_path_buf();
+    let remote_url = remote_url.to_string();
+    let repo_name = repo_name.to_string();
+    let branch = branch.to_string();
+    // Clone authorized config into owned data for the worker thread when present.
+    let cfg_owned = cfg.cloned();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let r = fetch_from_peer_url_inner(
+            &bare_path,
+            &remote_url,
+            &repo_name,
+            &branch,
+            cfg_owned.as_ref(),
+        );
+        let _ = tx.send(r);
+    });
+
+    match rx.recv_timeout(std::time::Duration::from_secs(timeout_secs)) {
+        Ok(r) => r,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(PeerFetchError::Other(format!(
+            "peer fetch timed out after {}s",
+            timeout_secs
+        ))),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(PeerFetchError::Other(
+            "peer fetch worker disconnected".into(),
+        )),
+    }
+}
+
+fn fetch_from_peer_url_inner(
+    bare_path: &Path,
+    remote_url: &str,
+    repo_name: &str,
+    branch: &str,
+    cfg: Option<&authorized_repos::AuthorizedReposFile>,
+) -> Result<PeerHookResponse, PeerFetchError> {
     let branch = branch.trim();
     if branch.is_empty() || branch.contains("..") || branch.contains('/') {
         return Err(PeerFetchError::Other("invalid branch".into()));

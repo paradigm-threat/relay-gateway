@@ -5,6 +5,7 @@ use relay_runtime::value::Value as CsValue;
 use std::path::PathBuf;
 use tracing::debug;
 
+#[derive(Clone)]
 pub struct HookContext {
     pub repo_path: PathBuf,
     pub old_commit: String,
