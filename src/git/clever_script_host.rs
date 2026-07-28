@@ -800,14 +800,26 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
         } else {
             None
         };
-        let site_title = crate::git::relay_config_cache::read_relay_config_at_path_cached(
+        let site_cfg = crate::git::relay_config_cache::read_relay_config_at_path_cached(
             &repo_root,
             request_branch,
-        )
-        .and_then(|cfg| cfg.name)
-        .map(|n| n.trim().to_string())
-        .filter(|n| !n.is_empty());
-        let html = crate::git::embed_html::embed_html_document_with_assets_and_title(
+        );
+        let site_title = site_cfg
+            .as_ref()
+            .and_then(|cfg| cfg.name.clone())
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty());
+        let site_description = site_cfg
+            .as_ref()
+            .and_then(|cfg| cfg.description.clone())
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty());
+        let canonical_url = site_cfg
+            .as_ref()
+            .and_then(|cfg| cfg.canonical.clone())
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty());
+        let html = crate::git::embed_html::embed_html_document_with_assets_and_seo(
             repo,
             request_branch,
             &initial_path,
@@ -820,6 +832,8 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             },
             assets_prefix.as_deref(),
             site_title.as_deref(),
+            site_description.as_deref(),
+            canonical_url.as_deref(),
         );
         crate::git::ssr_html_cache::put(
             &repo_root,

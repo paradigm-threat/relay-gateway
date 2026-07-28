@@ -35,6 +35,11 @@ fn escape_html_text(s: &str) -> String {
     out
 }
 
+/// Escape for double-quoted HTML attribute values.
+fn escape_html_attr(s: &str) -> String {
+    escape_html_text(s).replace('\'', "&#39;")
+}
+
 /// Strip `<script…>` / `</script>` from SSR body so a hostile hook cannot break the embed document.
 fn sanitize_ssr_body_html(body: &str) -> String {
     let mut remaining = body;
@@ -164,6 +169,33 @@ pub fn embed_html_document_with_assets_and_title(
     assets_url_prefix: Option<&str>,
     site_title: Option<&str>,
 ) -> String {
+    embed_html_document_with_assets_and_seo(
+        repo,
+        branch,
+        rel_path,
+        client_hook_path,
+        ssr_body_html,
+        ssr_css,
+        assets_url_prefix,
+        site_title,
+        None,
+        None,
+    )
+}
+
+/// Like [`embed_html_document_with_assets_and_title`], with optional description + canonical.
+pub fn embed_html_document_with_assets_and_seo(
+    repo: &str,
+    branch: &str,
+    rel_path: &str,
+    client_hook_path: &str,
+    ssr_body_html: Option<&str>,
+    ssr_css: Option<&str>,
+    assets_url_prefix: Option<&str>,
+    site_title: Option<&str>,
+    site_description: Option<&str>,
+    canonical_url: Option<&str>,
+) -> String {
     let initial_path = if rel_path.starts_with('/') {
         rel_path.to_string()
     } else {
@@ -196,6 +228,33 @@ pub fn embed_html_document_with_assets_and_title(
         .map(|s| s.trim_end_matches('/'))
         .filter(|s| !s.is_empty())
         .unwrap_or("/assets");
+    let mut seo_tags = String::new();
+    if let Some(desc) = site_description.map(str::trim).filter(|s| !s.is_empty()) {
+        seo_tags.push_str(&format!(
+            "\n  <meta name=\"description\" content=\"{}\"/>",
+            escape_html_attr(desc)
+        ));
+        seo_tags.push_str(&format!(
+            "\n  <meta property=\"og:description\" content=\"{}\"/>",
+            escape_html_attr(desc)
+        ));
+    }
+    if let Some(title) = site_title.map(str::trim).filter(|s| !s.is_empty()) {
+        seo_tags.push_str(&format!(
+            "\n  <meta property=\"og:title\" content=\"{}\"/>",
+            escape_html_attr(title)
+        ));
+    }
+    if let Some(canon) = canonical_url.map(str::trim).filter(|s| !s.is_empty()) {
+        let escaped = escape_html_attr(canon);
+        seo_tags.push_str(&format!(
+            "\n  <link rel=\"canonical\" href=\"{escaped}\"/>"
+        ));
+        seo_tags.push_str(&format!(
+            "\n  <meta property=\"og:url\" content=\"{escaped}\"/>"
+        ));
+    }
+    seo_tags.push_str("\n  <meta property=\"og:type\" content=\"website\"/>");
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -203,7 +262,7 @@ pub fn embed_html_document_with_assets_and_title(
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="color-scheme" content="light dark"/>
-  <title>{title_repo}</title>
+  <title>{title_repo}</title>{seo_tags}
   <link rel="stylesheet" href="{assets}/embed.css"/>
   <style>html,body,#root{{margin:0;height:100%;}}</style>{theme_style}
 </head>
@@ -395,5 +454,34 @@ mod tests {
         assert!(html.contains("id=\"relay-ssr-theme\""));
         assert!(html.contains(".ct-page{background-color:#020817;}"));
         assert!(html.contains("data-relay-ssr=\"1\""));
+    }
+
+    #[test]
+    fn embed_seo_tags_escape_and_include_canonical() {
+        let html = embed_html_document_with_assets_and_seo(
+            "r",
+            "main",
+            "/",
+            "/hooks/client/get.jsx",
+            None,
+            None,
+            None,
+            Some("CleverTree"),
+            Some("Portfolio \"site\" & more"),
+            Some("https://clevertree.net/"),
+        );
+        assert!(html.contains("<title>CleverTree</title>"), "{html}");
+        assert!(
+            html.contains(r#"<meta name="description" content="Portfolio &quot;site&quot; &amp; more"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<link rel="canonical" href="https://clevertree.net/"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<meta property="og:url" content="https://clevertree.net/"/>"#),
+            "{html}"
+        );
     }
 }
