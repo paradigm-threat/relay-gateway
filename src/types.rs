@@ -73,6 +73,9 @@ pub struct RelayConfig {
     pub version: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    /// Preferred public origin for crawlers (e.g. `https://clevertree.net/`).
+    #[serde(default)]
+    pub canonical: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Default, Serialize, Clone)]
