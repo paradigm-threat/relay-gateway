@@ -18,7 +18,9 @@ This document states **product and engineering requirements** for the CleverScri
 
    **Web host reality today:** after hydrate, `doRender` re-runs the full site-shell hook and **replaces** `container.innerHTML` (incremental `vdom::reconcile` is not wired on web). So a tip `useState` whose only job is “show the other theme icon” remounts the **entire article**. That is an anti-pattern.
 
-   **Canonical tip pattern (theme / font):** flip `document.documentElement` class / `data-font` against a dual stylesheet (`css_for_web_system` → `html.dark` / `html.light`). Keep **both** icons (or font face via CSS) in the DOM and show/hide with selectors. Do **not** call `setCurrentTheme` for park chrome (full CSS regen + `set_render_requested`). Do **not** `setState` solely to reflect light/dark. Sibling pattern: ChangeLog **CSS radio tabs** (no tab `setState`).
+   **Canonical tip pattern (theme / font, web):** flip `document.documentElement` class / `data-font` / `data-pt-theme` against a dual stylesheet (`css_for_web_system` → `html.dark` / `html.light`). Keep **both** icons (or font face via CSS) in the DOM and show/hide with selectors. Do **not** call `setCurrentTheme` for park chrome (full CSS regen + `set_render_requested`). Do **not** `setState` solely to reflect light/dark. Sibling pattern: ChangeLog **CSS radio tabs** (no tab `setState`).
+
+   **Android (prep):** themed-styler still owns light/dark tokens, but there is no CSS cascade. Use JNI `nativeSetThemeAndRender` (re-resolve stored VNode, no hook re-run). Do not port `html.dark` tip chrome to Android. See `relay-runtime/docs/STYLE_RESOLUTION.md`.
 
 3. **Complex, state-heavy, or high-churn UI belongs in native components**  
    When a surface needs animation, lists with constant updates, media, maps, etc., the **host** should own the widget; CleverScript supplies configuration and high-level commands, not per-frame reconciliation.
