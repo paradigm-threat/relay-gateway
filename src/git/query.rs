@@ -208,6 +208,22 @@ pub fn execute_query_outcome(
         .ok_or_else(|| anyhow::anyhow!("Branch {} not found", branch))?
         .0;
 
+    let cache_key = crate::git::query_cache::cache_key(
+        repo_name,
+        &head,
+        collection,
+        query.as_ref(),
+        limit,
+        order,
+    );
+    // Do not cache RANDOM() — each QUERY should reshuffle.
+    let use_cache = order != QueryOrder::Random;
+    if use_cache {
+        if let Some(hit) = crate::git::query_cache::get(&cache_key) {
+            return Ok(hit);
+        }
+    }
+
     let relay_cfg = read_relay_config(&repo, &head).unwrap_or_default();
 
     if !index_policy::branch_allowed_for_query_request(&relay_cfg, branch) {
@@ -298,7 +314,7 @@ pub fn execute_query_outcome(
         )?;
     }
 
-    finish_outcome(
+    let outcome = finish_outcome(
         &repo_full_path,
         branch,
         &head,
@@ -306,7 +322,11 @@ pub fn execute_query_outcome(
         used_query,
         rows,
         started,
-    )
+    )?;
+    if use_cache {
+        crate::git::query_cache::put(cache_key, outcome.clone());
+    }
+    Ok(outcome)
 }
 
 fn apply_limit(mut rows: Vec<Value>, limit: Option<usize>) -> Vec<Value> {

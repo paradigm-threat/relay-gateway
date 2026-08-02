@@ -21,6 +21,7 @@ pub mod meta_index;
 pub mod index_store;
 pub mod indexing;
 pub mod query;
+pub mod query_cache;
 pub mod search_config;
 pub mod search_plugins;
 pub mod sqlite_index;
