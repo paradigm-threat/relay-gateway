@@ -175,9 +175,19 @@ curl -X QUERY 'https://paradigm-threat-files.dfw1.relaygateway.net/' \
 
 Optional: `X-Relay-Branch` (default `main`).
 
+## Site-shell SSR vs QUERY (do not mix)
+
+Park site-shell SSR must **not** drive DirNav / ChangeLog / article lists via QUERY (or same-Host HTTP `fetch`). Reasons:
+
+1. **Worker deadlock / stall** — CleverScript site-shell render that self-HTTP QUERY’s the same Host blocks the gateway worker (index mutex / request loop). `RepoFetchHost` offers in-process QUERY only as an escape hatch for rare SSR needs; park tip policy still forbids P2 catalog on SSR.
+2. **HTML cache miss cost** — `ssr_html_cache` is tip-OID keyed. Catalog work inside the miss path pays nav-index parse / card fan-out / cold WASM on every push (the old ~10s path). Keep SSR to **P0 article + P1 chrome**; placeholders for catalog (`data-pt-*-ssr`).
+3. **Optimal load** — hydrate when `isClientLive()`, then one on-tree GET of `nav-index.txt` warmed by runtime `tip_cached_get` + `tip_cached_nav_index_rows` (and tip thumbs module warm). QUERY stays for search, comments, and optional opt-in `collection: articles` **after** live.
+
+Normative tip tiers + cache table: park checkout `hooks/CLEVERSCRIPT_TIP.md`. Gateway HTML cache: [`RELAY_POLICY_AND_PERFORMANCE.md`](./RELAY_POLICY_AND_PERFORMANCE.md) § SSR HTML cache.
+
 ## Roadmap: repo-opt-in SQLite + tip catalog cache (2026-08-02)
 
-Park ChangeLog / DirNav feel slow on hydrate because they re-parse `nav-index.txt` (and thumbs sidecar) on every live shell run. Vercel’s sister path already QUERY’s the full catalog once and caches it client-side. Tip should stay **on-tree first** for SSR hygiene; QUERY enhancements are for search, comments, and optional warm indexes.
+Park ChangeLog / DirNav used to feel slow on hydrate when they re-parsed `nav-index.txt` (and thumbs) on every live shell run. **Do not “fix” that by moving catalog into SSR** — that is the anti-pattern above. Vercel’s sister path QUERY’s once and caches client-side; park tip stays **on-tree first** for SSR hygiene. QUERY enhancements are for search, comments, and optional warm indexes **on hydrate**.
 
 ### Recommended implementation order
 
@@ -197,3 +207,6 @@ ChangeLog card images now use **`changelog-thumbs.json`** (stem/slug map, Vercel
 - [PARADIGM_PARK_LOCAL.md](./PARADIGM_PARK_LOCAL.md) — local QUERY/SSR hardening
 - [CS_HOST_HELPERS.md](./CS_HOST_HELPERS.md) — CS routes; Rust `@relay/search/*`
 - [RELAY_POLICY_AND_PERFORMANCE.md](./RELAY_POLICY_AND_PERFORMANCE.md) — SSR HTML cache vs hydrate catalog work
+- Park tip: `hooks/CLEVERSCRIPT_TIP.md` — P0–P3; catalog SSR anti-pattern
+
+*Last updated: 2026-08-02*

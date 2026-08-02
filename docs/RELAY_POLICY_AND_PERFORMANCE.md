@@ -74,6 +74,17 @@ Site-shell HTML from `ssrClientHookFromGetContext` is expensive (full client-hoo
 
 Tip hygiene remains authoritative: **P0 article + P1 static chrome** on SSR; **P2 catalog / P3 interactive** on hydrate only (see park `hooks/CLEVERSCRIPT_TIP.md`). Cache does not excuse heavy catalog work inside the hook.
 
+**Catalog SSR is an anti-pattern** even with this cache. Tip OID is in the key, so every push is a miss — a miss path that parses `nav-index.txt`, fans out ChangeLog cards, or same-Host QUERY recreates the old multi-second (~10s) cold render. Optimal:
+
+| Layer | Role for park |
+|-------|----------------|
+| **`ssr_html_cache`** | Cheap P0+P1 HTML only (article + static chrome + catalog *placeholders*) |
+| Runtime **`tip_cached_get` / `tip_cached_nav_index_rows`** | Hydrate-session warm of on-tree `nav-index.txt` (shared by DirNav / ChangeLog) |
+| Gateway **QUERY LRU** | Search / optional articles QUERY after live — never site-shell SSR |
+| CDN blob GET | `nav-index.txt`, thumbs, assets — high QPS, no CleverScript |
+
+Same-Host HTTP `fetch` / QUERY from the site-shell worker still deadlocks (or stalls on index lock). Use in-process tip GET for P0 markdown only. Normative tip table: park `hooks/CLEVERSCRIPT_TIP.md` § SSR priority tiers. QUERY roadmap: [`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md).
+
 Implementation: [`src/git/ssr_html_cache.rs`](../src/git/ssr_html_cache.rs). Related: [`RELAY_EMBED_CLIENT_GET_INTERCEPT.md`](./RELAY_EMBED_CLIENT_GET_INTERCEPT.md) Phase D.
 
 ## fan-edits / desktop profile
@@ -87,3 +98,8 @@ Implementation: [`src/git/ssr_html_cache.rs`](../src/git/ssr_html_cache.rs). Rel
 - **[`SERVER_HOOKS.md`](./SERVER_HOOKS.md)** — hook contracts and CleverScript surface
 - **[`RELAY_BRANCH_POLICY.md`](./RELAY_BRANCH_POLICY.md)** — `branchRules` semantics
 - **[`RELAY_BRANCH_POLICY_OPERATOR.md`](./RELAY_BRANCH_POLICY_OPERATOR.md)** — fleet operator checklist
+- **[`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md)** — QUERY LRU; catalog hydrate warm (not SSR)
+- **[`PARADIGM_PARK_LOCAL.md`](./PARADIGM_PARK_LOCAL.md)** — local SSR smoke
+- Park tip: `hooks/CLEVERSCRIPT_TIP.md` (P0–P3 + cache layers)
+
+*Last updated: 2026-08-02*
