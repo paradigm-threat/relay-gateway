@@ -70,6 +70,10 @@ Edit paths in **`scripts/relay-local-repos.map`**. Legacy **atlanta2** may still
 | **`RELAY_FLEET_MAX_PARALLEL`** | 4 | Parallel **`ssh-check`** / **`status`** jobs. |
 | **`RELAY_FLEET_STRICT_HOST_KEY`** | accept-new | Passed to **`ssh` / `scp`**. |
 | **`RELAY_FLEET_UPDATE_HEALTH`** | `1` | After each host update+restart, require **`POST /api/config`** before next host (`0` to skip). |
+| **`RELAY_FLEET_SSL_GATE`** | `0` | With **`update` / `deploy-all`**: when `1`, pre/post **`ssl`** failures abort deploy (default: report WARN and continue). |
+| **`RELAY_FLEET_SSL_DOMAINS`** | park Hosts | Space-separated public Hosts checked by **`ssl`** / health (default includes `relay.paradigmthreat.net` + clevertree). |
+| **`RELAY_FLEET_HEALTH_SSL`** | `1` | When `0`, **`health`** skips the park/node HTTPS report. |
+| **`RELAY_FLEET_SSL_STRICT`** | `0` | Treat SSL WARN lines as FAIL inside **`relay-fleet-ssl-check.sh`**. |
 
 ## Examples
 
@@ -78,11 +82,14 @@ cd relay-gateway
 ./scripts/relay-fleet.sh hosts
 ./scripts/relay-fleet.sh ssh-check
 ./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net status
-./scripts/relay-fleet.sh health
+./scripts/relay-fleet.sh ssl          # parked Host + node HTTPS report
+./scripts/relay-fleet.sh health       # QUERY smoke + SSL report
 ./scripts/relay-fleet.sh health --mcp
 ./scripts/relay-fleet.sh drift
 # Rebuild tarball + push to whole fleet (preferred flag order):
 ./scripts/relay-fleet.sh --build deploy-all
+# Hard-fail deploy on broken park HTTPS:
+RELAY_FLEET_SSL_GATE=1 ./scripts/relay-fleet.sh --build deploy-all
 # One node only:
 ./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net --build update
 ./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net features-set --piper=0 --npm-pkgs=
@@ -129,9 +136,10 @@ From **`relay-gateway/`** on the operator laptop:
 ```bash
 ./scripts/pre-deploy-check.sh          # cargo test + release build + pack + tarball verify
 ./scripts/relay-fleet.sh ssh-check     # SSH to fleet
-./scripts/relay-fleet.sh --build deploy-all
+./scripts/relay-fleet.sh ssl           # baseline HTTPS (or rely on deploy pre-check)
+./scripts/relay-fleet.sh --build deploy-all   # runs SSL pre + post (warn by default)
 ./scripts/relay-fleet.sh status
-./scripts/relay-fleet.sh health
+./scripts/relay-fleet.sh health        # QUERY + SSL
 ./scripts/relay-fleet.sh drift         # relay-master tips aligned
 ```
 

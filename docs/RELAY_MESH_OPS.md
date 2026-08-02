@@ -49,6 +49,6 @@ Actions:
 1. `./scripts/relay-fleet.sh ssh-check`
 2. `./scripts/relay-fleet.sh status` (optional: `curl -sS -X POST 'https://<host>/api/status?strict=1'`)
 3. Deploy **non-primary** peers first: e.g. `--only=lon1…` then `hkg1…`, smoke `health`, then **dfw1**
-4. Or full `./scripts/relay-fleet.sh --build update` — after each host update+restart, the script runs a **post-host health gate** (`POST /api/config`) before continuing when **`RELAY_FLEET_UPDATE_HEALTH=1`** (default **on**).
+4. Or full `./scripts/relay-fleet.sh --build update` — after each host update+restart, the script runs a **post-host health gate** (`POST /api/config`) before continuing when **`RELAY_FLEET_UPDATE_HEALTH=1`** (default **on**). Pre/post **`ssl`** checks report park Host HTTPS (warn by default; **`RELAY_FLEET_SSL_GATE=1`** to hard-fail).
 
 Always **`--build`** after Rust changes so `relay-hook-handler` (push path) ships with `relay-gateway`.

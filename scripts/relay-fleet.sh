@@ -42,7 +42,8 @@ Subcommands:
   hosts               Print fleet hosts, SSH user, identity path
   ssh-check           Parallel SSH probe (fails if any host fails)
   status              POST https://<host>/api/config per host (parallel)
-  health              QUERY (+ optional MCP) smoke per host via validate-relay-*.mjs
+  health              QUERY (+ optional MCP) smoke + SSL report per host
+  ssl                 Parked-domain + node HTTPS report (pre/post deploy friendly)
   drift               Compare catalog git HEAD across fleet
   update              relay-linode-redeploy-seed per host (RELAY_REDEPLOY_SKIP_SEED=1)
   deploy-all          Same as update (canonical fleet deploy entry)
@@ -74,6 +75,7 @@ Examples:
   ./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net status
   ./scripts/relay-fleet.sh health
   ./scripts/relay-fleet.sh health --mcp
+  ./scripts/relay-fleet.sh ssl
   ./scripts/relay-fleet.sh --build deploy-all
   ./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net --build update
   ./scripts/relay-fleet.sh --only=atlanta3.relaygateway.net features-set --piper=0 --npm-pkgs=
@@ -234,10 +236,52 @@ cmd_status() {
   [[ "$fail" -eq 0 ]] || exit 1
 }
 
+# Parked Host + node FQDN HTTPS report (scripts/relay-fleet-ssl-check.sh).
+# mode=strict → exit 1 on FAIL; mode=warn → always continue (deploy soft gate).
+# Env: RELAY_FLEET_SSL_DOMAINS, RELAY_FLEET_SSL_STRICT, RELAY_FLEET_SSL_GATE (deploy hard-fail).
+run_fleet_ssl() {
+  local label="${1:-ssl}" mode="${2:-strict}"
+  local script="$ROOT/scripts/relay-fleet-ssl-check.sh"
+  [[ -f "$script" ]] || die "missing $script"
+  export RELAY_FLEET_SSL_LABEL="$label"
+  # Prefer current --only / FLEET_HOSTS over raw env peer list.
+  export RELAY_FLEET_SSL_NODES="${FLEET_HOSTS[*]}"
+  set +e
+  "$script"
+  local rc=$?
+  set -e
+  if [[ "$rc" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "$mode" == warn ]]; then
+    echo "[relay-fleet] WARN SSL check incomplete ($label) — deploy continues; set RELAY_FLEET_SSL_GATE=1 to hard-fail" >&2
+    return 0
+  fi
+  return "$rc"
+}
+
+cmd_ssl() {
+  source_env
+  parse_hosts_to_array
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -h|--help)
+        echo "usage: relay-fleet.sh ssl"
+        echo "  Env: RELAY_FLEET_SSL_DOMAINS RELAY_FLEET_SSL_STRICT=1 RELAY_FLEET_SSL_TIMEOUT"
+        return 0
+        ;;
+      *) die "ssl: unknown arg: $arg" ;;
+    esac
+  done
+  run_fleet_ssl "ssl" strict
+}
+
 # QUERY/MCP smoke against live HTTPS apex. Repos default to PT files + timeline.
 # Optional: health --mcp   also run validate-relay-mcp.mjs per host/repo
 # Env: RELAY_FLEET_HEALTH_REPOS="paradigm-threat-files paradigm-threat-timeline"
 #      RELAY_FLEET_HEALTH_QUERY=venus
+#      RELAY_FLEET_HEALTH_SSL=0 to skip park/node HTTPS report (default on)
 cmd_health() {
   source_env
   parse_hosts_to_array
@@ -276,6 +320,14 @@ cmd_health() {
     done
     echo "[relay-fleet] health end $h"
   done
+  case "${RELAY_FLEET_HEALTH_SSL:-1}" in
+    0|no|false|off) ;;
+    *)
+      if ! run_fleet_ssl "health" strict; then
+        fail=1
+      fi
+      ;;
+  esac
   [[ "$fail" -eq 0 ]] || exit 1
 }
 
@@ -376,14 +428,20 @@ EOS
 cmd_update() {
   source_env
   parse_hosts_to_array
-  local h tgz health_gate
+  local h tgz health_gate ssl_mode
   health_gate="${RELAY_FLEET_UPDATE_HEALTH:-1}"
+  case "${RELAY_FLEET_SSL_GATE:-0}" in
+    1|yes|true|on) ssl_mode=strict ;;
+    *) ssl_mode=warn ;;
+  esac
   tgz="$(default_tgz)"
   if [[ "$BUILD" -eq 1 || ! -f "$tgz" ]]; then
     log "running pack-linode-deploy.sh …"
     "$ROOT/scripts/pack-linode-deploy.sh"
   fi
   [[ -f "$tgz" ]] || die "missing tarball: $tgz"
+  echo "[relay-fleet] pre-deploy SSL check (mode=$ssl_mode)"
+  run_fleet_ssl "pre-deploy" "$ssl_mode"
   export RELAY_REDEPLOY_SKIP_SEED=1
   export RELAY_SSH_IDENTITY="$KEY"
   export RELAY_SSH_USER
@@ -405,6 +463,8 @@ cmd_update() {
     esac
     echo "[relay-fleet] update end $h"
   done
+  echo "[relay-fleet] post-deploy SSL check (mode=$ssl_mode)"
+  run_fleet_ssl "post-deploy" "$ssl_mode"
 }
 
 cmd_deploy_all() { cmd_update; }
@@ -604,6 +664,7 @@ case "$SUB" in
   ssh-check) cmd_ssh_check ;;
   status) cmd_status ;;
   health) cmd_health "$@" ;;
+  ssl) cmd_ssl "$@" ;;
   drift) cmd_drift ;;
   update) cmd_update ;;
   deploy-all) cmd_deploy_all ;;

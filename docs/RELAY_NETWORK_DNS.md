@@ -151,6 +151,11 @@ dig +short fleet.relaygateway.net A
 dig +short clevertree.net A
 dig +short www.clevertree.net CNAME
 
+# Operator laptop: fleet SSL report (nodes + parked Hosts).
+cd relay-gateway
+./scripts/relay-fleet.sh ssl
+# Or: ./scripts/relay-fleet-ssl-check.sh
+
 # Force a parked Host to one node before changing public DNS.
 curl --resolve clevertree.net:443:<node-ip> https://clevertree.net/
 
@@ -162,6 +167,8 @@ curl -o /dev/null -w '%{http_code}\n' \
 ```
 
 Expected ask results are `200` and `403`. Also verify the certificate SAN, issuer, expiry, and the same content on every fleet address.
+
+**Deploy soft gate:** `./scripts/relay-fleet.sh update` / `deploy-all` runs the SSL check **before** and **after** the host loop. Failures print `FAIL`/`WARN` and continue by default; set **`RELAY_FLEET_SSL_GATE=1`** to abort. Content repos that need park Host HTTPS must set **`server.tls.plugin: park`** in `.relay.yaml` or ask stays `403` and browsers see `ERR_SSL_PROTOCOL_ERROR`.
 
 ## Rollback
 
