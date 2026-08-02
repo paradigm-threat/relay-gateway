@@ -175,8 +175,25 @@ curl -X QUERY 'https://paradigm-threat-files.dfw1.relaygateway.net/' \
 
 Optional: `X-Relay-Branch` (default `main`).
 
+## Roadmap: repo-opt-in SQLite + tip catalog cache (2026-08-02)
+
+Park ChangeLog / DirNav feel slow on hydrate because they re-parse `nav-index.txt` (and thumbs sidecar) on every live shell run. Vercel’s sister path already QUERY’s the full catalog once and caches it client-side. Tip should stay **on-tree first** for SSR hygiene; QUERY enhancements are for search, comments, and optional warm indexes.
+
+### Recommended implementation order
+
+1. **Tip catalog warm (P2 hydrate)** — Keep `loadNavIndex` / `changelog-thumbs.json` as the ChangeLog path (shipped). Optionally host-cache the parsed nav rows for the browser session (same tip OID) so DirNav + ChangeLog + Feeling Lucky share one parse.
+2. **QUERY result cache (gateway)** — In-process LRU keyed by `(repo, tipCommit, collection, queryHash, limit, order)` with short TTL / tip invalidation. Helps SearchPage, MCP `search_site`, and any future tip QUERY without re-running FTS on every keystroke debounce.
+3. **Repo-opt-in SCHEMA / custom tables** — Allow tip `search.yaml` (or `.relay/schema.yaml`) to declare extra SQLite tables (e.g. `articles`: `path`, `title`, `content_kind`, `_updated`, `image_src`, `summary`) filled at index warm from `path_tree` + sidecar fields. QUERY `collection: articles` stays thin via `@relay/search/sqlite`. Default repos keep today’s single `docs` table.
+4. **Front-page directory + article list** — Prefer on-tree GET of `nav-index.txt` / thumbs (CDN-friendly). After (3), optional hydrate QUERY `collection: articles` with `order=-_updated&limit=120` when the repo opts in — still never during SSR (same-Host deadlock).
+5. **Comment-scenario caching** — If/when comments are a QUERY collection (thread id + article path), cache list-by-path and count aggregations in the same QUERY LRU; invalidate on comment write / tip bump. Do not fold comment bodies into site-shell SSR HTML cache.
+
+### Out of scope for tip-only thumbs
+
+ChangeLog card images now use **`changelog-thumbs.json`** (stem/slug map, Vercel parity). They do **not** require a custom articles table or gateway binary deploy.
+
 ## Related
 
 - [REPODB_PLAN.md](./REPODB_PLAN.md) — per-branch `.relay_data` layout
 - [PARADIGM_PARK_LOCAL.md](./PARADIGM_PARK_LOCAL.md) — local QUERY/SSR hardening
 - [CS_HOST_HELPERS.md](./CS_HOST_HELPERS.md) — CS routes; Rust `@relay/search/*`
+- [RELAY_POLICY_AND_PERFORMANCE.md](./RELAY_POLICY_AND_PERFORMANCE.md) — SSR HTML cache vs hydrate catalog work
