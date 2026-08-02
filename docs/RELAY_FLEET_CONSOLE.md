@@ -4,6 +4,8 @@
 
 **First-time master (provision + install):** use **[`RELAY_INFRA_OPS.md`](./RELAY_INFRA_OPS.md)** and **`./scripts/relay-master-deploy.sh`** (Terraform + tarball + Caddy). **Ongoing** binary/config deploys: **`relay-fleet.sh --build update`** / **`deploy-all`** below.
 
+**Local park SSR / tip hardening (before fleet push):** **[`PARADIGM_PARK_LOCAL.md`](./PARADIGM_PARK_LOCAL.md)** · **`./scripts/park-local.sh`**. Prefer that loop over rapid `deploy-all` when iterating CleverScript tip or park Host SSR.
+
 **Prerequisites:** run from **`relay-gateway/`** with a local **`relay.env`** (gitignored) or **`--env-file`**. SSH key **`RELAY_SSH_IDENTITY`** (default **`~/.ssh/id_ed25519_relay_gateway`**) must authenticate as **`RELAY_SSH_USER`** (default **`ari`**) on each host.
 
 ## Fleet list (operator laptop)

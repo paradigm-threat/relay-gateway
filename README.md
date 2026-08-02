@@ -255,7 +255,7 @@ The server will be accessible at `https://node-dfw1.relaynet.online` with automa
 
 ## Developing and deploying a UI for repositories
 
-**Universal client (relay-runtime + md2ast):** see **[`docs/RELAY_UNIVERSAL_CLIENT_AND_PARADIGM_SITE.md`](docs/RELAY_UNIVERSAL_CLIENT_AND_PARADIGM_SITE.md)**, **[`docs/RELAY_MD2AST_PLACEMENT.md`](docs/RELAY_MD2AST_PLACEMENT.md)**, and **`../relay-client-web`** (`npm run build:wasm` then `npm run build`).
+**Universal client (relay-runtime + md2ast):** see **[`docs/CS_HOST_HELPERS.md`](docs/CS_HOST_HELPERS.md)**, **[`docs/PARADIGM_PARK_LOCAL.md`](docs/PARADIGM_PARK_LOCAL.md)**, **[`docs/RELAY_MD2AST_PLACEMENT.md`](docs/RELAY_MD2AST_PLACEMENT.md)**, and **`../relay-client-web`** (`npm run build:wasm` then `npm run build`).
 
 A. Build/export all HTML/JS/asset files of your UI (e.g., into `template-ui/dist`).
 B. Test locally: run **`relay-gateway`** and pass **`--static`** (repeatable) for your UI folder.

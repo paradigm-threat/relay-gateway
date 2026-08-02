@@ -108,14 +108,38 @@ pub async fn handle_get_file(
 
     info!(%branch, "resolved branch");
 
-    let git_result = git::git_resolve_and_respond(
-        &state,
-        &headers,
-        &branch,
-        &repo_name,
-        &decoded,
-        qmap,
-    );
+    let git_result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        git::git_resolve_and_respond(&state, &headers, &branch, &repo_name, &decoded, qmap)
+    })) {
+        Ok(r) => r,
+        Err(payload) => {
+            let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "non-string panic payload".to_string()
+            };
+            error!(
+                target: "relay_ssr",
+                panic = %msg,
+                path = %decoded,
+                repo = %repo_name,
+                "GET resolve panicked (returning 500)"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Content-Type", "text/html; charset=utf-8")],
+                r#"<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Site shell error</title></head>
+<body>
+<h1>Site shell / SSR failed</h1>
+<p>This request panicked while rendering the parked site shell. Check server logs for <code>relay_ssr</code>.</p>
+</body></html>"#,
+            )
+                .into_response();
+        }
+    };
     match git_result {
         GitResolveResult::Respond(resp) => return resp,
         GitResolveResult::NotFound(rel_missing) => {

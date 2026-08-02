@@ -77,17 +77,34 @@ fn try_server_get_hook(
         }
     }
     augment_get_context_headers(&mut ctx, headers);
-    let val = match run_clever_hook(
-        &source,
-        &ctx,
-        repo_path,
-        branch.to_string(),
-        true,
-    ) {
-        Ok(v) => v,
-        Err(e) => {
+    let val = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_clever_hook(&source, &ctx, repo_path.clone(), branch.to_string(), true)
+    })) {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
             error!(?e, "GET CleverScript hook failed");
             return Some(get_hook_execution_error_response(branch, repo_name, &e));
+        }
+        Err(payload) => {
+            let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "non-string panic payload".to_string()
+            };
+            error!(
+                target: "relay_ssr",
+                panic = %msg,
+                repo = %repo_name,
+                path = %rel,
+                "GET CleverScript hook panicked"
+            );
+            return Some(get_hook_execution_error_response(
+                branch,
+                repo_name,
+                &anyhow::anyhow!("GET CleverScript hook panicked: {msg}"),
+            ));
         }
     };
     get_hook_json_to_response(&val, branch, repo_name)

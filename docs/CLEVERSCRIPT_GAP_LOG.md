@@ -15,4 +15,4 @@ Maintain this list while porting React (paradigm-threat-site) components to **Cl
 
 **Process:** For each gap, open an issue in **relay** (relay-runtime) or **md2ast** as appropriate; link the issue URL in **Tracker**; fix the language or Host API; add a **regression test** in relay-runtime when possible.
 
-**Related:** [`RELAY_UNIVERSAL_CLIENT_AND_PARADIGM_SITE.md`](RELAY_UNIVERSAL_CLIENT_AND_PARADIGM_SITE.md)
+**Host helpers:** tip CS stays thin — see [`CS_HOST_HELPERS.md`](./CS_HOST_HELPERS.md). Local park loop: [`PARADIGM_PARK_LOCAL.md`](./PARADIGM_PARK_LOCAL.md).

@@ -1,5 +1,5 @@
 //! `POST /hooks/peer` — trusted peer notifies this node to **`git fetch`** from **`git://peer:port/repo.git`**.
-//! See `docs/RELAY_MESH_NETWORKING_PLAN.md` and `docs/LAUNCH_AND_TEST_PLAN.md`.
+//! See `docs/RELAY_MESH_NETWORKING_PLAN.md`.
 
 use std::path::Path;
 

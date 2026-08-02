@@ -94,7 +94,7 @@ Set **`RELAY_MASTER_CATALOG_PATH`** to a `relay-master` checkout. Pre-receive lo
 
 - Branch `comments`; markdown under `.relay/comments/by-path/<encoded-path>/`.
 - Client fetches via `X-Relay-Branch: comments` (see `DEPLOY_WEB_AND_CI.md`).
-- Signed commits only; anonymous session keys (future registry) — see plan TODO in `HOME_INTERNET_RELAY_PLAN.md`.
+- Signed commits only; anonymous session keys (future registry) — planned.
 
 Path encoding: [`catalog_policy::encode_comment_target_path`](../src/catalog_policy.rs).
 
@@ -135,6 +135,6 @@ No binaries in Git for `hosted`; pointers only.
 ## Related docs
 
 - [RELAY_NETWORK_DNS.md](./RELAY_NETWORK_DNS.md) — parked-domain DNS, fleet ingress, Spot IP changes, TLS gate
-- [HOME_INTERNET_RELAY_PLAN.md](./HOME_INTERNET_RELAY_PLAN.md) — product / home hosting
+- [PARADIGM_PARK_LOCAL.md](./PARADIGM_PARK_LOCAL.md) — local park SSR / tip hardening
 - [RELAY_BRANCH_POLICY_OPERATOR.md](./RELAY_BRANCH_POLICY_OPERATOR.md) — `.relay.yaml` checks
 - [RELAY_TRUST_AND_BOOTSTRAP.md](./RELAY_TRUST_AND_BOOTSTRAP.md) — anchors and trust root

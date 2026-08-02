@@ -177,5 +177,6 @@ Optional: `X-Relay-Branch` (default `main`).
 
 ## Related
 
-- [ATLANTA3_QUERY_ROLLOUT.md](./ATLANTA3_QUERY_ROLLOUT.md) — staged deployment
 - [REPODB_PLAN.md](./REPODB_PLAN.md) — per-branch `.relay_data` layout
+- [PARADIGM_PARK_LOCAL.md](./PARADIGM_PARK_LOCAL.md) — local QUERY/SSR hardening
+- [CS_HOST_HELPERS.md](./CS_HOST_HELPERS.md) — CS routes; Rust `@relay/search/*`

@@ -388,8 +388,36 @@ fn theme_yaml_from_repo(repo_path: &PathBuf, branch: &str) -> String {
     String::new()
 }
 
+fn panic_payload_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
 /// Try to SSR the client GET hook. Returns `None` on any failure (caller falls back to empty shell).
+/// Panics inside the renderer are caught so HTTP handlers can return 500 instead of dropping the connection.
 pub fn try_ssr_client_hook(req: &ClientHookSsrRequest<'_>) -> Option<ClientHookSsrResult> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| try_ssr_client_hook_inner(req))) {
+        Ok(v) => v,
+        Err(payload) => {
+            let msg = panic_payload_message(&payload);
+            tracing::error!(
+                target: "relay_ssr",
+                panic = %msg,
+                path = %req.initial_path,
+                hook = %req.client_hook_rel,
+                "client hook SSR panicked"
+            );
+            None
+        }
+    }
+}
+
+fn try_ssr_client_hook_inner(req: &ClientHookSsrRequest<'_>) -> Option<ClientHookSsrResult> {
     let t0 = std::time::Instant::now();
     let entry = req.client_hook_rel.trim_start_matches('/');
     let source = read_repo_text(req.repo_path, req.branch, entry)?;

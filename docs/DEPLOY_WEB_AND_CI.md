@@ -6,7 +6,7 @@ Normative **product / ops** notes for serving **relay-server** and **multiple st
 
 **Code status:** This document describes **planned** behavior. Implementations should update the “Implementation status” section at the bottom as pieces land.
 
-**Related:** **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (VM install), **[`RELAY_WEB_ASSETS.md`](./RELAY_WEB_ASSETS.md)** (signed git CDN for `embed.js` / WASM), **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)** (**`relay.env`**, rotation, shared deploy SSH key), **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** (**`relay-master`** catalog, submodules + **`relayRootCommit`**, emitted **`authorized-repos.yaml`**), **[`LAUNCH_AND_TEST_PLAN.md`](./LAUNCH_AND_TEST_PLAN.md)** (default repo resolution, **`RELAY_DEFAULT_REPO=relay-master`**), **[`SERVER_HOOKS.md`](./SERVER_HOOKS.md)** (per-repo `.relay.yaml`, hooks).
+**Related:** **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (VM install), **[`RELAY_WEB_ASSETS.md`](./RELAY_WEB_ASSETS.md)** (signed git CDN for `embed.js` / WASM), **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)** (**`relay.env`**, rotation, shared deploy SSH key), **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** (**`relay-master`** catalog, submodules + **`relayRootCommit`**, emitted **`authorized-repos.yaml`**), **[`SERVER_HOOKS.md`](./SERVER_HOOKS.md)** (per-repo `.relay.yaml`, hooks), **[`PARADIGM_PARK_LOCAL.md`](./PARADIGM_PARK_LOCAL.md)** (local park SSR hardening).
 
 **Note:** **Git hooks** may run **CleverScript** (`.cs`) validation scripts defined **in** repositories — that is separate from hosting a long-lived Next/Node **HTTP** stack for public sites.
 
@@ -108,7 +108,7 @@ Aligned with **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)*
 
 When the HTTP `Host` is the **node FQDN** only (no `{repo}.` prefix), relay should serve the **default repo** — normatively **`relay-master`** when using the catalog model (**[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**).
 
-**Until `RELAY_DEFAULT_REPO` is implemented in relay-server** (see **[`LAUNCH_AND_TEST_PLAN.md`](./LAUNCH_AND_TEST_PLAN.md)** Part 0):
+**Until `RELAY_DEFAULT_REPO` is implemented in relay-server** (see **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**):
 
 - **Catalog deployments:** set **`RELAY_DEFAULT_REPO=relay-master`** and do **not** rely on bootstrap ordering for the allowlist (**[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**).
 - **Legacy / pre-catalog:** operational rule: use the **first repo** in the **ordered clone/bootstrap list**:
@@ -222,7 +222,7 @@ Remove support in **all** maintained repos so the protocol has a **single** bran
 | Installer prompts + state file for **static** site `Host` → root | Planned |
 | relay-triggered static promote helper (no mapping edits) | Planned |
 | 50 MB default-branch working-tree cap (non-authorized only) | Planned |
-| `RELAY_DEFAULT_REPO` in code | See LAUNCH_AND_TEST_PLAN (partial / pending) |
+| `RELAY_DEFAULT_REPO` in code | Partial / pending — see **`RELAY_TRUST_AND_BOOTSTRAP`** |
 | Host label `repo` or `repo{DELIM}branchSlug` (§8) | Planned |
 | **No `X-Relay-Branch`**; removal per §11 | Planned |
 | Push-time slug uniqueness (**§9**) | Planned |

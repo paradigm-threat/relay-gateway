@@ -132,6 +132,7 @@ mod tests {
             name: None,
             version: None,
             description: None,
+            canonical: None,
         }
     }
 
@@ -173,6 +174,7 @@ mod tests {
             name: None,
             version: None,
             description: None,
+            canonical: None,
         };
         assert!(branch_allowed_for_index(&cfg, "any"));
     }
@@ -224,6 +226,7 @@ mod tests {
             name: None,
             version: None,
             description: None,
+            canonical: None,
         }
     }
 
@@ -254,6 +257,7 @@ mod tests {
             name: None,
             version: None,
             description: None,
+            canonical: None,
         };
         assert!(clever_get_hook_path(&cfg).is_none());
     }

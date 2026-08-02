@@ -12,7 +12,7 @@
 - **Master peer network (secure zone)** — **only masters** hold **system-level** credentials for **full** mesh **control-plane** features (inter-master **`POST /hooks/peer`**, **`POST /hooks/mesh-event`** fan-out, and other privileged **HTTP** mesh operations). **Edges** are outside that zone for those secrets and **do not send mesh control events to masters** (**one-way** master → edge for realtime server events for now). **Future:** limited **non-auth** or edge-originated commands **may** be enabled later; not part of the current target.
 - **Transport between masters** — inter-master control traffic should use **TLS** with **mutual TLS (mTLS)** — see **§ Transport: HTTP vs TLS vs mTLS**.
 
-**Related:** **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** (anchors, catalog), **[`LAUNCH_AND_TEST_PLAN.md`](./LAUNCH_AND_TEST_PLAN.md)** (peer webhook sketch), **[`SERVER_HOOKS.md`](./SERVER_HOOKS.md)** (Auto-Push), **[`INSTALL_FEATURES.md`](./INSTALL_FEATURES.md)** (peer discovery via config), **[`SLACK_MESH_NOTIFY.md`](./SLACK_MESH_NOTIFY.md)** (optional Slack; non-normative for mesh).
+**Related:** **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** (anchors, catalog), **[`SERVER_HOOKS.md`](./SERVER_HOOKS.md)** (Auto-Push), **[`INSTALL_FEATURES.md`](./INSTALL_FEATURES.md)** (peer discovery via config), **[`SLACK_MESH_NOTIFY.md`](./SLACK_MESH_NOTIFY.md)** (optional Slack; non-normative for mesh).
 
 ---
 
@@ -43,7 +43,7 @@ Separating the two avoids treating “mesh chatter” and “multi-GB sync” as
 3. Otherwise they schedule **`git fetch`** (from the publisher or a canonical URL) with **jittered backoff** so N nodes don’t hit the same upstream at once.
 4. **Auto-Push** in **`.relay.yaml`** is **optional** legacy fast-path sync; the **target** topology does **not** require it — **masters** push realtime **events** to **edges**, and edges **`git fetch`** from the relevant master when their local bare is behind (**§ Relationship to today’s Auto-Push**).
 
-This matches the **`POST /hooks/peer`** direction in **[`LAUNCH_AND_TEST_PLAN.md`](./LAUNCH_AND_TEST_PLAN.md)** (notify → **trigger fetch**), generalized beyond HTTP POST.
+This matches the **`POST /hooks/peer`** direction (notify → **trigger fetch**), generalized beyond HTTP POST.
 
 ---
 

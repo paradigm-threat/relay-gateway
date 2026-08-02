@@ -223,7 +223,7 @@ The server provides a native endpoint for GitHub push webhooks. When enabled in 
 
 Use a real `git push` against a test bare repo with **`relay-hook-handler`** installed, or exercise **`PUT`** against the HTTP API. CleverScript hooks share the same JSON `context` shape as documented above.
 
-**GET / `server.hooks.get`:** from **`relay-gateway/`**, run **`cargo test`** — see **`src/git/clever_hooks.rs`** and **`src/git/get_hook_http.rs`** for coverage of **`run(ctx, next)`**, native **`next()`** structured 404 payloads, **`optimizeRasterFromGetContext`**, and HTTP 500 hook failure responses.
+**GET / `server.hooks.get`:** from **`relay-gateway/`**, run **`cargo test`** — see **`src/git/clever_hooks.rs`** and **`src/git/get_hook_http.rs`** for coverage of **`run(ctx, next)`**, native **`next()`** structured 404 payloads, **`optimizeRasterFromGetContext`**, and HTTP 500 hook failure responses. **Park SSR local loop:** **`./scripts/park-local.sh`** ([**`PARADIGM_PARK_LOCAL.md`](./PARADIGM_PARK_LOCAL.md)**).
 
 ### Docker Peer Verification
 To test the full "Push -> Protect -> Sync" flow:

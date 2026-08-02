@@ -12,6 +12,16 @@ use serde::Serialize;
 
 use crate::{authorized_repos, git, helpers, notify, types::*};
 
+fn panic_payload_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
 /// Serve a minimal OpenAPI YAML specification (placeholder)
 pub async fn get_openapi_yaml() -> impl IntoResponse {
     let yaml = r#"openapi: 3.0.0
@@ -568,12 +578,22 @@ pub async fn get_root(
         .or_else(|| helpers::repo_from_parked_domain(&state, &headers));
     if let Some(repo_name) = routed_repo {
         let branch = helpers::branch_for_request(&headers, &state, Some(&repo_name));
-        if let Some(resp) =
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             git::try_site_shell_for_root(&state, &headers, &branch, &repo_name, qmap)
-        {
-            return resp;
+        })) {
+            Ok(Some(resp)) => return resp,
+            Ok(None) => return site_shell_ssr_failed_response(),
+            Err(payload) => {
+                tracing::error!(
+                    target: "relay_ssr",
+                    panic = %panic_payload_message(&payload),
+                    repo = %repo_name,
+                    branch = %branch,
+                    "site shell SSR panicked (returning 500)"
+                );
+                return site_shell_ssr_failed_response();
+            }
         }
-        return site_shell_ssr_failed_response();
     }
     let has_parked = state
         .parked_domains

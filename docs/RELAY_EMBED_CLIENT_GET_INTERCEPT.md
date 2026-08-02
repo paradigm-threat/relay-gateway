@@ -127,7 +127,7 @@ Optional **`main.js`** admin chrome may keep React separately until retired.
 - If hook returns **`None`**, **fall through** to **raw markdown** (current behavior).
 - Set **`Vary: Accept`** when negotiation is used.
 
-**Align** with [**`RELAY_MARKDOWN_HTML_GET_HOOK_PLAN.md`**](RELAY_MARKDOWN_HTML_GET_HOOK_PLAN.md) § integration points (paused tabled work); **embed** may **ship HTML** that loads the **JS client** rather than only CleverScript-generated static HTML.
+**Align** with existing `@relay/md` / `@relay/ssr` GET intercept; **embed** may **ship HTML** that loads the **JS client** rather than only CleverScript-generated static HTML.
 
 ### Phase C — **Repo** `hooks/server/get.cs`
 
@@ -149,5 +149,5 @@ Optional **`main.js`** admin chrome may keep React separately until retired.
 ## See also
 
 - [**`RELAY_CLIENT_WEB_SHELL.md`**](RELAY_CLIENT_WEB_SHELL.md) — full SPA shell (`relay-client-web`); embed is a **subset** entry.
-- [**`RELAY_MARKDOWN_HTML_GET_HOOK_PLAN.md`**](RELAY_MARKDOWN_HTML_GET_HOOK_PLAN.md) — Accept negotiation + GET hook (tabled).
+- [**`PARADIGM_PARK_LOCAL.md`**](PARADIGM_PARK_LOCAL.md) — local park SSR hardening.
 - [**`SERVER_HOOKS.md`**](SERVER_HOOKS.md) — `server.hooks.get`, client defaults.
