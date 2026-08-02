@@ -2323,6 +2323,41 @@ fn dynamic_css_properties_for_class(
             p.insert("display".into(), json!("none"));
             return Some(p);
         }
+        "float-left" => {
+            let mut p = CssProps::new();
+            p.insert("float".into(), json!("left"));
+            return Some(p);
+        }
+        "float-right" => {
+            let mut p = CssProps::new();
+            p.insert("float".into(), json!("right"));
+            return Some(p);
+        }
+        "float-none" => {
+            let mut p = CssProps::new();
+            p.insert("float".into(), json!("none"));
+            return Some(p);
+        }
+        "clear-left" => {
+            let mut p = CssProps::new();
+            p.insert("clear".into(), json!("left"));
+            return Some(p);
+        }
+        "clear-right" => {
+            let mut p = CssProps::new();
+            p.insert("clear".into(), json!("right"));
+            return Some(p);
+        }
+        "clear-both" => {
+            let mut p = CssProps::new();
+            p.insert("clear".into(), json!("both"));
+            return Some(p);
+        }
+        "clear-none" => {
+            let mut p = CssProps::new();
+            p.insert("clear".into(), json!("none"));
+            return Some(p);
+        }
         _ => {}
     }
     // Flexbox shorthands
@@ -3110,6 +3145,19 @@ fn width_like_props(prop: &str, token: &str) -> Option<CssProps> {
         "fit" => Some("fit-content".to_string()),
         "auto" => Some("auto".to_string()),
         "px" => Some("1px".to_string()),
+        // Tailwind named max-width / width tokens (max-w-sm, w-lg, …)
+        "xs" => Some("20rem".to_string()),
+        "sm" => Some("24rem".to_string()),
+        "md" => Some("28rem".to_string()),
+        "lg" => Some("32rem".to_string()),
+        "xl" => Some("36rem".to_string()),
+        "2xl" => Some("42rem".to_string()),
+        "3xl" => Some("48rem".to_string()),
+        "4xl" => Some("56rem".to_string()),
+        "5xl" => Some("64rem".to_string()),
+        "6xl" => Some("72rem".to_string()),
+        "7xl" => Some("80rem".to_string()),
+        "prose" => Some("65ch".to_string()),
         other => {
             // numeric scale n => n*4px, fraction e.g., 1/2 => 50%
             if let Some((a, b)) = other.split_once('/') {
@@ -3960,6 +4008,37 @@ mod tests {
         assert!(css.contains("#ffffff") || css.contains("background-color:#ffffff"));
         assert!(css.contains("#111111") || css.contains("background-color:#111111"));
         assert!(css.contains("html.dark"), "forced dark override: {css}");
+    }
+
+    #[test]
+    fn css_emits_float_and_clear_utilities() {
+        let mut state = State::new_default();
+        state.current_theme = "light".to_string();
+        let mut bps = IndexMap::new();
+        bps.insert("sm".to_string(), "640px".to_string());
+        state.set_breakpoints(bps);
+        state.register_tailwind_classes([
+            "sm:float-right".to_string(),
+            "clear-both".to_string(),
+            "sm:max-w-sm".to_string(),
+        ]);
+        let css = state.css_for_web();
+        assert!(
+            css.contains("@media (min-width: 640px)"),
+            "sm media missing: {css}"
+        );
+        assert!(
+            css.contains(".sm\\:float-right") && css.contains("float:right"),
+            "sm:float-right missing: {css}"
+        );
+        assert!(
+            css.contains(".clear-both") && css.contains("clear:both"),
+            "clear-both missing: {css}"
+        );
+        assert!(
+            css.contains(".sm\\:max-w-sm") && css.contains("max-width:24rem"),
+            "sm:max-w-sm missing: {css}"
+        );
     }
 
     #[test]
