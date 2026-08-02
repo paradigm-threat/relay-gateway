@@ -41,6 +41,8 @@ chmod +x scripts/park-local.sh   # once
 ./scripts/park-local.sh regress  # unit only
 ```
 
+**Chrome toggles (theme / font):** after hydrate in the browser, theme and font must update via `documentElement` class / `data-font` only — **no** full article remount. Multi-second clicks almost always mean tip `setState` (or `setCurrentTheme`). Tip canon: park checkout `hooks/CLEVERSCRIPT_TIP.md` § Render rarity; product doctrine: [`RELAY_CLEVERSCRIPT_REACT_RENDERING.md`](./RELAY_CLEVERSCRIPT_REACT_RENDERING.md).
+
 From **`paradigm-threat-files/`** (gateway already up):
 
 ```bash

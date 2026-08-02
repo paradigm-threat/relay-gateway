@@ -11,7 +11,14 @@ This document states **product and engineering requirements** for the CleverScri
    Design hooks and hosts so that **full hook re-runs and VDOM walks happen as infrequently as possible**. Prefer:
    - coalescing updates,
    - pushing high-frequency or heavy visual work to **native / host-controlled UI**,
-   - keeping CleverScript trees small and shallow.
+   - keeping CleverScript trees small and shallow,
+   - **CSS / host attribute flips** for appearance chrome (theme, font, tabs) so nothing CleverScript-owned needs to update.
+
+   CleverScript is **interpreted** (WASM), not machine-code React. Treat each `setState` as expensive by default.
+
+   **Web host reality today:** after hydrate, `doRender` re-runs the full site-shell hook and **replaces** `container.innerHTML` (incremental `vdom::reconcile` is not wired on web). So a tip `useState` whose only job is “show the other theme icon” remounts the **entire article**. That is an anti-pattern.
+
+   **Canonical tip pattern (theme / font):** flip `document.documentElement` class / `data-font` against a dual stylesheet (`css_for_web_system` → `html.dark` / `html.light`). Keep **both** icons (or font face via CSS) in the DOM and show/hide with selectors. Do **not** call `setCurrentTheme` for park chrome (full CSS regen + `set_render_requested`). Do **not** `setState` solely to reflect light/dark. Sibling pattern: ChangeLog **CSS radio tabs** (no tab `setState`).
 
 3. **Complex, state-heavy, or high-churn UI belongs in native components**  
    When a surface needs animation, lists with constant updates, media, maps, etc., the **host** should own the widget; CleverScript supplies configuration and high-level commands, not per-frame reconciliation.
