@@ -255,9 +255,11 @@ pub fn embed_html_document_with_assets_and_seo(
         ));
     }
     seo_tags.push_str("\n  <meta property=\"og:type\" content=\"website\"/>");
+    // data-pt-hydrated="0" until embed JS promotes live (relay-runtime-web syncHtmlHydratedAttr).
+    // Park tips style .pt-client-only chrome as inactive until "1".
     format!(
         r#"<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-pt-hydrated="0">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -454,6 +456,10 @@ mod tests {
         assert!(html.contains("id=\"relay-ssr-theme\""));
         assert!(html.contains(".ct-page{background-color:#020817;}"));
         assert!(html.contains("data-relay-ssr=\"1\""));
+        assert!(
+            html.contains(r#"<html lang="en" data-pt-hydrated="0">"#),
+            "SSR shell must mark html inactive until client live: {html}"
+        );
     }
 
     #[test]
