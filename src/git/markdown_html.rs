@@ -8,10 +8,10 @@ pub fn default_markdown_html_allowed_tags() -> Vec<String> {
     let mut tags: Vec<String> = [
         "a", "abbr", "article", "b", "blockquote", "br", "cite", "code", "del", "div", "em",
         "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "iframe", "img",
-        "ins", "li", "mark", "nav", "ol", "p", "pre", "q", "s", "section", "small", "span",
-        "strong", "sub", "sup", "table", "tbody", "td", "th", "thead", "time", "tr", "u", "ul",
-        "video", "math", "annotation", "semantics", "mrow", "mi", "mo", "mn", "msup", "msub",
-        "mfrac", "mtext",
+        "ins", "li", "mark", "nav", "ol", "p", "picture", "pre", "q", "s", "section", "small",
+        "source", "span", "strong", "sub", "sup", "table", "tbody", "td", "th", "thead", "time",
+        "tr", "u", "ul", "video", "math", "annotation", "semantics", "mrow", "mi", "mo", "mn",
+        "msup", "msub", "mfrac", "mtext",
     ]
     .into_iter()
     .map(str::to_string)
@@ -103,6 +103,10 @@ fn render_node_html(node: &Node, out: &mut String) {
                 render_nodes_html(children, out);
                 return;
             }
+            if tag == "img" {
+                render_img_with_optional_portrait(props, out);
+                return;
+            }
             out.push('<');
             out.push_str(tag);
             for (k, v) in props {
@@ -138,6 +142,78 @@ fn is_void_html_tag(tag: &str) -> bool {
         "area" | "base" | "br" | "col" | "embed" | "hr" | "img" | "input" | "link" | "meta"
             | "param" | "source" | "track" | "wbr"
     )
+}
+
+/// Narrow-viewport art direction (navbar / PopImage parity): `foo.ext` → `foo-portrait.ext`.
+const PORTRAIT_MEDIA_QUERY: &str = "(max-width: 768px)";
+
+fn portrait_sibling_src(src: &str) -> Option<String> {
+    let (path_and_host, query) = match src.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (src, None),
+    };
+    let lower = path_and_host.to_ascii_lowercase();
+    if lower.ends_with(".svg") {
+        return None;
+    }
+    let (prefix, file) = match path_and_host.rfind('/') {
+        Some(i) => (&path_and_host[..=i], &path_and_host[i + 1..]),
+        None => ("", path_and_host),
+    };
+    let dot = file.rfind('.')?;
+    if dot == 0 {
+        return None;
+    }
+    let stem = &file[..dot];
+    let ext = &file[dot..];
+    if stem.to_ascii_lowercase().ends_with("-portrait") {
+        return None;
+    }
+    let mut out = String::with_capacity(src.len() + 9);
+    out.push_str(prefix);
+    out.push_str(stem);
+    out.push_str("-portrait");
+    out.push_str(ext);
+    if let Some(q) = query {
+        out.push('?');
+        out.push_str(q);
+    }
+    Some(out)
+}
+
+fn render_img_open_tag(props: &std::collections::HashMap<String, Value>, out: &mut String) {
+    out.push_str("<img");
+    for (k, v) in props {
+        if let Some(s) = json_prop_string(v) {
+            if should_skip_html_attr(k, &s) {
+                continue;
+            }
+            if !s.is_empty() || k == "alt" {
+                out.push(' ');
+                out.push_str(html_attr_name(k));
+                out.push_str("=\"");
+                out.push_str(&escape_html_attr(&s));
+                out.push('"');
+            }
+        }
+    }
+    out.push_str(" />");
+}
+
+fn render_img_with_optional_portrait(props: &std::collections::HashMap<String, Value>, out: &mut String) {
+    let src = props.get("src").and_then(json_prop_string);
+    let portrait = src.as_deref().and_then(portrait_sibling_src);
+    if let Some(portrait_src) = portrait {
+        out.push_str("<picture><source media=\"");
+        out.push_str(PORTRAIT_MEDIA_QUERY);
+        out.push_str("\" srcset=\"");
+        out.push_str(&escape_html_attr(&portrait_src));
+        out.push_str("\" />");
+        render_img_open_tag(props, out);
+        out.push_str("</picture>");
+    } else {
+        render_img_open_tag(props, out);
+    }
 }
 
 /// Parse markdown and emit a semantic HTML fragment wrapped in `<article class="relay-md-html">`.
@@ -190,5 +266,48 @@ mod tests {
         let html = markdown_to_html_fragment(md).unwrap();
         assert!(html.contains("class=\"sm:float-right clear-both\""), "html: {html}");
         assert!(!html.contains("title=\"{"));
+    }
+
+    #[test]
+    fn markdown_image_wraps_portrait_sibling_picture() {
+        let html = markdown_to_html_fragment(
+            "![chart](/governance/war/presidential-alignment-scorecard-au046.png)",
+        )
+        .unwrap();
+        assert!(
+            html.contains("<picture>"),
+            "expected picture wrapper: {html}"
+        );
+        assert!(
+            html.contains("media=\"(max-width: 768px)\""),
+            "expected portrait media: {html}"
+        );
+        assert!(
+            html.contains(
+                "srcset=\"/governance/war/presidential-alignment-scorecard-au046-portrait.png\""
+            ),
+            "expected portrait srcset: {html}"
+        );
+        assert!(
+            html.contains("src=\"/governance/war/presidential-alignment-scorecard-au046.png\""),
+            "landscape img preserved: {html}"
+        );
+        assert_eq!(
+            html.matches("au046-portrait.png").count(),
+            1,
+            "portrait path only in source: {html}"
+        );
+    }
+
+    #[test]
+    fn markdown_portrait_asset_does_not_nest_another_portrait() {
+        let html = markdown_to_html_fragment(
+            "![chart](/governance/war/presidential-alignment-scorecard-au046-portrait.png)",
+        )
+        .unwrap();
+        assert!(!html.contains("<picture>"), "html: {html}");
+        assert!(html.contains(
+            "src=\"/governance/war/presidential-alignment-scorecard-au046-portrait.png\""
+        ));
     }
 }
