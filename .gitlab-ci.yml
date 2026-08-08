@@ -105,8 +105,8 @@ package:linode-tgz:
   script:
     # Shallow clones have no upstream; allow pack without require_clean_pushed.
     - npm --prefix "$CI_PROJECT_DIR/../relay-client-web" install --no-fund --no-audit
-    # md2ast-react diagnostics import (not always hoisted from file: deps without lockfile).
-    - npm --prefix "$CI_PROJECT_DIR/../relay-client-web" install @babel/code-frame --no-save --no-fund --no-audit
+    # esbuild resolves @babel/code-frame from md2ast-react's package root.
+    - npm --prefix "$CI_PROJECT_DIR/packages/md2ast-react" install --no-fund --no-audit
     - RELAY_PACK_ALLOW_DIRTY=1 ./scripts/pack-linode-deploy.sh
   artifacts:
     name: "relay-linode-deploy-$CI_COMMIT_SHORT_SHA"
