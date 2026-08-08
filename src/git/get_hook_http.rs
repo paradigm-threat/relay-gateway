@@ -16,11 +16,26 @@ use serde_json::Value;
 use crate::types::{HEADER_BRANCH, HEADER_REPO};
 
 fn hook_status(val: &Value) -> StatusCode {
-    val.get("status")
-        .and_then(|v| v.as_u64())
-        .filter(|&n| (200..=599).contains(&n))
-        .and_then(|n| StatusCode::from_u16(n as u16).ok())
-        .unwrap_or(StatusCode::OK)
+    let Some(raw) = val.get("status") else {
+        return StatusCode::OK;
+    };
+    // CleverScript `CsValue::Number` is f64; tip hooks often emit `404.0`.
+    // `as_u64()` is None for floats, which previously forced HTTP 200 JSON for
+    // missing blobs and blanked mobile `<picture>` sources.
+    let n = if let Some(u) = raw.as_u64() {
+        u
+    } else if let Some(f) = raw.as_f64() {
+        if !f.is_finite() || f.fract() != 0.0 || f < 0.0 {
+            return StatusCode::OK;
+        }
+        f as u64
+    } else {
+        return StatusCode::OK;
+    };
+    if !(200..=599).contains(&n) {
+        return StatusCode::OK;
+    }
+    StatusCode::from_u16(n as u16).unwrap_or(StatusCode::OK)
 }
 
 /// Merge optional `headers` object from hook JSON. Skips invalid names/values. Does not set
@@ -286,6 +301,18 @@ mod tests {
         let r = get_hook_json_to_response(&val, "main", "rp").unwrap();
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
         assert_eq!(r.headers().get("cache-control").unwrap(), "public, max-age=60");
+    }
+
+    #[test]
+    fn file_kind_hook_status_float_404_maps_to_http_not_found() {
+        let val = json!({
+            "kind": "file",
+            "status": 404.0,
+            "contentType": "application/json; charset=utf-8",
+            "bodyUtf8": r#"{"ok":false,"path":"gone.png"}"#
+        });
+        let r = get_hook_json_to_response(&val, "main", "rp").unwrap();
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

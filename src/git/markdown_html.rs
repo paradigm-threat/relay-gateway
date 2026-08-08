@@ -2,6 +2,11 @@
 
 use md2ast::{parse as md2ast_parse, Node, TranspileOptions};
 use serde_json::Value;
+use std::collections::HashSet;
+
+use crate::git::portrait::{
+    portrait_sibling_in_set, portrait_sibling_src, PORTRAIT_MEDIA_QUERY,
+};
 
 /// HTML tag allowlist for md2ast (standard blocks + paradigm-threat inline HTML).
 pub fn default_markdown_html_allowed_tags() -> Vec<String> {
@@ -70,9 +75,9 @@ fn json_prop_string(v: &Value) -> Option<String> {
     }
 }
 
-fn render_nodes_html(nodes: &[Node], out: &mut String) {
+fn render_nodes_html(nodes: &[Node], out: &mut String, portraits: Option<&HashSet<String>>) {
     for n in nodes {
-        render_node_html(n, out);
+        render_node_html(n, out, portraits);
     }
 }
 
@@ -92,7 +97,7 @@ fn should_skip_html_attr(key: &str, value: &str) -> bool {
     false
 }
 
-fn render_node_html(node: &Node, out: &mut String) {
+fn render_node_html(node: &Node, out: &mut String, portraits: Option<&HashSet<String>>) {
     match node {
         Node::Text { content } => {
             out.push_str(&escape_html_text(content));
@@ -100,11 +105,11 @@ fn render_node_html(node: &Node, out: &mut String) {
         Node::Element { tag, props, children } => {
             let tag = tag.as_str();
             if tag.is_empty() {
-                render_nodes_html(children, out);
+                render_nodes_html(children, out, portraits);
                 return;
             }
             if tag == "img" {
-                render_img_with_optional_portrait(props, out);
+                render_img_with_optional_portrait(props, out, portraits);
                 return;
             }
             out.push('<');
@@ -127,7 +132,7 @@ fn render_node_html(node: &Node, out: &mut String) {
                 out.push_str(" />");
             } else {
                 out.push('>');
-                render_nodes_html(children, out);
+                render_nodes_html(children, out, portraits);
                 out.push_str("</");
                 out.push_str(tag);
                 out.push('>');
@@ -142,43 +147,6 @@ fn is_void_html_tag(tag: &str) -> bool {
         "area" | "base" | "br" | "col" | "embed" | "hr" | "img" | "input" | "link" | "meta"
             | "param" | "source" | "track" | "wbr"
     )
-}
-
-/// Narrow-viewport art direction (navbar / PopImage parity): `foo.ext` → `foo-portrait.ext`.
-const PORTRAIT_MEDIA_QUERY: &str = "(max-width: 768px)";
-
-fn portrait_sibling_src(src: &str) -> Option<String> {
-    let (path_and_host, query) = match src.split_once('?') {
-        Some((p, q)) => (p, Some(q)),
-        None => (src, None),
-    };
-    let lower = path_and_host.to_ascii_lowercase();
-    if lower.ends_with(".svg") {
-        return None;
-    }
-    let (prefix, file) = match path_and_host.rfind('/') {
-        Some(i) => (&path_and_host[..=i], &path_and_host[i + 1..]),
-        None => ("", path_and_host),
-    };
-    let dot = file.rfind('.')?;
-    if dot == 0 {
-        return None;
-    }
-    let stem = &file[..dot];
-    let ext = &file[dot..];
-    if stem.to_ascii_lowercase().ends_with("-portrait") {
-        return None;
-    }
-    let mut out = String::with_capacity(src.len() + 9);
-    out.push_str(prefix);
-    out.push_str(stem);
-    out.push_str("-portrait");
-    out.push_str(ext);
-    if let Some(q) = query {
-        out.push('?');
-        out.push_str(q);
-    }
-    Some(out)
 }
 
 fn render_img_open_tag(props: &std::collections::HashMap<String, Value>, out: &mut String) {
@@ -200,9 +168,18 @@ fn render_img_open_tag(props: &std::collections::HashMap<String, Value>, out: &m
     out.push_str(" />");
 }
 
-fn render_img_with_optional_portrait(props: &std::collections::HashMap<String, Value>, out: &mut String) {
+fn render_img_with_optional_portrait(
+    props: &std::collections::HashMap<String, Value>,
+    out: &mut String,
+    portraits: Option<&HashSet<String>>,
+) {
     let src = props.get("src").and_then(json_prop_string);
-    let portrait = src.as_deref().and_then(portrait_sibling_src);
+    let portrait = match (src.as_deref(), portraits) {
+        // No tip index: never invent a `<source>` (missing siblings blank mobile).
+        (Some(_), None) => None,
+        (Some(s), Some(set)) => portrait_sibling_in_set(s, set),
+        _ => None,
+    };
     if let Some(portrait_src) = portrait {
         out.push_str("<picture><source media=\"");
         out.push_str(PORTRAIT_MEDIA_QUERY);
@@ -217,17 +194,28 @@ fn render_img_with_optional_portrait(props: &std::collections::HashMap<String, V
 }
 
 /// Parse markdown and emit a semantic HTML fragment wrapped in `<article class="relay-md-html">`.
-pub fn markdown_to_html_fragment(markdown: &str) -> Result<String, String> {
+///
+/// When `portraits` is `Some`, emit `<picture>` only for landscape images whose
+/// `-portrait` sibling is in the set. When `None`, never invent portrait sources.
+pub fn markdown_to_html_fragment_with_portraits(
+    markdown: &str,
+    portraits: Option<&HashSet<String>>,
+) -> Result<String, String> {
     let body_md = strip_yaml_frontmatter(markdown);
     let options = TranspileOptions {
         allowed_tags: default_markdown_html_allowed_tags(),
     };
     let nodes = md2ast_parse(body_md, &options);
     let mut body = String::new();
-    render_nodes_html(&nodes, &mut body);
+    render_nodes_html(&nodes, &mut body, portraits);
     Ok(format!(
         "<article class=\"relay-md-html mdx-content\" data-relay-md-html=\"true\">{body}</article>"
     ))
+}
+
+/// Parse markdown without tip portrait index (no auto `<picture>`).
+pub fn markdown_to_html_fragment(markdown: &str) -> Result<String, String> {
+    markdown_to_html_fragment_with_portraits(markdown, None)
 }
 
 #[cfg(test)]
@@ -269,9 +257,26 @@ mod tests {
     }
 
     #[test]
-    fn markdown_image_wraps_portrait_sibling_picture() {
+    fn markdown_image_without_index_does_not_invent_picture() {
         let html = markdown_to_html_fragment(
             "![chart](/governance/war/presidential-alignment-scorecard-au046.png)",
+        )
+        .unwrap();
+        assert!(!html.contains("<picture>"), "html: {html}");
+        assert!(html.contains(
+            "src=\"/governance/war/presidential-alignment-scorecard-au046.png\""
+        ));
+    }
+
+    #[test]
+    fn markdown_image_wraps_portrait_sibling_picture_when_in_set() {
+        let mut set = HashSet::new();
+        set.insert(
+            "governance/war/presidential-alignment-scorecard-au046-portrait.png".into(),
+        );
+        let html = markdown_to_html_fragment_with_portraits(
+            "![chart](/governance/war/presidential-alignment-scorecard-au046.png)",
+            Some(&set),
         )
         .unwrap();
         assert!(
@@ -300,14 +305,41 @@ mod tests {
     }
 
     #[test]
+    fn markdown_missing_portrait_sibling_stays_plain_img() {
+        let set = HashSet::new();
+        let html = markdown_to_html_fragment_with_portraits(
+            "![hero](/governance/war/the-great-depression-was-planned.png)",
+            Some(&set),
+        )
+        .unwrap();
+        assert!(!html.contains("<picture>"), "html: {html}");
+        assert!(html.contains(
+            "src=\"/governance/war/the-great-depression-was-planned.png\""
+        ));
+    }
+
+    #[test]
     fn markdown_portrait_asset_does_not_nest_another_portrait() {
-        let html = markdown_to_html_fragment(
+        let mut set = HashSet::new();
+        set.insert(
+            "governance/war/presidential-alignment-scorecard-au046-portrait.png".into(),
+        );
+        let html = markdown_to_html_fragment_with_portraits(
             "![chart](/governance/war/presidential-alignment-scorecard-au046-portrait.png)",
+            Some(&set),
         )
         .unwrap();
         assert!(!html.contains("<picture>"), "html: {html}");
         assert!(html.contains(
             "src=\"/governance/war/presidential-alignment-scorecard-au046-portrait.png\""
         ));
+    }
+
+    #[test]
+    fn invent_helper_still_available() {
+        assert_eq!(
+            portrait_sibling_src("/a.png").as_deref(),
+            Some("/a-portrait.png")
+        );
     }
 }

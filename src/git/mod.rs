@@ -17,6 +17,7 @@ pub mod index_policy;
 pub mod origins;
 pub mod privileged_policy;
 pub mod markdown_html;
+pub mod portrait;
 pub mod meta_index;
 pub mod index_store;
 pub mod indexing;

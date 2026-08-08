@@ -692,7 +692,11 @@ fn markdown_html_from_get_context_native(
     }
     let bytes = markdown_body_from_ctx(m, &repo_root, &branch)?;
     let md = String::from_utf8_lossy(&bytes);
-    let html = crate::git::markdown_html::markdown_to_html_fragment(&md)?;
+    let portraits = crate::git::portrait::portrait_sibling_set(&repo_root, &branch);
+    let html = crate::git::markdown_html::markdown_to_html_fragment_with_portraits(
+        &md,
+        Some(&portraits),
+    )?;
     Ok(hook_file_object_html(&html))
 }
 
@@ -777,7 +781,14 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                 path = %initial_path,
                 "SSR HTML cache hit"
             );
-            return Ok(hook_file_object_ssr_html(cached));
+            let html = if cached.contains("relay-portrait-siblings") {
+                cached
+            } else {
+                let portraits_json =
+                    crate::git::portrait::portrait_sibling_set_json(&repo_root, request_branch);
+                crate::git::embed_html::inject_portrait_sibling_bootstrap(&cached, &portraits_json)
+            };
+            return Ok(hook_file_object_ssr_html(html));
         }
 
         let Some(rendered) = crate::git::ssr_client_hook::try_ssr_client_hook(
@@ -835,6 +846,9 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             site_description.as_deref(),
             canonical_url.as_deref(),
         );
+        let portraits_json =
+            crate::git::portrait::portrait_sibling_set_json(&repo_root, request_branch);
+        let html = crate::git::embed_html::inject_portrait_sibling_bootstrap(&html, &portraits_json);
         crate::git::ssr_html_cache::put(
             &repo_root,
             request_branch,
@@ -1187,6 +1201,23 @@ fn image_exports(
             )
         })
     };
+    let portrait_if = {
+        let repo_root = repo_root.clone();
+        let branch = branch.clone();
+        Rc::new(move |args: &[CsValue]| -> Result<CsValue, String> {
+            let src = args
+                .first()
+                .and_then(|v| match v {
+                    CsValue::String(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("");
+            match crate::git::portrait::portrait_sibling_if_present(&repo_root, &branch, src) {
+                Some(p) => Ok(CsValue::String(p)),
+                None => Ok(CsValue::String(String::new())),
+            }
+        })
+    };
     let mut image = HashMap::new();
     image.insert(
         "toWebp".to_string(),
@@ -1200,6 +1231,10 @@ fn image_exports(
     image.insert(
         "optimizeRasterFromGetContext".to_string(),
         CsValue::NativeFn(NativeFnClosure(from_ctx)),
+    );
+    image.insert(
+        "portraitSiblingIfPresent".to_string(),
+        CsValue::NativeFn(NativeFnClosure(portrait_if)),
     );
     CsValue::Object(image)
 }

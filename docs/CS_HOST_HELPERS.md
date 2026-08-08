@@ -22,7 +22,7 @@ Registered in `relay-runtime/src/relay_modules.rs` (SSR + WASM). Spec table: `re
 | `@relay/md` | Markdown → HTML from GET context |
 | `@relay/ssr` | `ssrClientHookFromGetContext` |
 | `@relay/web-assets` | Commit-pinned embed/WASM prefixes |
-| `@relay/image` | Raster optimize / `?w=` |
+| `@relay/image` | Raster optimize / `?w=` / `portraitSiblingIfPresent` |
 | `@relay/ipfs` | Manifest / CID fetch + disk cache |
 | `@relay/search/sqlite` (etc.) | QUERY FTS — CS only `import { search }` |
 | `@relay/git` | Server hook file reads |

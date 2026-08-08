@@ -277,6 +277,33 @@ pub fn embed_html_document_with_assets_and_seo(
     )
 }
 
+/// Inject tip portrait-sibling map for PopImage (before embed.js).
+///
+/// Sets `globalThis.__RELAY_PORTRAIT_SIBLINGS__` to a `{ "path/to/foo-portrait.png": true }` map.
+pub fn inject_portrait_sibling_bootstrap(html: &str, portraits_json: &str) -> String {
+    let safe = escape_json_for_html_script(portraits_json);
+    let boot = format!(
+        r#"  <script type="application/json" id="relay-portrait-siblings">{safe}</script>
+  <script>try{{var __el=document.getElementById('relay-portrait-siblings');if(__el){{globalThis.__RELAY_PORTRAIT_SIBLINGS__=JSON.parse(__el.textContent||'{{}}');}}}}catch(e){{globalThis.__RELAY_PORTRAIT_SIBLINGS__={{}};}}</script>
+"#
+    );
+    if let Some(idx) = html.find(r#"<script type="module" src=""#) {
+        let mut out = String::with_capacity(html.len() + boot.len());
+        out.push_str(&html[..idx]);
+        out.push_str(&boot);
+        out.push_str(&html[idx..]);
+        out
+    } else if let Some(idx) = html.find("</body>") {
+        let mut out = String::with_capacity(html.len() + boot.len());
+        out.push_str(&html[..idx]);
+        out.push_str(&boot);
+        out.push_str(&html[idx..]);
+        out
+    } else {
+        format!("{html}{boot}")
+    }
+}
+
 /// Build a minimal HTML document that boots **`/assets/embed.js`** and passes config via JSON
 /// in `#relay-embed-config`.
 ///
