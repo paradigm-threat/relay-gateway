@@ -13,7 +13,7 @@
 
 ## Order
 
-1. **Push `relay-runtime` `main` to GitLab** (local path dep; CI `test:verify` uses crates.io via `ci-ensure-deps.sh` until `0.1.2` is published).
+1. **Push `relay-runtime` `main` to GitLab** (CI clones it next to the gateway checkout).
 2. **Push `relay-gateway` `main` to GitLab** (`origin` / `gitlab` → `clevertree/relay-server`).
 3. **Trigger gateway CI on demand** (auto-run is off for branch pushes):
 
@@ -23,8 +23,7 @@ glab ci run -b main -R clevertree/relay-server
 # or: GitLab UI → Build → Pipelines → Run pipeline
 ```
 
-`test:verify` / `package:linode-tgz` must run `CI=true ./scripts/ci-ensure-deps.sh` before `cargo` (rewrites path deps to crates.io).
-4. **Push `paradigm-threat-files` to GitLab `main` only** when ready for forge SoT (content tip).  
+`test:verify` / `package:linode-tgz` clone public `relay-runtime` + `md2ast` (and `relay-client-web` for pack) into the path-dep layout Cargo expects.4. **Push `paradigm-threat-files` to GitLab `main` only** when ready for forge SoT (content tip).  
    **Go live (Relay remotes)** is a separate session: `git push dfw1/hkg1/lon1 HEAD:main` after gateway nodes are upgraded.
 
 5. **Gateway node deploy** (Linode / fleet): use CI `package:linode-tgz` artifact or existing pack script after `test:verify` is green. Restart gateways so SSR cache / new binary pick up inject + HTTP 404 fix.
