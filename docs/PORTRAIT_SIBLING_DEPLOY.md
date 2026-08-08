@@ -7,13 +7,13 @@
 
 | Repo | Expected tip theme |
 |------|--------------------|
-| `relay-runtime` | `@relay/path.portraitSiblingSrc` |
+| `relay-runtime` | `@relay/path` portrait invent + index lookup + gallery hash/DOM id; `@relay/util` TTS sentence chunking |
 | `relay-gateway` (`clevertree/relay-server`) | tip portrait index, float-404 HTTP fix, SSR inject |
-| `paradigm-threat-files` | thin PopImage (index lookup, no `Image()` probe) |
+| `paradigm-threat-files` | thin PopImage / galleryStore / TOC / TTS dock (host helpers, no tip invent/probe) |
 
 ## Order
 
-1. **Push `relay-runtime` `main` to GitLab** (gateway CI clones it as a path dep).
+1. **Push `relay-runtime` `main` to GitLab** (local path dep; CI `test:verify` uses crates.io via `ci-ensure-deps.sh` until `0.1.2` is published).
 2. **Push `relay-gateway` `main` to GitLab** (`origin` / `gitlab` → `clevertree/relay-server`).
 3. **Trigger gateway CI on demand** (auto-run is off for branch pushes):
 
@@ -23,6 +23,7 @@ glab ci run -b main -R clevertree/relay-server
 # or: GitLab UI → Build → Pipelines → Run pipeline
 ```
 
+`test:verify` / `package:linode-tgz` must run `CI=true ./scripts/ci-ensure-deps.sh` before `cargo` (rewrites path deps to crates.io).
 4. **Push `paradigm-threat-files` to GitLab `main` only** when ready for forge SoT (content tip).  
    **Go live (Relay remotes)** is a separate session: `git push dfw1/hkg1/lon1 HEAD:main` after gateway nodes are upgraded.
 

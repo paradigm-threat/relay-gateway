@@ -40,6 +40,8 @@ test:verify:
     - apt-get update -qq && apt-get install -y -qq curl jq nodejs
     - node -v
     - rustc -Vv
+    # Path deps (../relay-runtime, ../../md2ast) are monorepo-only; CI uses crates.io.
+    - CI=true ./scripts/ci-ensure-deps.sh
   script:
     - cargo test --locked
     - cargo build --release --locked
@@ -63,6 +65,7 @@ package:linode-tgz:
   before_script:
     - export PATH="/usr/local/cargo/bin:$PATH"
     - rustc -Vv
+    - CI=true ./scripts/ci-ensure-deps.sh
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

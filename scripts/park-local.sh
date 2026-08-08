@@ -152,6 +152,10 @@ cmd_unit() {
   log "relay-gateway park Host / SSR failure regressions"
   (cd "$GW_DIR" && cargo test --locked --lib parked -- --nocapture)
   (cd "$GW_DIR" && cargo test --locked --lib unknown_host_does_not_fall_back -- --nocapture)
+  log "relay-gateway portrait / float-404 / markdown picture gate"
+  (cd "$GW_DIR" && cargo test --locked --lib portrait -- --nocapture)
+  (cd "$GW_DIR" && cargo test --locked --lib get_hook_http -- --nocapture)
+  (cd "$GW_DIR" && cargo test --locked --lib markdown_html -- --nocapture)
 }
 
 cmd_regress() {
