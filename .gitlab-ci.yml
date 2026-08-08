@@ -104,6 +104,7 @@ package:linode-tgz:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   script:
     # Shallow clones have no upstream; allow pack without require_clean_pushed.
+    - npm --prefix "$CI_PROJECT_DIR/../relay-client-web" ci
     - RELAY_PACK_ALLOW_DIRTY=1 ./scripts/pack-linode-deploy.sh
   artifacts:
     name: "relay-linode-deploy-$CI_COMMIT_SHORT_SHA"
