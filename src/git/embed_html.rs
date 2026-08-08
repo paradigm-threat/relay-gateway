@@ -471,6 +471,35 @@ mod tests {
     }
 
     #[test]
+    fn inject_portrait_sibling_bootstrap_before_embed_js() {
+        let base = embed_html_document("demo", "main", "/", "/hooks/client/get.jsx", None);
+        let html = inject_portrait_sibling_bootstrap(
+            &base,
+            r#"{"governance/war/x-portrait.png":true}"#,
+        );
+        assert!(html.contains("id=\"relay-portrait-siblings\""), "{html}");
+        assert!(
+            html.contains(r#"{"governance/war/x-portrait.png":true}"#)
+                || html.contains("governance/war/x-portrait.png"),
+            "{html}"
+        );
+        assert!(html.contains("__RELAY_PORTRAIT_SIBLINGS__"), "{html}");
+        let portrait_idx = html.find("relay-portrait-siblings").unwrap();
+        let embed_idx = html.find(r#"src="/assets/embed.js""#).unwrap();
+        assert!(
+            portrait_idx < embed_idx,
+            "portrait bootstrap must precede embed.js"
+        );
+    }
+
+    #[test]
+    fn inject_portrait_escapes_script_breakout() {
+        let base = embed_html_document("demo", "main", "/", "/hooks/client/get.jsx", None);
+        let html = inject_portrait_sibling_bootstrap(&base, r#"{"":"</script><script>alert(1)"}"#);
+        assert!(!html.contains("</script><script>alert"), "{html}");
+    }
+
+    #[test]
     fn embed_with_ssr_css_injects_theme_style() {
         let html = embed_html_document_with_css(
             "demo",

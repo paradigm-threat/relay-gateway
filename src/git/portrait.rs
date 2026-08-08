@@ -217,6 +217,8 @@ pub fn portrait_sibling_in_set(src: &str, set: &HashSet<String>) -> Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use git2::{Repository, Signature};
+    use tempfile::tempdir;
 
     #[test]
     fn invents_portrait_sibling_preserving_query() {
@@ -254,5 +256,79 @@ mod tests {
             Some("/governance/war/chart-portrait.png")
         );
         assert!(portrait_sibling_in_set("/governance/war/missing.png", &set).is_none());
+    }
+
+    fn bare_with_blobs(paths: &[(&str, &[u8])]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempdir().unwrap();
+        let bare = dir.path().join("repo.git");
+        let repo = Repository::init_bare(&bare).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+        let mut index = repo.index().unwrap();
+        for (path, bytes) in paths {
+            let blob = repo.blob(bytes).unwrap();
+            let entry = git2::IndexEntry {
+                ctime: git2::IndexTime::new(0, 0),
+                mtime: git2::IndexTime::new(0, 0),
+                dev: 0,
+                ino: 0,
+                mode: 0o100644,
+                uid: 0,
+                gid: 0,
+                file_size: bytes.len() as u32,
+                id: blob,
+                flags: 0,
+                flags_extended: 0,
+                path: path.as_bytes().to_vec(),
+            };
+            index.add(&entry).unwrap();
+        }
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        (dir, bare)
+    }
+
+    #[test]
+    fn tip_set_lists_only_portrait_rasters() {
+        let (_dir, bare) = bare_with_blobs(&[
+            ("governance/war/hero.png", b"PNG"),
+            ("governance/war/hero-portrait.png", b"PNGP"),
+            ("governance/war/notes.md", b"# x"),
+            ("a.svg", b"<svg/>"),
+            ("nested/x-portrait.jpg", b"JPEG"),
+        ]);
+        let set = portrait_sibling_set(&bare, "main");
+        assert!(set.contains("governance/war/hero-portrait.png"), "{set:?}");
+        assert!(set.contains("nested/x-portrait.jpg"), "{set:?}");
+        assert!(!set.contains("governance/war/hero.png"), "{set:?}");
+        assert!(!set.contains("governance/war/notes.md"), "{set:?}");
+        assert!(!set.contains("a.svg"), "{set:?}");
+    }
+
+    #[test]
+    fn portrait_sibling_if_present_reads_tip() {
+        let (_dir, bare) = bare_with_blobs(&[
+            ("governance/war/hero.png", b"PNG"),
+            ("governance/war/hero-portrait.png", b"PNGP"),
+            ("governance/war/lonely.png", b"PNG"),
+        ]);
+        assert_eq!(
+            portrait_sibling_if_present(&bare, "main", "/governance/war/hero.png?w=800").as_deref(),
+            Some("/governance/war/hero-portrait.png?w=800")
+        );
+        assert!(
+            portrait_sibling_if_present(&bare, "main", "/governance/war/lonely.png").is_none()
+        );
+    }
+
+    #[test]
+    fn portrait_set_json_is_object_map() {
+        let (_dir, bare) =
+            bare_with_blobs(&[("foo-portrait.png", b"x"), ("foo.png", b"y")]);
+        let json = portrait_sibling_set_json(&bare, "main");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["foo-portrait.png"], true);
+        assert!(v.get("foo.png").is_none());
     }
 }

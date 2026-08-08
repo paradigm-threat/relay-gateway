@@ -315,6 +315,30 @@ mod tests {
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
     }
 
+    #[test]
+    fn file_kind_hook_status_fractional_stays_ok() {
+        let val = json!({
+            "kind": "file",
+            "status": 404.5,
+            "contentType": "text/plain",
+            "bodyUtf8": "x"
+        });
+        let r = get_hook_json_to_response(&val, "main", "rp").unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn file_kind_hook_status_out_of_range_stays_ok() {
+        let val = json!({
+            "kind": "file",
+            "status": 99.0,
+            "contentType": "text/plain",
+            "bodyUtf8": "x"
+        });
+        let r = get_hook_json_to_response(&val, "main", "rp").unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+    }
+
     #[tokio::test]
     async fn execution_error_lists_unknown_module_in_technical_report() {
         let err = crate::git::clever_hooks::run_clever_hook(

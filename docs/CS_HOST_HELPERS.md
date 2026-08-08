@@ -39,6 +39,7 @@ When tip code grows loops that look like libraries, extract here and add **`rela
 | Share snippet / OG description builders | Same string rules on SSR + CSR; avoid tip duplication |
 | Keyword / Option B token helpers | Align with `check-keywords` without CS regex |
 | Gallery hash / `#img=` parse | Tiny but shared; keep tip free of char loops |
+| **Portrait sibling existence** | **Shipped** — tip index + `@relay/path.portraitSiblingSrc` + `@relay/image.portraitSiblingIfPresent`; see [`PORTRAIT_SIBLING_DEPLOY.md`](./PORTRAIT_SIBLING_DEPLOY.md) |
 | Sitemap / nav-index **writers** | Stay in Python/CI; **readers** already `@relay/catalog` |
 
 ## Rules for new helpers
@@ -51,8 +52,9 @@ When tip code grows loops that look like libraries, extract here and add **`rela
 
 ## Related
 
+- Portrait / PopImage deploy checklist: [`PORTRAIT_SIBLING_DEPLOY.md`](./PORTRAIT_SIBLING_DEPLOY.md)
 - Gap log: [`CLEVERSCRIPT_GAP_LOG.md`](./CLEVERSCRIPT_GAP_LOG.md) (G-007 closed = first helper wave)
 - Policy: [`RELAY_POLICY_AND_PERFORMANCE.md`](./RELAY_POLICY_AND_PERFORMANCE.md)
 - Server hooks: [`SERVER_HOOKS.md`](./SERVER_HOOKS.md)
 
-*Last updated: 2026-08-02*
+*Last updated: 2026-08-08*
