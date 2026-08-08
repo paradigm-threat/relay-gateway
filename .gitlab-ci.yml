@@ -49,6 +49,9 @@ test:verify:
       RUNTIME_URL="${RELAY_RUNTIME_GIT_URL:-https://gitlab.com/clevertree/relay-runtime.git}"
       MD2AST_URL="${MD2AST_GIT_URL:-https://gitlab.com/clevertree/md2jsx.git}"
       mkdir -p "$CI_PROJECT_DIR/.." "$CI_PROJECT_DIR/../.."
+      # relay-runtime path-deps themed-styler at ../relay-gateway/themed-styler
+      # (GitLab project dir is relay-server).
+      ln -sfn "$CI_PROJECT_DIR" "$CI_PROJECT_DIR/../relay-gateway"
       if [[ ! -f "$CI_PROJECT_DIR/../relay-runtime/Cargo.toml" ]]; then
         git clone --depth 1 --branch "$REF" "$RUNTIME_URL" "$CI_PROJECT_DIR/../relay-runtime"
       fi
@@ -86,6 +89,7 @@ package:linode-tgz:
       MD2AST_URL="${MD2AST_GIT_URL:-https://gitlab.com/clevertree/md2jsx.git}"
       WEB_URL="${RELAY_CLIENT_WEB_GIT_URL:-https://gitlab.com/clevertree/relay-client-web.git}"
       mkdir -p "$CI_PROJECT_DIR/.." "$CI_PROJECT_DIR/../.."
+      ln -sfn "$CI_PROJECT_DIR" "$CI_PROJECT_DIR/../relay-gateway"
       if [[ ! -f "$CI_PROJECT_DIR/../relay-runtime/Cargo.toml" ]]; then
         git clone --depth 1 --branch "$REF" "$RUNTIME_URL" "$CI_PROJECT_DIR/../relay-runtime"
       fi
