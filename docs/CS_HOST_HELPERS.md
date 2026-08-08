@@ -8,8 +8,8 @@ Registered in `relay-runtime/src/relay_modules.rs` (SSR + WASM). Spec table: `re
 
 | Module | Role |
 |--------|------|
-| `@relay/util` | `sortBy`, `take`, `prop`, `omitUndefined`, `slugify`, `uniqueId`, `includes` |
-| `@relay/path` | path join/normalize, `siteHref`, asset URL rewrite |
+| `@relay/util` | `sortBy`, `take`, `prop`, `omitUndefined`, `slugify`, `uniqueId`, `includes`, `splitSentences`, `takeSentenceChunk` |
+| `@relay/path` | path join/normalize, `siteHref`, asset URL rewrite, gallery `#img=` / DOM id / portrait index lookup |
 | `@relay/date` | ChangeLog / feed date formats |
 | `@relay/catalog` | nav-index parse, TOC extract, dir tree, Feeling Lucky |
 | `@relay/ui` | `cachedGet`, `Link`, `RadioTabs`, `safeProps` |
@@ -38,8 +38,9 @@ When tip code grows loops that look like libraries, extract here and add **`rela
 | Stronger markdown preprocess (math / KaTeX prep) | See `RELAY_MARKDOWN_MATH_KATEX.md` — keep CS out of tokenization |
 | Share snippet / OG description builders | Same string rules on SSR + CSR; avoid tip duplication |
 | Keyword / Option B token helpers | Align with `check-keywords` without CS regex |
-| Gallery hash / `#img=` parse | Tiny but shared; keep tip free of char loops |
-| **Portrait sibling existence** | **Shipped** — tip index + `@relay/path.portraitSiblingSrc` + `@relay/image.portraitSiblingIfPresent`; see [`PORTRAIT_SIBLING_DEPLOY.md`](./PORTRAIT_SIBLING_DEPLOY.md) |
+| **Gallery hash / `#img=` / DOM id** | **Shipped** — `@relay/path` `readHashImgSrc` / `galleryImgHash` / `safeImgDomId` / `galleryDisplaySrc` / `portraitSiblingIfPresent(map)` |
+| **TTS sentence chunking** | **Shipped** — `@relay/util.splitSentences` / `takeSentenceChunk` |
+| **TOC ATX extract** | **Shipped** — tip is thin wrap over `@relay/catalog.extractMarkdownHeadings` |
 | Sitemap / nav-index **writers** | Stay in Python/CI; **readers** already `@relay/catalog` |
 
 ## Rules for new helpers
