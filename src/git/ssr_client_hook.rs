@@ -453,6 +453,17 @@ fn try_ssr_client_hook_inner(req: &ClientHookSsrRequest<'_>) -> Option<ClientHoo
         inner: MockHost::new(),
     }));
 
+    // Seed CS globalThis so tip PopImage sees the tip portrait index during SSR
+    // (browser window.globalThis is not the CleverScript sandbox).
+    let portraits_json =
+        crate::git::portrait::portrait_sibling_set_json(req.repo_path, req.branch);
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&portraits_json) {
+        relay_runtime::set_cs_global_this_extra(
+            "__RELAY_PORTRAIT_SIBLINGS__",
+            Value::from_json(&parsed),
+        );
+    }
+
     let t_hook = std::time::Instant::now();
     let run = run_hook_to_vnode_stable_isolated(
         &source,
@@ -465,8 +476,9 @@ fn try_ssr_client_hook_inner(req: &ClientHookSsrRequest<'_>) -> Option<ClientHoo
     .map_err(|e| {
         tracing::warn!(target: "relay_ssr", error = %e, "client hook SSR failed");
         e
-    })
-    .ok()?;
+    });
+    relay_runtime::clear_cs_global_this_extras();
+    let run = run.ok()?;
     let ms_hook = t_hook.elapsed().as_millis() as u64;
 
     let t_html = std::time::Instant::now();
