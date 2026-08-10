@@ -183,6 +183,14 @@ pub fn embed_html_document_with_assets_and_title(
     )
 }
 
+/// Optional Open Graph / Twitter image + article vs website typing.
+#[derive(Debug, Clone, Default)]
+pub struct EmbedSeoExtras<'a> {
+    pub og_image: Option<&'a str>,
+    /// When true, emit `og:type=article` instead of `website`.
+    pub is_article: bool,
+}
+
 /// Like [`embed_html_document_with_assets_and_title`], with optional description + canonical.
 pub fn embed_html_document_with_assets_and_seo(
     repo: &str,
@@ -195,6 +203,35 @@ pub fn embed_html_document_with_assets_and_seo(
     site_title: Option<&str>,
     site_description: Option<&str>,
     canonical_url: Option<&str>,
+) -> String {
+    embed_html_document_with_assets_and_seo_extras(
+        repo,
+        branch,
+        rel_path,
+        client_hook_path,
+        ssr_body_html,
+        ssr_css,
+        assets_url_prefix,
+        site_title,
+        site_description,
+        canonical_url,
+        EmbedSeoExtras::default(),
+    )
+}
+
+/// Like [`embed_html_document_with_assets_and_seo`], with og:image / twitter / article type.
+pub fn embed_html_document_with_assets_and_seo_extras(
+    repo: &str,
+    branch: &str,
+    rel_path: &str,
+    client_hook_path: &str,
+    ssr_body_html: Option<&str>,
+    ssr_css: Option<&str>,
+    assets_url_prefix: Option<&str>,
+    site_title: Option<&str>,
+    site_description: Option<&str>,
+    canonical_url: Option<&str>,
+    extras: EmbedSeoExtras<'_>,
 ) -> String {
     let initial_path = if rel_path.starts_with('/') {
         rel_path.to_string()
@@ -244,6 +281,16 @@ pub fn embed_html_document_with_assets_and_seo(
             "\n  <meta property=\"og:title\" content=\"{}\"/>",
             escape_html_attr(title)
         ));
+        seo_tags.push_str(&format!(
+            "\n  <meta name=\"twitter:title\" content=\"{}\"/>",
+            escape_html_attr(title)
+        ));
+    }
+    if let Some(desc) = site_description.map(str::trim).filter(|s| !s.is_empty()) {
+        seo_tags.push_str(&format!(
+            "\n  <meta name=\"twitter:description\" content=\"{}\"/>",
+            escape_html_attr(desc)
+        ));
     }
     if let Some(canon) = canonical_url.map(str::trim).filter(|s| !s.is_empty()) {
         let escaped = escape_html_attr(canon);
@@ -254,7 +301,26 @@ pub fn embed_html_document_with_assets_and_seo(
             "\n  <meta property=\"og:url\" content=\"{escaped}\"/>"
         ));
     }
-    seo_tags.push_str("\n  <meta property=\"og:type\" content=\"website\"/>");
+    let og_type = if extras.is_article {
+        "article"
+    } else {
+        "website"
+    };
+    seo_tags.push_str(&format!(
+        "\n  <meta property=\"og:type\" content=\"{og_type}\"/>"
+    ));
+    if let Some(img) = extras.og_image.map(str::trim).filter(|s| !s.is_empty()) {
+        let escaped = escape_html_attr(img);
+        seo_tags.push_str(&format!(
+            "\n  <meta property=\"og:image\" content=\"{escaped}\"/>"
+        ));
+        seo_tags.push_str(&format!(
+            "\n  <meta name=\"twitter:image\" content=\"{escaped}\"/>"
+        ));
+        seo_tags.push_str("\n  <meta name=\"twitter:card\" content=\"summary_large_image\"/>");
+    } else {
+        seo_tags.push_str("\n  <meta name=\"twitter:card\" content=\"summary\"/>");
+    }
     // data-pt-hydrated="0" until embed JS promotes live (relay-runtime-web syncHtmlHydratedAttr).
     // Park tips style .pt-client-only chrome as inactive until "1".
     format!(
@@ -543,6 +609,41 @@ mod tests {
         );
         assert!(
             html.contains(r#"<meta property="og:url" content="https://clevertree.net/"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<meta name="twitter:card" content="summary"/>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn embed_seo_extras_include_og_image_and_article_type() {
+        let html = embed_html_document_with_assets_and_seo_extras(
+            "r",
+            "main",
+            "/a.md",
+            "/hooks/client/get.jsx",
+            None,
+            None,
+            None,
+            Some("Title | Site"),
+            Some("Desc"),
+            Some("https://paradigmthreat.net/a"),
+            EmbedSeoExtras {
+                og_image: Some("https://paradigmthreat.net/a.png?w=800"),
+                is_article: true,
+            },
+        );
+        assert!(html.contains(r#"property="og:type" content="article""#), "{html}");
+        assert!(
+            html.contains(
+                r#"property="og:image" content="https://paradigmthreat.net/a.png?w=800""#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"name="twitter:card" content="summary_large_image""#),
             "{html}"
         );
     }

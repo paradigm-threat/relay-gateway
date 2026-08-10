@@ -8,6 +8,7 @@ pub mod ipfs;
 pub mod clever_hooks;
 pub mod clever_script_host;
 pub mod embed_html;
+pub mod seo_from_markdown;
 pub mod ssr_client_hook;
 pub mod get_hook_http;
 pub mod hooks;

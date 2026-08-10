@@ -815,22 +815,80 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             &repo_root,
             request_branch,
         );
-        let site_title = site_cfg
+        let site_name = site_cfg
             .as_ref()
             .and_then(|cfg| cfg.name.clone())
             .map(|n| n.trim().to_string())
             .filter(|n| !n.is_empty());
-        let site_description = site_cfg
+        let site_description_cfg = site_cfg
             .as_ref()
             .and_then(|cfg| cfg.description.clone())
             .map(|n| n.trim().to_string())
             .filter(|n| !n.is_empty());
-        let canonical_url = site_cfg
+        let public_canonical_origin = site_cfg
             .as_ref()
             .and_then(|cfg| cfg.canonical.clone())
             .map(|n| n.trim().to_string())
             .filter(|n| !n.is_empty());
-        let html = crate::git::embed_html::embed_html_document_with_assets_and_seo(
+
+        // Per-article SEO from tip markdown (no SQLite / QUERY).
+        let rel_for_read = initial_path.trim_start_matches('/');
+        let md_rel_guess = if rel_for_read.is_empty() {
+            Some("page.md".to_string())
+        } else if crate::git::markdown_html::is_markdown_path(rel_for_read) {
+            Some(rel_for_read.to_string())
+        } else if !rel_for_read.rsplit('/').next().unwrap_or("").contains('.') {
+            // Pretty path without extension → try `<path>.md`
+            Some(format!("{rel_for_read}.md"))
+        } else {
+            None
+        };
+        let article_seo = md_rel_guess.and_then(|md_rel| {
+            match crate::git::repo::read_file_from_repo(
+                &repo_root,
+                request_branch,
+                &md_rel,
+            ) {
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    Some(crate::git::seo_from_markdown::seo_from_markdown(
+                        crate::git::seo_from_markdown::SeoFromMarkdownInput {
+                            markdown: &text,
+                            rel_path: &md_rel,
+                            public_origin: public_canonical_origin.as_deref(),
+                            request_origin: Some(origin.as_str()),
+                            site_name: site_name.as_deref(),
+                        },
+                    ))
+                }
+                Err(_) => None,
+            }
+        });
+
+        let doc_title = article_seo
+            .as_ref()
+            .map(|s| s.title.clone())
+            .or_else(|| site_name.clone());
+        let doc_description = article_seo
+            .as_ref()
+            .and_then(|s| s.description.clone())
+            .or_else(|| site_description_cfg.clone());
+        let doc_canonical = article_seo
+            .as_ref()
+            .and_then(|s| s.canonical_url.clone())
+            .or_else(|| {
+                // Site-level canonical alone is only useful for `/`.
+                public_canonical_origin.clone()
+            });
+        let og_image = article_seo
+            .as_ref()
+            .and_then(|s| s.image_url.clone());
+        let is_article = article_seo
+            .as_ref()
+            .map(|s| s.is_article)
+            .unwrap_or(false);
+
+        let html = crate::git::embed_html::embed_html_document_with_assets_and_seo_extras(
             repo,
             request_branch,
             &initial_path,
@@ -842,9 +900,13 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                 Some(rendered.css.as_str())
             },
             assets_prefix.as_deref(),
-            site_title.as_deref(),
-            site_description.as_deref(),
-            canonical_url.as_deref(),
+            doc_title.as_deref(),
+            doc_description.as_deref(),
+            doc_canonical.as_deref(),
+            crate::git::embed_html::EmbedSeoExtras {
+                og_image: og_image.as_deref(),
+                is_article,
+            },
         );
         let portraits_json =
             crate::git::portrait::portrait_sibling_set_json(&repo_root, request_branch);
