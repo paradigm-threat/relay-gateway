@@ -101,6 +101,21 @@ pub async fn refresh_inner(app: &App) {
                 .map(|n| format!("{} {}", n.fqdn, if n.healthy { "up" } else { "down" }))
                 .collect::<Vec<_>>()
                 .join("\n");
+            #[cfg(unix)]
+            let tray_view = {
+                let inv = crate::inventory::Inventory::collect(&cfg);
+                crate::tray::TrayView {
+                    unhealthy,
+                    nodes: nlen,
+                    summary: summary.clone(),
+                    mode: if inv.admin_ready {
+                        "Admin".into()
+                    } else {
+                        "Observer".into()
+                    },
+                    lines: crate::tray::menu_lines(&nodes, &fleet, &spot, ingress.as_ref()),
+                }
+            };
             let mut g = app.inner.lock().await;
             g.fleet = fleet;
             g.topology_source = source;
@@ -112,11 +127,7 @@ pub async fn refresh_inner(app: &App) {
             drop(g);
             #[cfg(unix)]
             if let Some(tx) = &app.tray_tx {
-                let _ = tx.send(crate::tray::TrayView {
-                    unhealthy,
-                    nodes: nlen,
-                    summary,
-                });
+                let _ = tx.send(tray_view);
             }
         }
         Err(e) => {

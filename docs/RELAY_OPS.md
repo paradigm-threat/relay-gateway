@@ -66,6 +66,24 @@ Global flags (before or with clap long opts): `--gitlab`, `--env-file`, `--only=
 
 Safe auto (serve loop only): drop **dead** IPs from `fleetIngress` A set (never empty the set). Never auto-point node DNS, never auto reclaim, never wipe.
 
+## Spot node replaced (today: lon1)
+
+If DNS still points at a dead IP and Spot gave you a **new empty Ubuntu** (SSH works, no `/opt/relay`), do **not** use Repair — that runs `install.sh repair` on an existing install.
+
+**UI:** tray → Open fleet UI → **Point DNS to Spot IP** (if the card shows DNS≠Spot) → **Reclaim** → **Drop dead fleet A**. Reset known_hosts if SSH host keys changed.
+
+**CLI:**
+
+```bash
+./target/release/relay-ops status --only=lon1.relaygateway.net
+./target/release/relay-ops known-hosts-reset --fqdn lon1.relaygateway.net --ip 134.213.138.108
+./target/release/relay-ops reclaim --fqdn lon1.relaygateway.net --ip 134.213.138.108 --yes
+./target/release/relay-ops point-dns --fqdn lon1.relaygateway.net --ip 134.213.138.108
+./target/release/relay-ops fleet-dns --drop-unhealthy --yes
+```
+
+`point-dns` / `fleet-dns` need `VERCEL_API_TOKEN` in the environment (or `~/.config/relay-ops/config.toml`). Reclaim does not point node DNS by itself if that token is missing.
+
 ## Serve (login daemon)
 
 ```bash
@@ -80,7 +98,7 @@ Bind is loopback-only by default.
 
 UI **Repair** = remote `install.sh repair`. UI **Reclaim** = Spot install-only (confirm-gated). `bootstrap-ssh` and destructive `reinstall` stay CLI-only.
 
-On Linux, `serve` shows a GNOME AppIndicator (cube + funnel; red dot if any node is down). Click opens the UI. `install-service` copies the binary to `~/.local/bin/relay-ops`, enables a user systemd unit, and writes `~/.config/autostart/relay-ops.desktop` so it returns at login.
+On Linux, `serve` shows a GNOME AppIndicator using the canonical Relay mark (`media/icon.png`; red dot if any node is down). The menu lists each node (up / DOWN, DNS≠Spot, https/git) plus fleet A. Click opens the UI. `install-service` copies the binary to `~/.local/bin/relay-ops`, enables a user systemd unit, and writes `~/.config/autostart/relay-ops.desktop` so it returns at login.
 
 ```bash
 ./target/release/relay-ops install-service

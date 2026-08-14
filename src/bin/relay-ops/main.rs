@@ -463,11 +463,20 @@ fn install_service(cfg: &OpsConfig) -> Result<()> {
                 fs::set_permissions(&dest, fs::Permissions::from_mode(0o755))?;
             }
         }
-        let icon_dir = home.join(".local/share/icons/hicolor/32x32/apps");
+        let icon_dir = home.join(".local/share/icons/hicolor/128x128/apps");
         fs::create_dir_all(&icon_dir)?;
         let icon = icon_dir.join("relay-ops.png");
         #[cfg(unix)]
-        crate::tray::write_png(&icon, true)?;
+        crate::tray::write_png(&icon, false)?;
+        for size in [24u32, 32, 48, 64] {
+            let dir = home.join(format!(".local/share/icons/hicolor/{size}x{size}/apps"));
+            fs::create_dir_all(&dir)?;
+            #[cfg(unix)]
+            {
+                let p = dir.join("relay-ops.png");
+                let _ = crate::tray::write_png_size(&p, size, false);
+            }
+        }
 
         let unit_dir = dirs::config_dir()
             .ok_or_else(|| anyhow!("no config dir"))?
