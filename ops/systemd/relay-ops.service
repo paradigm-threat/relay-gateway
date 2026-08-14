@@ -1,0 +1,13 @@
+[Unit]
+Description=Relay fleet ops (CLI + UI + tray)
+After=graphical-session.target network-online.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/relay-ops serve
+Restart=always
+RestartSec=5
+KillMode=process
+
+[Install]
+WantedBy=default.target

@@ -1,12 +1,14 @@
-# Relay fleet console (`relay-fleet.sh`)
+# Relay fleet console
 
-**Canonical operator tool** for **updates** and health checks across relay masters. Prefer this over ad hoc `ssh` / `curl` fragments. **Non-interactive by default** (no stdin prompts); use **`--interactive`** only when you need an open TTY.
+**Canonical operator tool:** [`relay-ops`](./RELAY_OPS.md) (`cargo run --bin relay-ops`). CLI + local UI. Topology comes from the GitLab project URL → [`ops/fleet.json`](../ops/fleet.json). `./scripts/relay-fleet.sh` is a thin wrapper around the same binary.
 
-**First-time master (provision + install):** use **[`RELAY_INFRA_OPS.md`](./RELAY_INFRA_OPS.md)** and **`./scripts/relay-master-deploy.sh`** (Terraform + tarball + Caddy). **Ongoing** binary/config deploys: **`relay-fleet.sh --build update`** / **`deploy-all`** below.
+**First-time master (provision + install):** use **[`RELAY_INFRA_OPS.md`](./RELAY_INFRA_OPS.md)** and **`./scripts/relay-master-deploy.sh`** (Terraform + tarball + Caddy). **Ongoing** binary/config deploys: **`relay-ops --build update`** / **`deploy-all`** below.
 
 **Local park SSR / tip hardening (before fleet push):** **[`PARADIGM_PARK_LOCAL.md`](./PARADIGM_PARK_LOCAL.md)** · **`./scripts/park-local.sh`**. Prefer that loop over rapid `deploy-all` when iterating CleverScript tip or park Host SSR.
 
-**Prerequisites:** run from **`relay-gateway/`** with a local **`relay.env`** (gitignored) or **`--env-file`**. SSH key **`RELAY_SSH_IDENTITY`** (default **`~/.ssh/id_ed25519_relay_gateway`**) must authenticate as **`RELAY_SSH_USER`** (default **`ari`**) on each host.
+**Prerequisites:** run from **`relay-gateway/`**. Observer commands need only a GitLab URL (or a git remote on this checkout). Admin commands need SSH (`RELAY_SSH_IDENTITY`, default **`~/.ssh/id_ed25519_relay_gateway`**) as the per-node `sshUser` in `ops/fleet.json` (typically **`ubuntu`**). Optional **`relay.env`** / **`--env-file`** still supplies Vercel/Spot tokens.
+
+The tables below keep the historical `relay-fleet.sh` flag names; they are now clap flags on **`relay-ops`**.
 
 ## Fleet list (operator laptop)
 

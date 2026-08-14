@@ -1,0 +1,26 @@
+# Copy to:
+#   Linux:   ~/.config/relay-ops/config.toml
+#   Windows: %APPDATA%\relay-ops\config.toml
+#
+# Observer needs only gitlab_url (or pass --gitlab). Secrets are optional.
+# Values may be literal or 1Password refs (op://Vault/item/field) resolved via `op read`.
+
+gitlab_url = "https://gitlab.com/clevertree/relay-gateway"
+# gitlab_token = "op://Relay/gitlab/credential"
+# gitlab_ref = "main"
+
+# SSH identity for Admin chrome + Repair (or rely on SSH_AUTH_SOCK / 1Password agent).
+identity_file = "~/.ssh/id_ed25519_relay_gateway"
+# ssh_user = "ubuntu"
+
+# vercel_token = "op://Relay/vercel/credential"
+# vercel_team_id = ""
+# spot_token = "op://Relay/spot/credential"
+# slack_webhook = "op://Relay/slack/webhook"
+
+# Local gateway checkout unlocks update / repair / reclaim.
+# gateway_checkout = "~/dev/relay/relay-gateway"
+
+bind = "127.0.0.1:7780"
+probe_interval_secs = 300
+auto_drop_dead_fleet_a = true

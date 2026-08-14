@@ -28,6 +28,10 @@ path = "src/bin/relay-hook-handler.rs"
 name = "relay-branch-policy-check"
 path = "src/bin/relay-branch-policy-check.rs"
 
+[[bin]]
+name = "relay-ops"
+path = "src/bin/relay-ops/main.rs"
+
 [dependencies]
 axum = { version = "0.7", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
@@ -67,6 +71,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 instant-acme = "0.7"
 rcgen = "0.13"
 time = "0.3"
+toml = "0.8"
+dirs = "5"
+
+[target.'cfg(unix)'.dependencies]
+ksni = "0.3"
 
 [dev-dependencies]
 serial_test = "3"

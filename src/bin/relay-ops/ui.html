@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Relay ops</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    :root { color-scheme: dark; --bg:#111; --card:#1c1c1c; --ok:#3dd68c; --bad:#ff6b6b; --warn:#f5c542; --muted:#9aa; }
+    body { font: 15px/1.4 system-ui, sans-serif; background: var(--bg); color: #eee; margin: 0; }
+    header { padding: 16px 20px; border-bottom: 1px solid #333; display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+    h1 { font-size: 18px; margin: 0; }
+    h2 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
+    .pill { padding: 2px 10px; border-radius: 999px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    .admin { background: #143d2a; color: var(--ok); }
+    .ro { background: #3d2020; color: var(--bad); }
+    main { padding: 16px 20px 40px; display:grid; gap:16px; }
+    .grid { display:grid; gap:12px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+    .card { background: var(--card); border: 1px solid #2a2a2a; border-radius: 10px; padding: 14px; }
+    .row { display:flex; justify-content:space-between; gap:8px; margin: 4px 0; }
+    .muted { color: var(--muted); }
+    .ok { color: var(--ok); }
+    .bad { color: var(--bad); }
+    button { background:#2b4c7e; color:#fff; border:0; border-radius:6px; padding:6px 10px; cursor:pointer; }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    button.warn { background:#6b3a12; }
+    pre { background:#0b0b0b; padding:10px; overflow:auto; max-height:280px; font-size:12px; }
+    input { background:#0b0b0b; color:#eee; border:1px solid #444; border-radius:6px; padding:6px 8px; }
+    .actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Relay fleet</h1>
+  <span id="mode" class="pill ro">read-only</span>
+  <span id="source" class="muted"></span>
+</header>
+<main>
+  <section class="card">
+    <div class="row"><span>GitLab</span><span id="gitlab" class="muted"></span></div>
+    <div class="row"><span>Inventory</span><span id="inv" class="muted"></span></div>
+    <h2>Observer</h2>
+    <div class="actions">
+      <button onclick="refresh()">Refresh</button>
+      <button onclick="job({kind:'hosts'})">Hosts</button>
+      <button onclick="job({kind:'health'})">Health</button>
+      <button onclick="job({kind:'ssl'})">SSL</button>
+    </div>
+    <h2>Admin / DNS</h2>
+    <div class="actions">
+      <button id="btnSsh" disabled onclick="job({kind:'ssh-check'})">SSH check</button>
+      <button id="btnDrift" disabled onclick="job({kind:'drift'})">Drift</button>
+      <button id="btnDrop" disabled onclick="act('/api/fleet-dns-drop')">Drop dead fleet A</button>
+      <button id="btnDnsDry" disabled onclick="job({kind:'fleet-dns', dry_run:true})">Fleet DNS dry-run</button>
+    </div>
+  </section>
+  <section id="nodes" class="grid"></section>
+  <section class="card">
+    <h2>Job log</h2>
+    <pre id="log">idle</pre>
+  </section>
+</main>
+<script>
+async function snap() {
+  const r = await fetch('/api/snapshot');
+  const d = await r.json();
+  document.getElementById('gitlab').textContent = d.gitlab_url || '';
+  document.getElementById('source').textContent = d.topology_source || '';
+  const inv = d.inventory || {};
+  document.getElementById('mode').textContent = inv.admin_ready ? 'admin' : 'read-only';
+  document.getElementById('mode').className = 'pill ' + (inv.admin_ready ? 'admin' : 'ro');
+  document.getElementById('inv').textContent =
+    'ssh=' + inv.ssh_binary + ' identity/agent=' + (inv.identity_file || inv.ssh_agent) +
+    ' vercel=' + inv.vercel_token + ' spot=' + inv.spot_token +
+    ' checkout=' + inv.gateway_checkout;
+  document.getElementById('btnDrop').disabled = !inv.vercel_token;
+  document.getElementById('btnDnsDry').disabled = !inv.vercel_token;
+  document.getElementById('btnSsh').disabled = !inv.admin_ready;
+  document.getElementById('btnDrift').disabled = !inv.admin_ready;
+  const nodes = document.getElementById('nodes');
+  nodes.innerHTML = '';
+  (d.nodes || []).forEach(n => {
+    const spot = (d.spot || []).find(s => (n.spot_cloudspace && s.cloudspace === n.spot_cloudspace));
+    const drift = spot && n.dns && n.dns.length && !n.dns.includes(spot.ip);
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.innerHTML = `
+      <div class="row"><strong>${n.fqdn}</strong><span class="${n.healthy ? 'ok' : 'bad'}">${n.healthy ? 'up' : 'down'}</span></div>
+      <div class="muted">DNS ${ (n.dns||[]).join(', ') || '—' }</div>
+      <div class="muted">tcp 22=${n.tcp22} 443=${n.tcp443} git=${n.tcp_git}</div>
+      <div class="muted">${n.https_config && n.https_config.relay_server_id || 'no /api/config'}</div>
+      ${spot ? `<div class="${drift ? 'bad' : 'ok'}">Spot ${spot.ip}${drift ? ' (DNS mismatch)' : ''}</div>` : ''}
+      <div class="actions">
+        <button ${inv.vercel_token && spot ? '' : 'disabled'} onclick="point('${n.fqdn}', '${spot ? spot.ip : ''}')">Point DNS to Spot IP</button>
+        <button ${inv.admin_ready ? '' : 'disabled'} onclick="confirmJob('Repair (install.sh) ' + '${n.fqdn}', {kind:'repair', fqdn:'${n.fqdn}'})">Repair</button>
+        <button class="warn" ${inv.admin_ready ? '' : 'disabled'} onclick="confirmJob('Reclaim (Spot install-only) ' + '${n.fqdn}', {kind:'reclaim', fqdn:'${n.fqdn}', ip: '${spot ? spot.ip : (n.dns[0]||'')}'})">Reclaim</button>
+        <button ${inv.admin_ready ? '' : 'disabled'} onclick="kh('${n.fqdn}', '${n.dns[0]||''}')">Reset known_hosts</button>
+      </div>`;
+    nodes.appendChild(el);
+  });
+  if (d.ingress) {
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.innerHTML = `<div class="row"><strong>${d.ingress.fqdn}</strong><span class="muted">ingress</span></div>
+      <div class="muted">${(d.ingress.dns||[]).join(', ')||'—'}</div>`;
+    nodes.appendChild(el);
+  }
+  if (d.job) {
+    document.getElementById('log').textContent = (d.job.kind + ' ' + d.job.target + (d.job.running ? ' running' : '') + '\n' + (d.job.log||''));
+  }
+}
+async function refresh() { await fetch('/api/refresh', {method:'POST'}); await snap(); }
+async function act(url, body) {
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : '{}'});
+  const t = await r.text();
+  document.getElementById('log').textContent = t;
+  await snap();
+}
+function job(body) { return act('/api/job', body); }
+function confirmJob(label, body) {
+  if (!confirm(label + '?')) return;
+  return job(body);
+}
+function point(fqdn, ip) { if (!ip) return; act('/api/point-dns', {fqdn, ip}); }
+function kh(fqdn, ip) { act('/api/known-hosts-reset', {fqdn, ip: ip || null}); }
+snap();
+setInterval(snap, 8000);
+</script>
+</body>
+</html>

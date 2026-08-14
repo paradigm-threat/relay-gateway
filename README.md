@@ -20,7 +20,7 @@ Install-time **optional capabilities** (Piper TTS, offline Argos translation, np
 
 ## Operations (deployed masters)
 
-**Primary tool:** from **`relay-gateway/`**, **`./scripts/relay-fleet.sh`** — **`deploy-all`**, **`status`**, **`drift`**, **`ssh-check`**, **`repair`**, **`features-set`**, **`reclone-repo`**, **`bootstrap-ssh`**. See **[`docs/RELAY_FLEET_CONSOLE.md`](docs/RELAY_FLEET_CONSOLE.md)**. **`./scripts/deploy-all-masters.sh`** is a thin **`--build`** wrapper around **`relay-fleet deploy-all`**.
+**Primary tool:** **`relay-ops`** — CLI + local UI for any Relay fleet. Bootstrap from a GitLab project URL (`ops/fleet.json`). Wrapper: **`./scripts/relay-fleet.sh`**. See **[`docs/RELAY_OPS.md`](docs/RELAY_OPS.md)** and **[`ops/fleet.json`](ops/fleet.json)**. **`./scripts/deploy-all-masters.sh`** is **`relay-ops --build deploy-all`**.
 
 **CleverScript runtime:** **`relay-runtime`** lives as a **sibling crate** at **`../../relay-runtime`** (see `relay-gateway/Cargo.toml` `path = …`). **`cargo test --locked`** in **relay-gateway** uses that path dependency.
 

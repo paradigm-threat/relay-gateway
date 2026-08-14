@@ -1,0 +1,36 @@
+{
+  "schema": "relay.ops.fleet.v1",
+  "fleetIngress": "fleet.relaygateway.net",
+  "gitPort": 9418,
+  "nodes": [
+    {
+      "fqdn": "dfw1.relaygateway.net",
+      "sshUser": "ubuntu",
+      "deployTarget": "spot-dfw1",
+      "spotCloudspace": "relay-network"
+    },
+    {
+      "fqdn": "lon1.relaygateway.net",
+      "sshUser": "ubuntu",
+      "deployTarget": "spot-lon1",
+      "spotCloudspace": "relay-network-lon"
+    },
+    {
+      "fqdn": "hkg1.relaygateway.net",
+      "sshUser": "ubuntu",
+      "deployTarget": "spot-hkg1",
+      "spotCloudspace": "relay-network-hkg"
+    }
+  ],
+  "gitRepos": [
+    "paradigm-threat-files",
+    "relay-master"
+  ],
+  "health": {
+    "query": "venus",
+    "repos": [
+      "paradigm-threat-files",
+      "paradigm-threat-timeline"
+    ]
+  }
+}
