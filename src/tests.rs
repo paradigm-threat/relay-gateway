@@ -1242,6 +1242,31 @@ export default function run(ctx) {
         assert_eq!(inner["count"], 1);
         assert_eq!(inner["results"][0]["title"], "Test Item");
 
+        let array_call = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": { "query": ["Test"] }
+            }
+        });
+        let resp_arr = handlers::mcp::post_mcp(
+            State(state.clone()),
+            AxPath("repo".to_string()),
+            HeaderMap::new(),
+            Some(Json(array_call)),
+        )
+        .await;
+        let (pa, ba) = resp_arr.into_response().into_parts();
+        assert_eq!(pa.status, StatusCode::OK);
+        let ja: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(ba, usize::MAX).await.unwrap()).unwrap();
+        let ta = ja["result"]["content"][0]["text"].as_str().unwrap();
+        let inner_a: serde_json::Value = serde_json::from_str(ta).unwrap();
+        assert_eq!(inner_a["count"], 1);
+        assert_eq!(inner_a["results"][0]["title"], "Test Item");
+
         let read = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 2,

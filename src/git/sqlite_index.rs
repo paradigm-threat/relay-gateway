@@ -7,7 +7,7 @@ use crate::git::indexing::branch_data_dir;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
-use tracing::info;
+use tracing::{info, warn};
 
 /// `.relay_data/branches/<hash>/index.db`
 pub fn sqlite_db_path(repo_path: &Path, branch: &str) -> PathBuf {
@@ -337,20 +337,57 @@ pub fn merge_collection_docs_with_fields(
     Ok(())
 }
 
-fn fts_match_query(raw: &str) -> String {
-    raw.split_whitespace()
+/// Shortest stem kept when a later token is only a longer form (`iran` + `iranian` → `iran`).
+/// Stem length floor is 4 so `new newton` does not collapse.
+pub(crate) fn collapse_prefix_redundant_terms(terms: Vec<String>) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for t in terms {
+        let t = t.to_lowercase();
+        if t.is_empty() {
+            continue;
+        }
+        if !seen.iter().any(|s| s == &t) {
+            seen.push(t);
+        }
+    }
+    seen.sort_by_key(|t| (t.len(), t.clone()));
+    let mut kept: Vec<String> = Vec::new();
+    for t in seen {
+        if kept
+            .iter()
+            .any(|k| t.starts_with(k) && t.len() > k.len() && k.len() >= 4)
+        {
+            continue;
+        }
+        kept.push(t);
+    }
+    kept
+}
+
+fn fts_token_from_raw(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+        .collect::<String>()
+        .replace('"', "")
+}
+
+/// FTS5 MATCH string: AND of cleaned tokens, morphological duplicates dropped,
+/// ASCII stems of length ≥ 4 emitted as prefix queries so `iran` matches `iranian`.
+pub(crate) fn fts_match_query(raw: &str) -> String {
+    let cleaned: Vec<String> = raw
+        .split_whitespace()
+        .map(fts_token_from_raw)
         .filter(|t| !t.is_empty())
+        .collect();
+    collapse_prefix_redundant_terms(cleaned)
+        .into_iter()
         .map(|t| {
-            let cleaned: String = t
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-                .collect();
-            if cleaned.is_empty() {
-                return String::new();
+            if t.len() >= 4 && t.chars().all(|c| c.is_ascii_alphanumeric()) {
+                format!("{}*", t)
+            } else {
+                format!("\"{}\"", t)
             }
-            format!("\"{}\"", cleaned.replace('"', ""))
         })
-        .filter(|t| !t.is_empty())
         .collect::<Vec<_>>()
         .join(" AND ")
 }
@@ -701,12 +738,24 @@ pub fn query_collection_ordered(
                 }
             };
             let mut stmt = conn.prepare(sql)?;
-            let iter = stmt.query_map(params![collection, match_q, lim as i64], |r| {
+            let iter = match stmt.query_map(params![collection, match_q, lim as i64], |r| {
                 let json: String = r.get(0)?;
                 Ok(json)
-            })?;
+            }) {
+                Ok(i) => i,
+                Err(e) => {
+                    warn!(error = %e, match_q = %match_q, "fts MATCH failed; returning empty");
+                    return Ok(vec![]);
+                }
+            };
             for item in iter {
-                let json = item?;
+                let json = match item {
+                    Ok(j) => j,
+                    Err(e) => {
+                        warn!(error = %e, match_q = %match_q, "fts MATCH row failed; returning empty");
+                        return Ok(vec![]);
+                    }
+                };
                 if let Ok(v) = serde_json::from_str::<Value>(&json) {
                     rows.push(project_row(v, fields));
                 }
@@ -962,6 +1011,57 @@ mod tests {
         .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0]["title"], "Mud Flood Geology");
+    }
+
+    #[test]
+    fn fts_match_collapses_morphological_and() {
+        assert_eq!(fts_match_query("iran iranian"), "iran*");
+        assert_eq!(fts_match_query("Iran Iranian"), "iran*");
+        assert_eq!(fts_match_query("mud flood"), "\"mud\" AND flood*");
+        assert!(fts_match_query("!!!").is_empty());
+        assert_eq!(
+            collapse_prefix_redundant_terms(vec![
+                "iran".into(),
+                "iranian".into(),
+                "iran".into()
+            ]),
+            vec!["iran"]
+        );
+    }
+
+    #[test]
+    fn fts_morphological_and_matches_either_form() {
+        let dir = tempdir().unwrap();
+        let json_path = dir.path().join("index.db.json");
+        let db_path = dir.path().join("index.db");
+        std::fs::write(
+            &json_path,
+            json!({
+                "metadata": { "indexed_head": "h" },
+                "collections": {
+                    "index": [
+                        { "title": "Iran war", "_meta_dir": "a" },
+                        { "title": "Iranian navy", "_meta_dir": "b" },
+                        { "title": "Oman corridor", "_meta_dir": "c" }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        sync_json_to_sqlite(&json_path, &db_path).unwrap();
+        let hits = query_collection(
+            &db_path,
+            "index",
+            Some(&Value::String("iran iranian".into())),
+            None,
+            Some(10),
+        )
+        .unwrap();
+        let titles: Vec<&str> = hits.iter().filter_map(|h| h["title"].as_str()).collect();
+        assert!(titles.contains(&"Iran war"), "{titles:?}");
+        assert!(titles.contains(&"Iranian navy"), "{titles:?}");
+        assert!(!titles.contains(&"Oman corridor"), "{titles:?}");
     }
 
     #[test]

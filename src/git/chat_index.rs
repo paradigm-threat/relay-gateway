@@ -9,7 +9,7 @@ use crate::git::sqlite_index;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 use std::path::Path;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 pub const DEFAULT_CHAT_ROOT: &str = ".relay/chat/channels";
 const CHAT_BODY_MAX_CHARS: usize = 8_192;
@@ -422,21 +422,7 @@ pub fn ensure_chat_indexed(
 }
 
 fn fts_match_query(raw: &str) -> String {
-    raw.split_whitespace()
-        .filter(|t| !t.is_empty())
-        .map(|t| {
-            let cleaned: String = t
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-                .collect();
-            if cleaned.is_empty() {
-                return String::new();
-            }
-            format!("\"{}\"", cleaned.replace('"', ""))
-        })
-        .filter(|t| !t.is_empty())
-        .collect::<Vec<_>>()
-        .join(" AND ")
+    sqlite_index::fts_match_query(raw)
 }
 
 fn row_to_json(
@@ -580,7 +566,7 @@ pub fn query_chat(
                  ORDER BY c.created DESC
                  LIMIT ?2",
             )?;
-            let iter = stmt.query_map(params![match_q, lim], |r| {
+            let iter = match stmt.query_map(params![match_q, lim], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
@@ -592,9 +578,22 @@ pub fn query_chat(
                     r.get::<_, i64>(7)?,
                     r.get::<_, String>(8)?,
                 ))
-            })?;
+            }) {
+                Ok(i) => i,
+                Err(e) => {
+                    warn!(error = %e, match_q = %match_q, "chat fts MATCH failed; returning empty");
+                    return Ok(vec![]);
+                }
+            };
             for item in iter {
-                let (path, id, channel, author, anonymous, created, source, signed, body) = item?;
+                let row = match item {
+                    Ok(r) => r,
+                    Err(e) => {
+                        warn!(error = %e, match_q = %match_q, "chat fts MATCH row failed; returning empty");
+                        return Ok(vec![]);
+                    }
+                };
+                let (path, id, channel, author, anonymous, created, source, signed, body) = row;
                 rows.push(row_to_json(
                     path, id, channel, author, anonymous, created, source, signed, body,
                 ));

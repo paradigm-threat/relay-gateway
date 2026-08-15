@@ -4,6 +4,7 @@
 use crate::git::index_policy;
 use crate::git::query::{execute_search_limited, execute_search_outcome};
 use crate::git::repo::{read_file_from_repo, read_relay_config};
+use crate::git::sqlite_index;
 use crate::git::{get_branch_commit_info, open_repo};
 use crate::types::AppState;
 use crate::DEFAULT_BRANCH;
@@ -20,6 +21,97 @@ use std::collections::HashMap;
 /// Phantom-millennium interval used by paradigm-threat chronology (signed years).
 const BLIP_SIGNED_START: i64 = -670;
 const BLIP_SIGNED_END: i64 = 1053;
+
+/// Default/max hits for MCP `via=query` search. Unbounded QUERY uses 10_000 and
+/// will blow a Gemini/WebMCP context if the model omits `limit`.
+const MCP_SEARCH_LIMIT_DEFAULT: usize = 20;
+const MCP_SEARCH_LIMIT_MAX: usize = 50;
+
+const MCP_SEARCH_SLIM_KEYS: &[&str] = &[
+    "path",
+    "_meta_dir",
+    "id",
+    "title",
+    "_title",
+    "md_path",
+    "date",
+    "start",
+    "end",
+    "keywords",
+    "_keywords",
+    "description",
+    "summary",
+    "content_kind",
+    "type",
+    "sort_key",
+];
+
+fn mcp_search_limit(arguments: &Value) -> usize {
+    arguments
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|n| n.clamp(1, MCP_SEARCH_LIMIT_MAX as u64) as usize)
+        .unwrap_or(MCP_SEARCH_LIMIT_DEFAULT)
+}
+
+fn slim_mcp_search_results(rows: Vec<Value>) -> Vec<Value> {
+    rows.into_iter()
+        .map(|row| {
+            let Some(obj) = row.as_object() else {
+                return row;
+            };
+            let mut m = Map::new();
+            for k in MCP_SEARCH_SLIM_KEYS {
+                if let Some(v) = obj.get(*k) {
+                    m.insert((*k).to_string(), v.clone());
+                }
+            }
+            if m.is_empty() {
+                return row;
+            }
+            Value::Object(m)
+        })
+        .collect()
+}
+
+/// Accept a keyword string or an array of keyword strings. Reject other JSON
+/// types so a model cannot dump the whole index by passing an object/array that
+/// falls through to the unfiltered QUERY branch.
+fn coerce_mcp_keyword_query(q: Option<&Value>) -> anyhow::Result<Value> {
+    match q {
+        Some(Value::String(s)) => {
+            if s.trim().len() < 2 {
+                anyhow::bail!("query must be at least 2 characters");
+            }
+            Ok(Value::String(s.clone()))
+        }
+        Some(Value::Array(a)) => {
+            let parts: Vec<&str> = a.iter().filter_map(|v| v.as_str()).collect();
+            let joined = parts.join(" ");
+            if joined.trim().len() < 2 {
+                anyhow::bail!("query must be a string or array of keyword strings (min 2 chars)");
+            }
+            Ok(Value::String(joined))
+        }
+        Some(_) => anyhow::bail!(
+            "query must be a keyword string (e.g. \"iran\"), not an object or number"
+        ),
+        None => anyhow::bail!("query is required"),
+    }
+}
+
+fn keyword_and_stems(q: &str) -> Vec<String> {
+    sqlite_index::collapse_prefix_redundant_terms(
+        q.split_whitespace()
+            .map(|t| {
+                t.chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                    .collect::<String>()
+            })
+            .filter(|t| !t.is_empty())
+            .collect(),
+    )
+}
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct McpManifest {
@@ -141,8 +233,8 @@ fn schema_for_via(via: &str) -> Value {
             "type": "object",
             "required": ["query"],
             "properties": {
-                "query": { "type": "string", "minLength": 2, "description": "Space-separated AND terms" },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 500 },
+                "query": { "type": "string", "minLength": 2, "description": "Keyword string. Prefer a short stem (iran, not iran iranian). Morphological duplicates are collapsed." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 },
                 "collection": { "type": "string" }
             }
         }),
@@ -319,29 +411,21 @@ fn call_tool(
                     .and_then(|v| v.as_str())
                     .or(def.collection.as_deref())
                     .unwrap_or("index");
-                let q = arguments
-                    .get("query")
-                    .cloned()
-                    .or_else(|| arguments.get("q").cloned());
-                if let Some(Value::String(s)) = &q {
-                    if s.trim().len() < 2 {
-                        anyhow::bail!("query must be at least 2 characters");
-                    }
-                } else if q.is_none() {
-                    anyhow::bail!("query is required");
-                }
-                let limit = arguments
-                    .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .map(|n| n.clamp(1, 500) as usize);
-                let outcome = execute_search_outcome(
+                let q = coerce_mcp_keyword_query(
+                    arguments
+                        .get("query")
+                        .or_else(|| arguments.get("q")),
+                )?;
+                let limit = mcp_search_limit(arguments);
+                let mut outcome = execute_search_outcome(
                     &state.repo_path,
                     repo_name,
                     branch,
-                    q.clone(),
+                    Some(q),
                     collection,
-                    limit,
+                    Some(limit),
                 )?;
+                outcome.results = slim_mcp_search_results(outcome.results);
                 Ok(outcome.to_json_envelope())
             }
             "git_read" => {
@@ -403,7 +487,10 @@ fn call_tool(
                         continue;
                     }
                     let hay = serde_json::to_string(&entry).unwrap_or_default().to_lowercase();
-                    let terms: Vec<&str> = q.split_whitespace().collect();
+                    let terms = keyword_and_stems(&q);
+                    if terms.is_empty() {
+                        continue;
+                    }
                     if terms.iter().all(|t| hay.contains(t)) {
                         hits.push(entry);
                         if hits.len() >= limit {
@@ -411,12 +498,18 @@ fn call_tool(
                         }
                     }
                 }
+                let empty = hits.is_empty() && id.is_empty();
                 Ok(json!({
                     "source": source,
                     "query": if id.is_empty() { Value::String(q) } else { Value::Null },
                     "id": if id.is_empty() { Value::Null } else { Value::String(id.into()) },
                     "count": hits.len(),
                     "claims": hits,
+                    "hint": if empty {
+                        json!("No thesis card matched. Call search_site with a short stem (one word, e.g. iran) then read_article.")
+                    } else {
+                        Value::Null
+                    },
                 }))
             }
             "events_lookup" => {
@@ -452,7 +545,10 @@ fn call_tool(
                         e.get("id").and_then(|v| v.as_str()) == Some(event_id)
                     });
                 } else if title_q.len() >= 2 {
-                    let terms: Vec<&str> = title_q.split_whitespace().collect();
+                    let terms = keyword_and_stems(&title_q);
+                    if terms.is_empty() {
+                        anyhow::bail!("titleQuery had no usable keywords");
+                    }
                     found = entries.into_iter().find(|e| {
                         let title = e
                             .get("title")
@@ -517,14 +613,14 @@ fn call_tool(
                     .and_then(|v| v.as_u64())
                     .map(|n| n.clamp(1, 50) as usize)
                     .unwrap_or(8);
-                let hits = execute_search_limited(
+                let hits = slim_mcp_search_results(execute_search_limited(
                     &state.repo_path,
                     repo_name,
                     branch,
                     Some(Value::String(question.clone())),
                     collection,
                     Some(limit),
-                )?;
+                )?);
                 let coverage = if hits.is_empty() {
                     "not_in_corpus"
                 } else {
@@ -536,12 +632,12 @@ fn call_tool(
                     "searched": { "queries": [question], "toolsCalled": ["research_status", "search"] },
                     "corpusHits": hits,
                     "gaps": if hits.is_empty() {
-                        json!(["No sqlite/QUERY hits for this question in the configured collection"])
+                        json!(["No sqlite/QUERY hits. Try a short stem (one word) rather than overlapping forms like iran iranian."])
                     } else {
                         json!([])
                     },
                     "suggestedNextSteps": if hits.is_empty() {
-                        json!([{ "action": "broaden_query", "detail": "Try fewer or alternate keywords" }])
+                        json!([{ "action": "broaden_query", "detail": "Try one stem (iran, hormuz) then read_article on a hit path" }])
                     } else {
                         json!([{ "action": "read_article", "detail": "Call fetch/read_article on top hit paths" }])
                     },
