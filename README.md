@@ -2,6 +2,17 @@
 
 Implements the Relay API over bare Git repositories with static directory serving and detailed error reporting.
 
+**This repo is [clevertree/relay-server](https://gitlab.com/clevertree/relay-server)** (local folder `relay-gateway/`). The old monorepo **[clevertree/relay](https://gitlab.com/clevertree/relay) is archived** — do not clone it for work.
+
+| Piece | GitLab | Local folder |
+|-------|--------|----------------|
+| Gateway | `clevertree/relay-server` | `relay-gateway/` |
+| Runtime | `clevertree/relay-runtime` | `relay-runtime/` |
+| Web client | `clevertree/relay-client-web` | `relay-client-web/` |
+| Android client | `clevertree/react-client-android` | `relay-client-android/` |
+
+Operator tool: **[`docs/RELAY_OPS.md`](docs/RELAY_OPS.md)**. Historical notes: **[`docs/archive/`](docs/archive/)**.
+
 ## Features
 
 - Serves files from multiple bare Git repositories (`.git` suffix)

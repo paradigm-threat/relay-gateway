@@ -108,7 +108,7 @@ No fleet `RELAY_AUTHORIZED_REPOS_PATH` / catalog trust root — local mirrors ar
 - [`RELAY_POLICY_AND_PERFORMANCE.md`](./RELAY_POLICY_AND_PERFORMANCE.md) — P0/P1 SSR vs P2/P3 hydrate; SSR HTML cache
 - [`SERVER_HOOKS.md`](./SERVER_HOOKS.md) — heavy work in Rust; CS thin
 - [`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md) — QUERY routes only
-- [`CLEVERSCRIPT_GAP_LOG.md`](./CLEVERSCRIPT_GAP_LOG.md) — language / park gaps
+- [`CS_HOST_HELPERS.md`](./CS_HOST_HELPERS.md) — next Rust helper candidates; remaining CS gaps: JSX prop spread and mutable `push`/`pop` (intentionally deferred)
 - [`DOCKER_IPFS_DEV.md`](./DOCKER_IPFS_DEV.md) — thin media canary (separate from park SSR)
 - [`CS_HOST_HELPERS.md`](./CS_HOST_HELPERS.md) — next Rust helper candidates
 

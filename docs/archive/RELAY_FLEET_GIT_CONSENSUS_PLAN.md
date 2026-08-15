@@ -1,8 +1,8 @@
 # Relay fleet Git consensus and auto-reconciliation (plan)
 
-**Status:** design / roadmap — **not implemented**. Supplements [RELAY_AUTH_PROTOCOL.md](./RELAY_AUTH_PROTOCOL.md) (push signing, fast-forward policy) and [RELAY_FLEET_CONSOLE.md](./RELAY_FLEET_CONSOLE.md) (operator tooling).
+**Status:** design / roadmap — **not implemented**. Supplements [RELAY_AUTH_PROTOCOL.md](../RELAY_AUTH_PROTOCOL.md) (push signing, fast-forward policy) and [RELAY_OPS.md](../RELAY_OPS.md) (operator tooling).
 
-**Repository note:** This file lives in the **relay-gateway** repository. The server is the Rust library **`relay_server`** (Cargo package name `relay-gateway`). The legacy binary name **relay-server** is retired (see [RELAY_RECONCILE_PLAN.md](./RELAY_RECONCILE_PLAN.md) naming row).
+**Repository note:** This file lives in the **relay-gateway** repository. The server is the Rust library **`relay_server`** (Cargo package name `relay-gateway`). The legacy binary name **relay-server** is retired (see [RELAY_RECONCILE_PLAN.md](../RELAY_RECONCILE_PLAN.md) naming row).
 
 ## Problem
 
@@ -77,7 +77,7 @@ This is analogous to **Bitcoin confirmations**: more corroboration increases con
 
 ## Relation to other plans
 
-- **[RELAY_RECONCILE_PLAN.md](./RELAY_RECONCILE_PLAN.md)** — reconciles **relay-gateway binary** + manifest from relay-master; **orthogonal** to bare-repo **content** consensus between masters.
+- **[RELAY_RECONCILE_PLAN.md](../RELAY_RECONCILE_PLAN.md)** — reconciles **relay-gateway binary** + manifest from relay-master; **orthogonal** to bare-repo **content** consensus between masters.
 - **Amend-only / tip-replace push policy** (separate design) — can coexist but does not replace fleet alignment; one node’s amended tip still must reach or override followers via the mechanisms above.
 
 ## Open questions
@@ -88,6 +88,6 @@ This is analogous to **Bitcoin confirmations**: more corroboration increases con
 
 ## Related
 
-- [RELAY_TRUST_AND_BOOTSTRAP.md](./RELAY_TRUST_AND_BOOTSTRAP.md) — anchors, catalog, ingest trust.
-- [OPERATOR_BARE_REPO_RESET.md](./OPERATOR_BARE_REPO_RESET.md) — today’s manual reclones and peer fetch.
-- [RELAY_AUTH_PROTOCOL.md](./RELAY_AUTH_PROTOCOL.md) — fast-forward and signing norms.
+- [RELAY_TRUST_AND_BOOTSTRAP.md](../RELAY_TRUST_AND_BOOTSTRAP.md) — anchors, catalog, ingest trust.
+- [OPERATOR_BARE_REPO_RESET.md](../OPERATOR_BARE_REPO_RESET.md) — today’s manual reclones and peer fetch.
+- [RELAY_AUTH_PROTOCOL.md](../RELAY_AUTH_PROTOCOL.md) — fast-forward and signing norms.

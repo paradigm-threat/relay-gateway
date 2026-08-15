@@ -10,7 +10,7 @@
 
 **Operator SSH:** connect by **FQDN** (e.g. **`ssh ari@jp-osa.relaygateway.net`**). Do not rely on **literal IPv4** values from old docs, chat, or screenshots—Linode reassignment changes them; **`~/.ssh/config`** should not pin **`HostName`** to a stale IP when the name resolves correctly.
 
-**Fleet operations (canonical):** use **`./scripts/relay-fleet.sh`** from **`relay-gateway/`** for **`ssh-check`**, **`status`**, **`drift`**, **`deploy-all`**, **`repair`**, **`features-set`**, **`reclone-repo`**, etc. See **[`RELAY_FLEET_CONSOLE.md`](./RELAY_FLEET_CONSOLE.md)**.
+**Fleet operations (canonical):** use **`./scripts/relay-fleet.sh`** from **`relay-gateway/`** for **`ssh-check`**, **`status`**, **`drift`**, **`deploy-all`**, **`repair`**, **`features-set`**, **`reclone-repo`**, etc. See **[`RELAY_OPS.md`](./RELAY_OPS.md)**.
 
 **Provision (IaC):** first-time or rebuilt masters — **[`RELAY_INFRA_OPS.md`](./RELAY_INFRA_OPS.md)** (`terraform/linode-relay`, **`relay-master-deploy.sh`**). **Ongoing binary updates** stay on **`relay-fleet.sh`**.
 
@@ -101,7 +101,7 @@ After **`install.sh`** (or an equivalent tarball install) has created **`/opt/re
 
 **Redeploy to masters (e.g. atlanta2 / atlanta3 / jp-osa):** build **`relay-linode-deploy.tgz`** on a trusted machine (**`./scripts/pack-linode-deploy.sh`**; see **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)**). Copy to each host and run **`sudo ./install.sh update`** from the unpacked bundle (or replace **`/opt/relay/bin/relay-gateway`** and **`relay-hook-handler`**, then **`sudo systemctl restart relay-gateway relay-git-daemon`**). Confirm with **`curl -sS -X POST 'http://127.0.0.1:8080/api/config' | head -c 400`** on the VM.
 
-**Fleet shortcut:** **`./scripts/relay-fleet.sh --build deploy-all`** from **`relay-gateway/`** (after **`relay.env`**). If you skip **`--build`**, an existing **`target/relay-linode-deploy.tgz`** may be **old**; masters then keep an outdated **`relay-gateway`** even though your **working tree** is new — see **`docs/RELAY_FLEET_CONSOLE.md`** (stale tarball + **`--build` placement).
+**Fleet shortcut:** **`./scripts/relay-fleet.sh --build deploy-all`** from **`relay-gateway/`** (after **`relay.env`**). If you skip **`--build`**, an existing **`target/relay-linode-deploy.tgz`** may be **old**; masters then keep an outdated **`relay-gateway`** even though your **working tree** is new — see **`docs/RELAY_OPS.md`** (stale tarball + **`--build` placement).
 
 **`RELAY_MASTER_TRUST_ROOT` vs shallow catalog:** **`relay-gateway`** checks that the trust root is an ancestor of catalog **`HEAD`**. The startup script clones with **`RELAY_MASTER_CATALOG_CLONE_DEPTH`** (default **128** in **`relay-startup-catalog-sync.sh`**) and **deepens** a shallow catalog when needed. If the service still errors on **`merge-base`** / missing object, run **`sudo -u relay git -C /opt/relay/src/relay-master fetch --deepen 2048 origin`** (adjust path/remote if yours differ), then **`sudo systemctl restart relay-gateway`**.
 

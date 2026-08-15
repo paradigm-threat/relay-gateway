@@ -110,3 +110,12 @@ On Linux, `serve` shows a GNOME AppIndicator using the canonical Relay mark (`me
 Optional values in `~/.config/relay-ops/config.toml` may be `op://Vault/item/field` (resolved with `op read`). Also reads `VERCEL_API_TOKEN`, `RXTSPOT_TOKEN`, `GITLAB_TOKEN`, `RELAY_SSH_IDENTITY`, `RELAY_FLEET_ENV_FILE`, and laptop `relay.env`.
 
 Windows: install OpenSSH and Git for Windows for SSH/git. Observer HTTPS/DNS/TCP works without them.
+
+## Deploy pitfalls
+
+Global flags are parsed **before** the subcommand. Safe forms: `./scripts/relay-fleet.sh --build update` and `--build deploy-all` (optional `--only=` before the subcommand). For `update` / `deploy-all` only, a trailing `--build` is also accepted.
+
+If `target/relay-linode-deploy.tgz` already exists and you run `update` / `deploy-all` **without** `--build`, the fleet uploads **whatever is on disk**. After changing gateway Rust, always `--build`, or run `./scripts/pack-linode-deploy.sh` and check the tarball mtime.
+
+Laptop remotes for catalog repos: `./scripts/relay-local-remotes.sh --all` (see `scripts/relay-local-repos.map`).
+

@@ -7,7 +7,7 @@ alwaysApply: true
 
 Use this when the user asks to deploy, restart, inspect logs, or debug **relay-gateway** on production masters (**atlanta2** Linode, **dfw1** Rackspace Spot VM). Paths below are relative to this crate root (**`relay-gateway/`**).
 
-**Provision / first install:** **[`docs/RELAY_INFRA_OPS.md`](../docs/RELAY_INFRA_OPS.md)** + **`./scripts/relay-master-deploy.sh`**. **Ongoing updates:** **`./scripts/relay-fleet.sh`** (see **[`docs/RELAY_FLEET_CONSOLE.md`](../docs/RELAY_FLEET_CONSOLE.md)**).
+**Provision / first install:** **[`docs/RELAY_INFRA_OPS.md`](../docs/RELAY_INFRA_OPS.md)** + **`./scripts/relay-master-deploy.sh`**. **Ongoing updates:** **`./scripts/relay-fleet.sh`** (see **[`docs/RELAY_OPS.md`](../docs/RELAY_OPS.md)**).
 
 ## Identity and access
 
@@ -34,7 +34,7 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
 
 ## Standard binary deploy (trusted build → masters)
 
-**Preferred:** from **`relay-gateway/`**, **`./scripts/relay-fleet.sh --build deploy-all`** (or **`--only=NODE --build update`**) — see **`docs/RELAY_FLEET_CONSOLE.md`** (includes **stale-tarball** and **`--build` flag-order** pitfalls). **`deploy-all --build`** also works for **`deploy-all`** / **`update`** only. Low-level steps below match what **`relay-fleet`** / **`relay-linode-redeploy-seed.sh`** run.
+**Preferred:** from **`relay-gateway/`**, **`./scripts/relay-fleet.sh --build deploy-all`** (or **`--only=NODE --build update`**) — see **`docs/RELAY_OPS.md`** (includes **stale-tarball** and **`--build` flag-order** pitfalls). **`deploy-all --build`** also works for **`deploy-all`** / **`update`** only. Low-level steps below match what **`relay-fleet`** / **`relay-linode-redeploy-seed.sh`** run.
 
 1. **Build tarball (local):**
 
@@ -85,7 +85,7 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
 - **`./scripts/relay-fleet.sh status`** — **`POST /api/config`** per host (catalog sync, allowlist).
 - **`./scripts/relay-fleet.sh drift`** — catalog **`HEAD`** across hosts.
 
-See **`docs/RELAY_FLEET_CONSOLE.md`**.
+See **`docs/RELAY_OPS.md`**.
 
 ## HTTP API checks (normative)
 

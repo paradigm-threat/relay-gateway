@@ -203,7 +203,7 @@ ChangeLog card images now use **`changelog-thumbs.json`** (stem/slug map, Vercel
 
 ## Related
 
-- [REPODB_PLAN.md](./REPODB_PLAN.md) — per-branch `.relay_data` layout
+- [CS_HOST_HELPERS.md](./CS_HOST_HELPERS.md) — CS routes; Rust `@relay/search/*` (SQLite FTS on the gateway)
 - [PARADIGM_PARK_LOCAL.md](./PARADIGM_PARK_LOCAL.md) — local QUERY/SSR hardening
 - [CS_HOST_HELPERS.md](./CS_HOST_HELPERS.md) — CS routes; Rust `@relay/search/*`
 - [RELAY_POLICY_AND_PERFORMANCE.md](./RELAY_POLICY_AND_PERFORMANCE.md) — SSR HTML cache vs hydrate catalog work

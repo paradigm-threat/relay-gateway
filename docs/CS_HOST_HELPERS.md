@@ -54,7 +54,7 @@ When tip code grows loops that look like libraries, extract here and add **`rela
 ## Related
 
 - Portrait / PopImage deploy checklist: [`PORTRAIT_SIBLING_DEPLOY.md`](./PORTRAIT_SIBLING_DEPLOY.md)
-- Gap log: [`CLEVERSCRIPT_GAP_LOG.md`](./CLEVERSCRIPT_GAP_LOG.md) (G-007 closed = first helper wave)
+- Remaining CS gaps (intentionally deferred): JSX prop spread `<Foo {...props}>`, mutable `push`/`pop`. Closed language/park items: [archive/CLEVERSCRIPT_GAP_LOG.md](./archive/CLEVERSCRIPT_GAP_LOG.md)
 - Policy: [`RELAY_POLICY_AND_PERFORMANCE.md`](./RELAY_POLICY_AND_PERFORMANCE.md)
 - Server hooks: [`SERVER_HOOKS.md`](./SERVER_HOOKS.md)
 

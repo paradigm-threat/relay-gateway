@@ -54,7 +54,7 @@ After Spot preemption: re-run **`relay-master-deploy.sh --target spot-dfw1`** (t
 
 Spot VMs SSH as **`ubuntu`** (not `ari`). Production fleet: **dfw1**, **lon1**, **hkg1**.
 
-See **[`RELAY_FLEET_CONSOLE.md`](./RELAY_FLEET_CONSOLE.md)**.
+See **[`RELAY_OPS.md`](./RELAY_OPS.md)**.
 
 ## Secrets
 
