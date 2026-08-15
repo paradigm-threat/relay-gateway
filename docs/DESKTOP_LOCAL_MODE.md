@@ -1,5 +1,7 @@
 # Desktop local mode
 
+**Not the Android tester path.** Testers: [`../relay-runtime/docs/ANDROID_WEB_TEST.md`](../relay-runtime/docs/ANDROID_WEB_TEST.md). This file is only for the **desktop crate** (`relay-client-desktop --repo`).
+
 Desktop **`--repo PATH`** embeds **`relay_server` in-process** (no loopback subprocess, no git mirror).
 
 ## Client modes

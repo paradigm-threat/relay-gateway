@@ -35,7 +35,7 @@ RUN set -eux; \
 
 FROM ubuntu:24.04
 ARG DEFAULT_REPOS="https://gitlab.com/clevertree/relay-template.git"
-LABEL org.opencontainers.image.source="https://gitlab.com/clevertree/relay-server"
+LABEL org.opencontainers.image.source="https://gitlab.com/clevertree/relay-gateway"
 LABEL org.opencontainers.image.title="relay-gateway"
 
 RUN groupadd -r relay && useradd -r -g relay -d /srv/relay -s /usr/sbin/nologin relay \

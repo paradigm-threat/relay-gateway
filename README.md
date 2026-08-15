@@ -2,16 +2,18 @@
 
 Implements the Relay API over bare Git repositories with static directory serving and detailed error reporting.
 
-**This repo is [clevertree/relay-server](https://gitlab.com/clevertree/relay-server)** (local folder `relay-gateway/`). The old monorepo **[clevertree/relay](https://gitlab.com/clevertree/relay) is archived** — do not clone it for work.
+**This repo is [clevertree/relay-gateway](https://gitlab.com/clevertree/relay-gateway)** (clone folder `relay-gateway/`). The old monorepo **[clevertree/relay](https://gitlab.com/clevertree/relay) is archived**.
+
+**Android / web tester:** sibling [`relay-runtime/docs/ANDROID_WEB_TEST.md`](../relay-runtime/docs/ANDROID_WEB_TEST.md) — do not start in `relay-client-android`. Glossary: [`TERMINOLOGY.md`](../relay-runtime/docs/TERMINOLOGY.md).
 
 | Piece | GitLab | Local folder |
 |-------|--------|----------------|
-| Gateway | `clevertree/relay-server` | `relay-gateway/` |
+| Gateway | `clevertree/relay-gateway` | `relay-gateway/` |
 | Runtime | `clevertree/relay-runtime` | `relay-runtime/` |
 | Web client | `clevertree/relay-client-web` | `relay-client-web/` |
 | Android client | `clevertree/react-client-android` | `relay-client-android/` |
 
-Operator tool: **[`docs/RELAY_OPS.md`](docs/RELAY_OPS.md)**. Historical notes: **[`docs/archive/`](docs/archive/)**.
+Operator tool: **[`docs/RELAY_OPS.md`](docs/RELAY_OPS.md)**. Doc index: **[`docs/README.md`](docs/README.md)**. Historical notes: **[`docs/archive/`](docs/archive/)**.
 
 ## Features
 
@@ -19,7 +21,7 @@ Operator tool: **[`docs/RELAY_OPS.md`](docs/RELAY_OPS.md)**. Historical notes: *
 - Static file serving from configurable directories
 - Automatic hourly git pulls for repository updates
 - Detailed 404 error messages showing searched paths, repos, and branches
-- JSX/TSX transpilation via hook-transpiler WASM
+- CleverScript client hooks via **relay-runtime** (WASM on web, JNI on Android)
 - Optional HTTPS support with automatic certificate loading
 - CORS-enabled; responses may include informational headers (e.g. echo of resolved repo/branch — **not** input channels). **`X-Relay-Branch` is deprecated**; branch selection is **Host-only** — see **[`docs/DEPLOY_WEB_AND_CI.md`](docs/DEPLOY_WEB_AND_CI.md)** §8–§11.
 
@@ -33,7 +35,7 @@ Install-time **optional capabilities** (Piper TTS, offline Argos translation, np
 
 **Primary tool:** **`relay-ops`** — CLI + local UI for any Relay fleet. Bootstrap from a GitLab project URL (`ops/fleet.json`). Wrapper: **`./scripts/relay-fleet.sh`**. See **[`docs/RELAY_OPS.md`](docs/RELAY_OPS.md)** and **[`ops/fleet.json`](ops/fleet.json)**. **`./scripts/deploy-all-masters.sh`** is **`relay-ops --build deploy-all`**.
 
-**CleverScript runtime:** **`relay-runtime`** lives as a **sibling crate** at **`../../relay-runtime`** (see `relay-gateway/Cargo.toml` `path = …`). **`cargo test --locked`** in **relay-gateway** uses that path dependency.
+**CleverScript runtime:** **`relay-runtime`** lives as a **sibling crate** at **`../relay-runtime`** (see `Cargo.toml` `path = …`). **`cargo test --locked`** in **relay-gateway** uses that path dependency.
 
 **Vendored for CI:** a **Rust-only `src/` + `Cargo.toml` snapshot** of **`themed-styler/`** ships in this repo so tests do not depend on an external themed-styler checkout. The published **`themed-styler`** crate may lag this snapshot; refresh **`themed-styler/`** from your checkout when APIs diverge, then run **`cargo test --locked`**.
 

@@ -7,7 +7,7 @@
 
 services:
   relay-gateway:
-    image: ${RELAY_IMAGE:-registry.gitlab.com/clevertree/relay-server/relay-gateway:latest}
+    image: ${RELAY_IMAGE:-registry.gitlab.com/clevertree/relay-gateway:latest}
     container_name: relay-gateway
     restart: unless-stopped
     ports:

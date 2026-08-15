@@ -8,18 +8,18 @@
 | Repo | Expected tip theme |
 |------|--------------------|
 | `relay-runtime` | `@relay/path` portrait invent + index lookup + gallery hash/DOM id; `@relay/util` TTS sentence chunking |
-| `relay-gateway` (`clevertree/relay-server`) | tip portrait index, float-404 HTTP fix, SSR inject |
+| `relay-gateway` (`clevertree/relay-gateway`) | tip portrait index, float-404 HTTP fix, SSR inject |
 | `paradigm-threat-files` | thin PopImage / galleryStore / TOC / TTS dock (host helpers, no tip invent/probe) |
 
 ## Order
 
 1. **Push `relay-runtime` `main` to GitLab** (CI clones it next to the gateway checkout).
-2. **Push `relay-gateway` `main` to GitLab** (`origin` / `gitlab` → `clevertree/relay-server`).
+2. **Push `relay-gateway` `main` to GitLab** (`origin` / `gitlab` → `clevertree/relay-gateway`).
 3. **Trigger gateway CI on demand** (auto-run is off for branch pushes):
 
 ```bash
 cd ~/dev/relay/relay-gateway
-glab ci run -b main -R clevertree/relay-server
+glab ci run -b main -R clevertree/relay-gateway
 # or: GitLab UI → Build → Pipelines → Run pipeline
 ```
 

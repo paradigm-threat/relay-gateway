@@ -34,7 +34,7 @@ Store `CARGO_REGISTRY_TOKEN` in GitLab CI variables for automated publish (optio
 
 GitLab Container Registry:
 
-`registry.gitlab.com/clevertree/relay-server/relay-gateway:<tag>`
+`registry.gitlab.com/clevertree/relay-gateway:<tag>`
 
 Built by **`docker:publish`** on `main` and release tags. See **[`DOCKER_GITLAB_RACKSPACE.md`](./DOCKER_GITLAB_RACKSPACE.md)**.
 

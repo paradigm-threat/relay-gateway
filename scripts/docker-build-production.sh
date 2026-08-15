@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GW_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 STAGE="${RELAY_DOCKER_STAGE:-$(mktemp -d)}"
-IMAGE="${RELAY_IMAGE:-registry.gitlab.com/clevertree/relay-server/relay-gateway:latest}"
+IMAGE="${RELAY_IMAGE:-registry.gitlab.com/clevertree/relay-gateway:latest}"
 CLEANUP="${RELAY_DOCKER_STAGE:-}"
 
 "$SCRIPT_DIR/stage-docker-context.sh" "$STAGE"

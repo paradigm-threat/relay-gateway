@@ -13,7 +13,7 @@ Relay is **source-first**: you build the deploy tarball **where you trust** (lap
 Host **`relay-linode-deploy.tgz`** on **any HTTPS URL you control** (download from a **GitLab pipeline artifact**, generic package, internal nginx, object storage). Then:
 
 ```bash
-curl -fsSL "https://gitlab.com/clevertree/relay-server/-/raw/main/scripts/relay-curl.sh" | \
+curl -fsSL "https://gitlab.com/clevertree/relay-gateway/-/raw/main/scripts/relay-curl.sh" | \
   sudo env RELAY_DEPLOY_TGZ_URL="https://YOUR_HOST/relay-linode-deploy.tgz" bash -s -- install
 ```
 

@@ -50,7 +50,7 @@ test:verify:
       MD2AST_URL="${MD2AST_GIT_URL:-https://gitlab.com/clevertree/md2jsx.git}"
       mkdir -p "$CI_PROJECT_DIR/.." "$CI_PROJECT_DIR/../.."
       # relay-runtime path-deps themed-styler at ../relay-gateway/themed-styler
-      # (GitLab project dir is relay-server).
+      # (GitLab project path is clevertree/relay-gateway; CI dir name may vary).
       ln -sfn "$CI_PROJECT_DIR" "$CI_PROJECT_DIR/../relay-gateway"
       if [[ ! -f "$CI_PROJECT_DIR/../relay-runtime/Cargo.toml" ]]; then
         git clone --depth 1 --branch "$REF" "$RUNTIME_URL" "$CI_PROJECT_DIR/../relay-runtime"

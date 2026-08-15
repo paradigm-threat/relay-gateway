@@ -21,7 +21,7 @@ spec:
         - operator: "Exists"
       containers:
         - name: relay
-          image: registry.gitlab.com/clevertree/relay-server/relay-gateway:main
+          image: registry.gitlab.com/clevertree/relay-gateway:main
           imagePullPolicy: Always
           command: ["/bin/bash", "/scripts/relay-boot.sh"]
           envFrom:

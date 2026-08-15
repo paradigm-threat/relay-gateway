@@ -1,7 +1,7 @@
 Relay DaemonSet
 ----------------
 
-This manifest deploys `registry.gitlab.com/clevertree/relay-server/relay-gateway:main` as a DaemonSet on the spot nodepool created by `terraform/rackspace-spot`.
+This manifest deploys `registry.gitlab.com/clevertree/relay-gateway:main` as a DaemonSet on the spot nodepool created by `terraform/rackspace-spot`.
 
 How to apply
 1. Run `terraform apply` in `terraform/rackspace-spot` using your `RACKSPACE_TERRAFORM_TOKEN` (the module outputs a kubeconfig via the `spot_kubeconfig` data source).

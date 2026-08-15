@@ -5,7 +5,7 @@
 | Item | Value |
 |------|--------|
 | Dockerfile | `relay-gateway/Dockerfile.production` |
-| Registry | `registry.gitlab.com/clevertree/relay-server/relay-gateway` |
+| Registry | `registry.gitlab.com/clevertree/relay-gateway` |
 | Tags | `main`, `$CI_COMMIT_SHORT_SHA`, `$CI_COMMIT_TAG` |
 
 Build locally from monorepo root (`~/dev` layout: `relay/`, `relay-runtime/`, `md2ast/`):
@@ -57,7 +57,7 @@ Optional overrides:
 | `Cargo.lock needs to be updated` | Run `cargo update` locally in `relay-gateway`, commit `Cargo.lock` |
 | `could not read Username` cloning deps | Enable **CI job token** access to sibling repos in the same group |
 | Kaniko `git: not found` | Use current `.gitlab-ci.yml` (`docker:prepare-context` job) |
-| Image pull 404 on Rackspace | Image must be `registry.gitlab.com/clevertree/relay-server/relay-gateway:main` (note `/relay-gateway` suffix) |
+| Image pull 404 on Rackspace | Image must be `registry.gitlab.com/clevertree/relay-gateway:main` |
 
 ## Rackspace Spot (retired Kubernetes path)
 
@@ -71,14 +71,14 @@ This document covers **GitLab CI → Container Registry** only. Do not deploy th
 Legacy registry pull (historical):
 
 ```bash
-export REGISTRY=registry.gitlab.com/clevertree/relay-server
+export REGISTRY=registry.gitlab.com/clevertree/relay-gateway
 export RELAY_IMAGE_TAG=main
 ./terraform/rackspace-spot/scripts/deploy-from-registry.sh
 ```
 
 DaemonSet image (after deploy):
 
-`registry.gitlab.com/clevertree/relay-server/relay-gateway:main`
+`registry.gitlab.com/clevertree/relay-gateway:main`
 
 ### IPFS on Rackspace nodes
 

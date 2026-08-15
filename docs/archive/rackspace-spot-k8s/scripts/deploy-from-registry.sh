@@ -11,7 +11,7 @@ KUBECTL="${KUBECTL:-${GW_DIR}/terraform/kubectl}"
 if [[ ! -x "$KUBECTL" ]]; then
   KUBECTL=kubectl
 fi
-REGISTRY="${REGISTRY:-registry.gitlab.com/clevertree/relay-server}"
+REGISTRY="${REGISTRY:-registry.gitlab.com/clevertree/relay-gateway}"
 TAG="${RELAY_IMAGE_TAG:-main}"
 IMAGE="${REGISTRY}/relay-gateway:${TAG}"
 
@@ -41,7 +41,7 @@ echo "[$STACK] Deploying image $IMAGE"
 for manifest in relay-daemonset.yaml; do
   path="$K8S_DIR/$manifest"
   if [[ -f "$path" ]]; then
-    sed -i.bak "s|image: registry.gitlab.com/clevertree/relay-server/relay-gateway:.*|image: ${IMAGE}|" "$path"
+    sed -i.bak "s|image: registry.gitlab.com/clevertree/relay-gateway:.*|image: ${IMAGE}|" "$path"
   fi
 done
 

@@ -232,7 +232,7 @@ sudo RELAY_INSTALL_NONINTERACTIVE=1 RELAY_SKIP_VERCEL_DNS=1 \
 **Repair or update** (server already has `/opt/relay/bin/relay-server`; pulls latest **`relay-install.sh`** from **`RELAY_RAW_BASE`**, reapplies systemd/hooks; binaries stay in place unless you set **`RELAY_DEPLOY_TGZ_URL`** / **`RELAY_BIN_SOURCE`** for **update**):
 
 ```bash
-curl -fsSL "https://gitlab.com/clevertree/relay-server/-/raw/main/scripts/relay-curl.sh" | sudo bash -s -- repair
+curl -fsSL "https://gitlab.com/clevertree/relay-gateway/-/raw/main/scripts/relay-curl.sh" | sudo bash -s -- repair
 ```
 
 Swap **`repair`** for **`update`** after you’ve published new binaries (see **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)**).
@@ -241,13 +241,13 @@ Swap **`repair`** for **`update`** after you’ve published new binaries (see **
 
 ```bash
 export RELAY_DEPLOY_TGZ_URL="https://YOUR_HOST/relay-linode-deploy.tgz"
-curl -fsSL "https://gitlab.com/clevertree/relay-server/-/raw/main/scripts/relay-curl.sh" | sudo -E bash -s -- install
+curl -fsSL "https://gitlab.com/clevertree/relay-gateway/-/raw/main/scripts/relay-curl.sh" | sudo -E bash -s -- install
 ```
 
 **Update from a new tarball:**
 
 ```bash
-curl -fsSL "https://gitlab.com/clevertree/relay-server/-/raw/main/scripts/relay-curl.sh" | \
+curl -fsSL "https://gitlab.com/clevertree/relay-gateway/-/raw/main/scripts/relay-curl.sh" | \
   sudo env RELAY_DEPLOY_TGZ_URL="https://YOUR_HOST/relay-linode-deploy.tgz" bash -s -- update
 ```
 
@@ -259,7 +259,7 @@ Non-interactive: `export RELAY_INSTALL_NONINTERACTIVE=1` before the same **`curl
 
 ```bash
 export RELAY_BIN_SOURCE=/root/deploy   # relay-server + relay-hook-handler here
-curl -fsSL "https://gitlab.com/clevertree/relay-server/-/raw/main/scripts/relay-curl.sh" | sudo -E bash -s -- install
+curl -fsSL "https://gitlab.com/clevertree/relay-gateway/-/raw/main/scripts/relay-curl.sh" | sudo -E bash -s -- install
 ```
 
 ---

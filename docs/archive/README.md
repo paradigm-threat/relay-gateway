@@ -8,4 +8,4 @@ Not operator runbooks. **Start here instead:**
 
 This folder holds retired notes (investor vision, crates.io access letter, closed CS gap log, old RepoDB plan, unimplemented git-consensus design) plus [rackspace-spot-k8s/](rackspace-spot-k8s/) (DaemonSet path, May 2026).
 
-The GitLab project **`clevertree/relay`** (old monorepo) is **archived**. Live gateway is **`clevertree/relay-server`**.
+The GitLab project **`clevertree/relay`** (old monorepo) is **archived**. Live gateway is **`clevertree/relay-gateway`**.

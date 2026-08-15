@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Client-side runtime styling engine for web and Android/iOS Native with theme support and Tailwind subset"
 authors = ["Ari Asulin"]
-repository = "https://gitlab.com/clevertree/relay-server"
+repository = "https://gitlab.com/clevertree/relay-gateway"
 homepage = "https://relaynet.online"
 
 readme = "README.md"

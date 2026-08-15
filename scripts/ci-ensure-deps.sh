@@ -53,7 +53,7 @@ if [[ -n "${CI:-}" ]]; then
   echo "[ci-ensure-deps] path deps missing (relay-runtime=$have_runtime md2ast=$have_md2ast)" >&2
   echo "[ci-ensure-deps] For Docker builds set GitLab CI variable RELAY_RUNTIME_GIT_URL to a deploy-token URL, e.g.:" >&2
   echo "  https://gitlab+deploy-token-NNN:TOKEN@gitlab.com/clevertree/relay-runtime.git" >&2
-  echo "  Or: relay-runtime → Settings → CI/CD → Job token permissions → allow clevertree/relay-server" >&2
+  echo "  Or: relay-runtime → Settings → CI/CD → Job token permissions → allow clevertree/relay-gateway" >&2
   exit 1
 fi
 
