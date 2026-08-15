@@ -70,7 +70,7 @@ On **persistent** hook runs (same source, `run_hook_persistent`), **`run()`** ca
 **Call sites to keep in sync**
 
 - WASM: `run_hook_with_host` (and any other export that runs `value_to_vnode_with_handlers` after a persistent run).
-- Android JNI: path that builds the vnode after `run_hook_with_host`.
+- Android JNI: path that builds the vnode after `run_hook_with_host`. Prove the in-tree demo APK against wasm-test before the product client — [`relay-runtime/docs/ANDROID_WEB_TEST.md`](../../relay-runtime/docs/ANDROID_WEB_TEST.md).
 - Tests: any direct `value_to_vnode_with_handlers` after multiple `run()` cycles without clearing should either clear explicitly or assert bounded registry size.
 
 ### Secondary mitigations (design, not micro-optimization)

@@ -9,3 +9,5 @@ Then **[`.cursor/rules/relay-production-ops.mdc`](.cursor/rules/relay-production
 ## Code
 
 Run tests: **`cargo test`**.
+
+**Android / web runtime testing:** in-tree APK + wasm-test live in **`relay-runtime`** — [`../relay-runtime/docs/ANDROID_WEB_TEST.md`](../relay-runtime/docs/ANDROID_WEB_TEST.md). Product app is **`relay-client-android`** (Rust JNI `.so`). Desktop native UI is skipped; desktop is web.
