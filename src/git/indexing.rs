@@ -4,6 +4,9 @@ use crate::git::index_store;
 use crate::git::repo::read_relay_config;
 use crate::git::search_config;
 use crate::git::search_plugins::{self, PLUGIN_CHAT};
+use crate::git::search_store::{
+    store_for_bare_repo, store_key_for_bare, SearchStore,
+};
 use crate::git::sqlite_index;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -14,7 +17,7 @@ type RepoBranchLocks = Mutex<HashMap<(PathBuf, String), Arc<Mutex<()>>>>;
 
 static BRANCH_LOCKS: OnceLock<RepoBranchLocks> = OnceLock::new();
 
-/// Serialize QUERY / JIT indexing on the same `(bare repo path, branch)` to avoid torn reads.
+/// Serialize index writes on the same `(bare repo path, branch)` (on-commit / warm).
 pub fn branch_operation_mutex(repo: PathBuf, branch: String) -> Arc<Mutex<()>> {
     let mut map = BRANCH_LOCKS
         .get_or_init(|| Mutex::new(HashMap::new()))
@@ -58,41 +61,43 @@ pub fn branch_sqlite_path(repo_path: &Path, branch: &str) -> PathBuf {
     sqlite_index::sqlite_db_path(repo_path, branch)
 }
 
-fn read_json_indexed_head(json_path: &Path) -> String {
-    if !json_path.exists() {
-        return String::new();
-    }
-    let Ok(content) = std::fs::read_to_string(json_path) else {
-        return String::new();
-    };
-    let Ok(db) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return String::new();
-    };
-    db.get("metadata")
-        .and_then(|m| m.get("indexed_head"))
-        .and_then(|h| h.as_str())
-        .unwrap_or("")
-        .to_string()
+/// Run index hook if SearchStore `docs_indexed_head` lags `HEAD`; then sync JSON → redb.
+/// SQLite sync + catalog ingest happen inside `execute_repo_hook("index")` →
+/// `sync_meta_yaml_index` (or directly when no CS index hook is configured).
+/// QUERY must not call this; writers (post-receive, peer-fetch, `/api/index/warm`) do.
+///
+/// Freshness is **SearchStore only**. Leftover `index.db.json` `indexed_head` must not
+/// skip ingest (that left QUERY `not_indexed` after the node-wide DB cutover).
+pub fn ensure_indexed(ctx: &HookContext) -> anyhow::Result<()> {
+    ensure_indexed_impl(ctx, false)
 }
 
-/// Run index hook if `indexed_head` lags `HEAD`; then sync JSON → redb.
-/// SQLite sync + catalog ingest happen inside `execute_repo_hook("index")` →
-/// `sync_meta_yaml_index` (do not duplicate here).
-/// Caller should hold [`branch_operation_mutex`] for this repo/branch when serving QUERY.
-pub fn ensure_indexed(ctx: &HookContext) -> anyhow::Result<()> {
-    let (json_path, redb_path) = branch_index_paths(&ctx.repo_path, &ctx.branch);
-    let sqlite_path = branch_sqlite_path(&ctx.repo_path, &ctx.branch);
+/// Full SearchStore regen (HTTP `/api/index/warm`). Ignores a matching store head so
+/// schema/filterField changes and empty catalogs can be rebuilt from git.
+pub fn ensure_indexed_force(ctx: &HookContext) -> anyhow::Result<()> {
+    ensure_indexed_impl(ctx, true)
+}
 
-    let mut indexed_head = sqlite_index::read_indexed_head(&sqlite_path)?
-        .unwrap_or_default();
-    if indexed_head.is_empty() {
-        indexed_head = read_json_indexed_head(&json_path);
-    }
+fn ensure_indexed_impl(ctx: &HookContext, force: bool) -> anyhow::Result<()> {
+    let (json_path, redb_path) = branch_index_paths(&ctx.repo_path, &ctx.branch);
+    let store = store_for_bare_repo(&ctx.repo_path)?;
+    let key = store_key_for_bare(&ctx.repo_path, &ctx.branch);
+    let _store_lock = store.lock_branch(&key);
+    let _guard = _store_lock.lock().unwrap();
+
+    let indexed_head = store.docs_indexed_head(&key)?.unwrap_or_default();
 
     let relay = git2::Repository::open_bare(&ctx.repo_path)
         .ok()
         .and_then(|r| read_relay_config(&r, &ctx.new_commit))
         .unwrap_or_default();
+    if !crate::git::index_policy::branch_allowed_for_index(&relay, &ctx.branch) {
+        debug!(
+            branch = %ctx.branch,
+            "index skipped: branch not in server.hooks.index.branches"
+        );
+        return Ok(());
+    }
     let search = search_config::load_search_config(
         &ctx.repo_path,
         &ctx.new_commit,
@@ -110,7 +115,7 @@ pub fn ensure_indexed(ctx: &HookContext) -> anyhow::Result<()> {
         .filter(|s| !s.is_empty())
         .unwrap_or(chat_index::DEFAULT_CHAT_ROOT);
 
-    if indexed_head == ctx.new_commit {
+    if !force && indexed_head == ctx.new_commit {
         if plugin == PLUGIN_CHAT {
             // Tip may already be marked indexed from path_tree; still ensure chat_comments.
             chat_index::ensure_chat_indexed(ctx, chat_root)?;
@@ -119,27 +124,37 @@ pub fn ensure_indexed(ctx: &HookContext) -> anyhow::Result<()> {
             "Branch {} is up to date (head: {})",
             ctx.branch, ctx.new_commit
         );
-        // Skip JSON/catalog re-sync: path_tree ingest is expensive and must not
-        // run on every QUERY when SQLite already matches tip.
         return Ok(());
     }
 
-    info!(
-        "Branch {} is stale ({} != {}). Running JIT indexing...",
-        ctx.branch, indexed_head, ctx.new_commit
-    );
+    if force {
+        info!(
+            "Forcing SearchStore regen for branch {} (store_head={} tip={})",
+            ctx.branch, indexed_head, ctx.new_commit
+        );
+    } else {
+        info!(
+            "Branch {} is stale ({} != {}). Running on-commit indexing...",
+            ctx.branch, indexed_head, ctx.new_commit
+        );
+    }
 
     if plugin == PLUGIN_CHAT {
         // Thin CS index hook (may call `@relay/search/chat` index); skip path_tree.
-        let _ = execute_repo_hook(ctx, "index");
+        if crate::git::has_index_hook(&relay) {
+            let _ = execute_repo_hook(ctx, "index");
+        }
         chat_index::ensure_chat_indexed(ctx, chat_root)?;
-        debug!("JIT chat indexing completed for branch {}", ctx.branch);
+        debug!("chat indexing completed for branch {}", ctx.branch);
         return Ok(());
     }
 
-    let result = execute_repo_hook(ctx, "index");
-    result?;
-    debug!("JIT indexing completed for branch {}", ctx.branch);
+    if crate::git::has_index_hook(&relay) {
+        execute_repo_hook(ctx, "index")?;
+    } else {
+        crate::git::meta_index::sync_meta_yaml_index(ctx)?;
+    }
+    debug!("on-commit indexing completed for branch {}", ctx.branch);
 
     // `execute_repo_hook("index")` already runs `sync_meta_yaml_index` → SQLite sync +
     // catalog ingest. Do **not** repeat sync_json+ingest here (that wiped catalog rows
@@ -149,31 +164,39 @@ pub fn ensure_indexed(ctx: &HookContext) -> anyhow::Result<()> {
         index_store::sync_json_to_redb(&json_path, &redb_path)?;
     }
 
+    let legacy = branch_sqlite_path(&ctx.repo_path, &ctx.branch);
+    let _ = std::fs::remove_file(&legacy);
+    let _ = std::fs::remove_file(path_wal_sidecar(&legacy, "-wal"));
+    let _ = std::fs::remove_file(path_wal_sidecar(&legacy, "-shm"));
+
     Ok(())
 }
 
+fn path_wal_sidecar(db: &Path, suffix: &str) -> PathBuf {
+    let mut s = db.as_os_str().to_os_string();
+    s.push(suffix);
+    PathBuf::from(s)
+}
+
 /// Async index warm after peer-fetch / catalog apply (errors logged only).
-pub fn spawn_ensure_indexed(repo_path: PathBuf, branch: String, tip_sha: String) {
+pub fn spawn_ensure_indexed(
+    repo_path: PathBuf,
+    branch: String,
+    old_commit: String,
+    tip_sha: String,
+) {
     std::thread::spawn(move || {
         let ctx = HookContext {
             repo_path: repo_path.clone(),
-            old_commit: String::new(),
+            old_commit,
             new_commit: tip_sha.clone(),
             refname: format!("refs/heads/{}", branch),
             branch: branch.clone(),
             is_verified: true,
             files: Default::default(),
         };
-        if let Ok(repo) = git2::Repository::open_bare(&repo_path) {
-            if let Some(cfg) = crate::git::read_relay_config(&repo, &tip_sha) {
-                if crate::git::has_index_hook(&cfg) {
-                    let lock = branch_operation_mutex(repo_path, branch);
-                    let _guard = lock.lock().unwrap();
-                    if let Err(e) = ensure_indexed(&ctx) {
-                        tracing::warn!(error = %e, "spawn_ensure_indexed failed");
-                    }
-                }
-            }
+        if let Err(e) = ensure_indexed(&ctx) {
+            tracing::warn!(error = %e, "spawn_ensure_indexed failed");
         }
     });
 }
@@ -186,10 +209,7 @@ mod tests {
     use std::collections::HashMap;
     use tempfile::tempdir;
 
-    /// Regression: `ensure_indexed` must not wipe+rebuild SQLite twice.
-    /// After one warm, `indexed_head` matches tip and a second call is a no-op.
-    #[test]
-    fn ensure_indexed_once_sets_head_second_call_noop() {
+    fn meta_index_bare_fixture() -> (tempfile::TempDir, PathBuf, String, HookContext) {
         let dir = tempdir().unwrap();
         let repo_path = dir.path().join("r.git");
         let repo = Repository::init_bare(&repo_path).unwrap();
@@ -242,19 +262,73 @@ server:
             is_verified: true,
             files: HashMap::new(),
         };
+        (dir, repo_path, commit, ctx)
+    }
+
+    /// Regression: `ensure_indexed` must not wipe+rebuild SQLite twice.
+    /// After one warm, `indexed_head` matches tip and a second call is a no-op.
+    #[test]
+    fn ensure_indexed_once_sets_head_second_call_noop() {
+        let (_dir, repo_path, commit, ctx) = meta_index_bare_fixture();
 
         ensure_indexed(&ctx).unwrap();
-        let sqlite = branch_sqlite_path(&repo_path, "main");
-        let head1 = sqlite_index::read_indexed_head(&sqlite)
-            .unwrap()
-            .unwrap_or_default();
+        let store = store_for_bare_repo(&repo_path).unwrap();
+        let key = store_key_for_bare(&repo_path, "main");
+        let head1 = store.docs_indexed_head(&key).unwrap().unwrap_or_default();
         assert_eq!(head1, commit);
 
         // Second call must early-return (same head) — would panic/loop if broken.
         ensure_indexed(&ctx).unwrap();
-        let head2 = sqlite_index::read_indexed_head(&sqlite)
-            .unwrap()
-            .unwrap_or_default();
+        let head2 = store.docs_indexed_head(&key).unwrap().unwrap_or_default();
         assert_eq!(head2, commit);
+    }
+
+    /// Leftover `index.db.json` stamped at tip must not skip SearchStore ingest.
+    #[test]
+    fn ensure_indexed_ignores_json_head_when_store_empty() {
+        let (_dir, repo_path, commit, ctx) = meta_index_bare_fixture();
+        let (json_path, _) = branch_index_paths(&repo_path, "main");
+        std::fs::create_dir_all(json_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &json_path,
+            format!(
+                r#"{{"metadata":{{"indexed_head":"{commit}"}},"collections":{{"index":[]}}}}"#
+            ),
+        )
+        .unwrap();
+
+        ensure_indexed(&ctx).unwrap();
+        let store = store_for_bare_repo(&repo_path).unwrap();
+        let key = store_key_for_bare(&repo_path, "main");
+        assert_eq!(
+            store.docs_indexed_head(&key).unwrap().as_deref(),
+            Some(commit.as_str())
+        );
+        assert!(
+            store.count_docs(&key, "index").unwrap() > 0,
+            "SearchStore must ingest meta.yaml even when JSON already has this tip"
+        );
+    }
+
+    #[test]
+    fn ensure_indexed_force_rebuilds_when_store_already_current() {
+        let (_dir, repo_path, commit, ctx) = meta_index_bare_fixture();
+        ensure_indexed(&ctx).unwrap();
+        let store = store_for_bare_repo(&repo_path).unwrap();
+        let key = store_key_for_bare(&repo_path, "main");
+        store
+            .replace_collection(&key, "index", &[], None, None, None)
+            .unwrap();
+        assert_eq!(store.count_docs(&key, "index").unwrap(), 0);
+
+        ensure_indexed_force(&ctx).unwrap();
+        assert_eq!(
+            store.docs_indexed_head(&key).unwrap().as_deref(),
+            Some(commit.as_str())
+        );
+        assert!(
+            store.count_docs(&key, "index").unwrap() > 0,
+            "warm force must regen rows from git"
+        );
     }
 }

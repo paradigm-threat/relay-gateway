@@ -5,7 +5,7 @@
   <title>Relay ops</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <style>
-    :root { color-scheme: dark; --bg:#111; --card:#1c1c1c; --ok:#3dd68c; --bad:#ff6b6b; --warn:#f5c542; --muted:#9aa; }
+    :root { color-scheme: dark; --bg:#111; --card:#1c1c1c; --ok:#3dd68c; --bad:#ff6b6b; --warn:#f5c542; --muted:#9aa; --link:#8cb4ff; }
     body { font: 15px/1.4 system-ui, sans-serif; background: var(--bg); color: #eee; margin: 0; }
     header { padding: 16px 20px; border-bottom: 1px solid #333; display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
     h1 { font-size: 18px; margin: 0; }
@@ -16,16 +16,35 @@
     main { padding: 16px 20px 40px; display:grid; gap:16px; }
     .grid { display:grid; gap:12px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
     .card { background: var(--card); border: 1px solid #2a2a2a; border-radius: 10px; padding: 14px; }
+    .card.sel { border-color: #3d6aa0; }
     .row { display:flex; justify-content:space-between; gap:8px; margin: 4px 0; }
     .muted { color: var(--muted); }
     .ok { color: var(--ok); }
     .bad { color: var(--bad); }
+    .warn { color: var(--warn); }
+    .banner { background:#3d2a12; border:1px solid #6b3a12; border-radius:8px; padding:8px 10px; margin-top:8px; }
     button { background:#2b4c7e; color:#fff; border:0; border-radius:6px; padding:6px 10px; cursor:pointer; }
     button:disabled { opacity:.45; cursor:not-allowed; }
     button.warn { background:#6b3a12; }
+    button.ghost { background:#333; }
     pre { background:#0b0b0b; padding:10px; overflow:auto; max-height:280px; font-size:12px; }
+    pre.fileview { max-height:360px; white-space:pre-wrap; word-break:break-word; }
     input { background:#0b0b0b; color:#eee; border:1px solid #444; border-radius:6px; padding:6px 8px; }
     .actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+    details.repos { margin-top:8px; }
+    details.repos ul { margin: 6px 0 0; padding-left: 18px; max-height: 140px; overflow:auto; }
+    details.repos li { margin: 2px 0; }
+    a, .link { color: var(--link); cursor:pointer; text-decoration:none; }
+    .link:hover { text-decoration:underline; }
+    .browser { display:none; }
+    .browser.on { display:block; }
+    .browser-cols { display:grid; gap:12px; grid-template-columns: 1fr 1fr 1.4fr; }
+    @media (max-width: 900px) { .browser-cols { grid-template-columns: 1fr; } }
+    .list { max-height: 220px; overflow:auto; font-size: 13px; }
+    .list div { padding: 3px 4px; border-radius: 4px; }
+    .list div:hover, .list div.on { background:#2a2a2a; }
+    .sha { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+    .crumb { margin-bottom: 6px; }
   </style>
 </head>
 <body>
@@ -52,17 +71,170 @@
       <button id="btnDrop" disabled onclick="act('/api/fleet-dns-drop')">Drop dead fleet A</button>
       <button id="btnDnsDry" disabled onclick="job({kind:'fleet-dns', dry_run:true})">Fleet DNS dry-run</button>
     </div>
+    <div id="syncBanner"></div>
   </section>
   <section id="nodes" class="grid"></section>
+  <section id="browser" class="card browser">
+    <div class="row">
+      <h2 id="browserTitle">Repository browser</h2>
+      <button class="ghost" onclick="closeBrowser()">Close</button>
+    </div>
+    <div id="browserMeta" class="muted"></div>
+    <div class="browser-cols">
+      <div>
+        <h2>Repositories</h2>
+        <div id="repoList" class="list"></div>
+      </div>
+      <div>
+        <h2>Branches</h2>
+        <div id="branchList" class="list"></div>
+      </div>
+      <div>
+        <h2>Files</h2>
+        <div id="crumb" class="crumb muted"></div>
+        <div id="treeList" class="list"></div>
+      </div>
+    </div>
+    <pre id="fileView" class="fileview">Select a file</pre>
+  </section>
   <section class="card">
     <h2>Job log</h2>
     <pre id="log">idle</pre>
   </section>
 </main>
 <script>
+let lastSnap = null;
+const browse = { fqdn: null, repo: null, branch: null, prefix: '', loading: false };
+const uiState = { openRepos: new Set(), repoScroll: {} };
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function shortSha(s) { return s ? String(s).slice(0, 8) : '—'; }
+
+function captureRepoUi() {
+  document.querySelectorAll('#nodes [data-fqdn] details.repos').forEach(d => {
+    const fqdn = d.closest('[data-fqdn]')?.dataset.fqdn;
+    if (!fqdn) return;
+    if (d.open) uiState.openRepos.add(fqdn);
+    else uiState.openRepos.delete(fqdn);
+    const ul = d.querySelector('ul');
+    if (ul) uiState.repoScroll[fqdn] = ul.scrollTop;
+  });
+}
+
+function restoreRepoUi(card) {
+  const fqdn = card.dataset.fqdn;
+  const details = card.querySelector('details.repos');
+  if (!details) return;
+  details.open = uiState.openRepos.has(fqdn) || browse.fqdn === fqdn;
+  const ul = details.querySelector('ul');
+  if (ul && uiState.repoScroll[fqdn]) ul.scrollTop = uiState.repoScroll[fqdn];
+  details.addEventListener('toggle', () => {
+    if (details.open) uiState.openRepos.add(fqdn);
+    else uiState.openRepos.delete(fqdn);
+  });
+}
+
+function nodeCardHtml(n, d) {
+  const inv = d.inventory || {};
+  const spot = (d.spot || []).find(s => (n.spot_cloudspace && s.cloudspace === n.spot_cloudspace));
+  const drift = spot && n.dns && n.dns.length && !n.dns.includes(spot.ip);
+  const cfg = n.https_config || {};
+  const repos = cfg.repos || [];
+  const auth = cfg.authorized_repos || [];
+  const missing = n.missing_repos || [];
+  const driftRows = n.drift || [];
+  const tips = n.git_tips || [];
+  const names = [...new Set([...(repos), ...missing])];
+  const repoItems = names.map(name => {
+    const tip = tips.find(t => t.repo === name);
+    const sha = tip && tip.sha ? shortSha(tip.sha) : '';
+    const err = tip && tip.error ? ' ' + tip.error : '';
+    const isMissing = missing.includes(name);
+    const drow = driftRows.find(x => x.repo === name);
+    const mark = isMissing ? ' <span class="bad">missing</span>' : (drow ? ' <span class="warn">drift ' + esc(drow.branch) + '</span>' : '');
+    return `<li><span class="link" onclick="openBrowser('${esc(n.fqdn)}','${esc(name)}')">${esc(name)}</span>` +
+      (sha ? ` <span class="sha">${esc(sha)}</span>` : '') +
+      mark +
+      (err ? ` <span class="bad">${esc(err)}</span>` : '') +
+      `</li>`;
+  }).join('');
+  const extraTips = tips.filter(t => !names.includes(t.repo)).map(t =>
+    `<li class="muted">${esc(t.repo)} ${t.sha ? esc(shortSha(t.sha)) : esc(t.error || '')}</li>`
+  ).join('');
+  const syncClass = !n.healthy ? 'bad' : (!n.sync_ok ? 'warn' : 'ok');
+  const syncLabel = !n.healthy ? 'down' : (!n.sync_ok ? 'sync' : 'up');
+  const repoCountLabel = repos.length
+    ? (repos.length + ' repo' + (repos.length === 1 ? '' : 's'))
+    : (tips.length ? (tips.length + ' repo' + (tips.length === 1 ? '' : 's')) : '0 repos');
+  const syncDetail = !n.sync_ok
+    ? `<div class="warn">${missing.length ? ('missing ' + missing.join(', ')) : ''}` +
+      `${missing.length && driftRows.length ? ' · ' : ''}` +
+      `${driftRows.length ? ('drift ' + driftRows.map(x => x.repo + '@' + x.branch).join(', ')) : ''}</div>`
+    : '';
+  return `
+      <div class="row"><strong>${esc(n.fqdn)}</strong><span class="${syncClass}">${syncLabel}</span></div>
+      <div class="muted">DNS ${ (n.dns||[]).join(', ') || '—' }</div>
+      <div class="muted">tcp 22=${n.tcp22} 443=${n.tcp443} git=${n.tcp_git}</div>
+      <div class="muted">${esc(cfg.relay_server_id || 'no /api/config')}</div>
+      <div class="row">
+        <span>${repoCountLabel}${auth.length ? ' · ' + auth.length + ' authorized' : ''}${n.sync_ok && n.healthy ? ' · in sync' : ''}</span>
+        <span class="link" onclick="openBrowser('${esc(n.fqdn)}')">${(repos.length || tips.length) ? 'Browse' : ''}</span>
+      </div>
+      ${syncDetail}
+      ${spot ? `<div class="${drift ? 'bad' : 'ok'}">Spot ${esc(spot.ip)}${drift ? ' (DNS mismatch)' : ''}</div>` : ''}
+      <details class="repos">
+        <summary class="muted">Repositories</summary>
+        <ul>${repoItems || '<li class="muted">none from /api/config</li>'}${extraTips}</ul>
+      </details>
+      <div class="actions">
+        <button ${inv.vercel_token && spot ? '' : 'disabled'} onclick="point('${esc(n.fqdn)}', '${spot ? esc(spot.ip) : ''}')">Point DNS to Spot IP</button>
+        <button ${inv.admin_ready ? '' : 'disabled'} onclick="confirmJob('Repair (install.sh) ' + '${esc(n.fqdn)}', {kind:'repair', fqdn:'${esc(n.fqdn)}'})">Repair</button>
+        <button class="warn" ${inv.admin_ready ? '' : 'disabled'} onclick="confirmJob('Reclaim (Spot install-only) ' + '${esc(n.fqdn)}', {kind:'reclaim', fqdn:'${esc(n.fqdn)}', ip: '${spot ? esc(spot.ip) : esc((n.dns&&n.dns[0])||'')}'} )">Reclaim</button>
+        <button ${inv.admin_ready ? '' : 'disabled'} onclick="kh('${esc(n.fqdn)}', '${esc((n.dns&&n.dns[0])||'')}')">Reset known_hosts</button>
+      </div>`;
+}
+
+function paintNodes(d) {
+  captureRepoUi();
+  const root = document.getElementById('nodes');
+  const seen = new Set();
+  (d.nodes || []).forEach(n => {
+    seen.add(n.fqdn);
+    let el = root.querySelector(`[data-fqdn="${CSS.escape(n.fqdn)}"]`);
+    if (!el) {
+      el = document.createElement('div');
+      el.dataset.fqdn = n.fqdn;
+      root.appendChild(el);
+    }
+    el.className = 'card' + (browse.fqdn === n.fqdn ? ' sel' : '');
+    el.innerHTML = nodeCardHtml(n, d);
+    restoreRepoUi(el);
+  });
+  root.querySelectorAll('[data-fqdn]').forEach(el => {
+    if (el.dataset.fqdn === 'ingress') return;
+    if (!seen.has(el.dataset.fqdn)) el.remove();
+  });
+  let ing = root.querySelector('[data-fqdn="ingress"]');
+  if (d.ingress) {
+    if (!ing) {
+      ing = document.createElement('div');
+      ing.dataset.fqdn = 'ingress';
+      ing.className = 'card';
+      root.appendChild(ing);
+    }
+    ing.innerHTML = `<div class="row"><strong>${esc(d.ingress.fqdn)}</strong><span class="muted">ingress</span></div>
+      <div class="muted">${esc((d.ingress.dns||[]).join(', ')||'—')}</div>`;
+  } else if (ing) {
+    ing.remove();
+  }
+}
+
 async function snap() {
   const r = await fetch('/api/snapshot');
   const d = await r.json();
+  lastSnap = d;
   document.getElementById('gitlab').textContent = d.gitlab_url || '';
   document.getElementById('source').textContent = d.topology_source || '';
   const inv = d.inventory || {};
@@ -76,38 +248,139 @@ async function snap() {
   document.getElementById('btnDnsDry').disabled = !inv.vercel_token;
   document.getElementById('btnSsh').disabled = !inv.admin_ready;
   document.getElementById('btnDrift').disabled = !inv.admin_ready;
-  const nodes = document.getElementById('nodes');
-  nodes.innerHTML = '';
-  (d.nodes || []).forEach(n => {
-    const spot = (d.spot || []).find(s => (n.spot_cloudspace && s.cloudspace === n.spot_cloudspace));
-    const drift = spot && n.dns && n.dns.length && !n.dns.includes(spot.ip);
-    const el = document.createElement('div');
-    el.className = 'card';
-    el.innerHTML = `
-      <div class="row"><strong>${n.fqdn}</strong><span class="${n.healthy ? 'ok' : 'bad'}">${n.healthy ? 'up' : 'down'}</span></div>
-      <div class="muted">DNS ${ (n.dns||[]).join(', ') || '—' }</div>
-      <div class="muted">tcp 22=${n.tcp22} 443=${n.tcp443} git=${n.tcp_git}</div>
-      <div class="muted">${n.https_config && n.https_config.relay_server_id || 'no /api/config'}</div>
-      ${spot ? `<div class="${drift ? 'bad' : 'ok'}">Spot ${spot.ip}${drift ? ' (DNS mismatch)' : ''}</div>` : ''}
-      <div class="actions">
-        <button ${inv.vercel_token && spot ? '' : 'disabled'} onclick="point('${n.fqdn}', '${spot ? spot.ip : ''}')">Point DNS to Spot IP</button>
-        <button ${inv.admin_ready ? '' : 'disabled'} onclick="confirmJob('Repair (install.sh) ' + '${n.fqdn}', {kind:'repair', fqdn:'${n.fqdn}'})">Repair</button>
-        <button class="warn" ${inv.admin_ready ? '' : 'disabled'} onclick="confirmJob('Reclaim (Spot install-only) ' + '${n.fqdn}', {kind:'reclaim', fqdn:'${n.fqdn}', ip: '${spot ? spot.ip : (n.dns[0]||'')}'})">Reclaim</button>
-        <button ${inv.admin_ready ? '' : 'disabled'} onclick="kh('${n.fqdn}', '${n.dns[0]||''}')">Reset known_hosts</button>
-      </div>`;
-    nodes.appendChild(el);
-  });
-  if (d.ingress) {
-    const el = document.createElement('div');
-    el.className = 'card';
-    el.innerHTML = `<div class="row"><strong>${d.ingress.fqdn}</strong><span class="muted">ingress</span></div>
-      <div class="muted">${(d.ingress.dns||[]).join(', ')||'—'}</div>`;
-    nodes.appendChild(el);
+  const syncNodes = (d.nodes || []).filter(n => n.healthy && n.sync_ok === false);
+  const downNodes = (d.nodes || []).filter(n => !n.healthy);
+  const banner = document.getElementById('syncBanner');
+  if (syncNodes.length || downNodes.length) {
+    const bits = [];
+    if (downNodes.length) bits.push(downNodes.length + ' down');
+    if (syncNodes.length) bits.push(syncNodes.length + ' out of sync with catalog/git tips');
+    banner.className = 'banner warn';
+    banner.textContent = bits.join(' · ') + (d.catalog_repos && d.catalog_repos.length ? ' · catalog ' + d.catalog_repos.length + ' repos' : '');
+  } else {
+    banner.className = 'muted';
+    banner.textContent = (d.catalog_repos && d.catalog_repos.length)
+      ? ('catalog ' + d.catalog_repos.length + ' repos · all nodes in sync')
+      : '';
   }
+  paintNodes(d);
   if (d.job) {
     document.getElementById('log').textContent = (d.job.kind + ' ' + d.job.target + (d.job.running ? ' running' : '') + '\n' + (d.job.log||''));
   }
+  if (browse.fqdn) paintBrowserShell();
 }
+
+function nodeCfg(fqdn) {
+  return (lastSnap && lastSnap.nodes || []).find(n => n.fqdn === fqdn);
+}
+
+function paintBrowserShell() {
+  const panel = document.getElementById('browser');
+  panel.classList.add('on');
+  document.getElementById('browserTitle').textContent = browse.fqdn;
+  const n = nodeCfg(browse.fqdn);
+  const repos = (n && n.https_config && n.https_config.repos) || [];
+  document.getElementById('browserMeta').textContent =
+    repos.length + ' bare repos on this node · git://' + browse.fqdn + ':' + (lastSnap.git_port || 9418);
+  document.getElementById('repoList').innerHTML = repos.map(name =>
+    `<div class="${browse.repo === name ? 'on' : ''} link" onclick="selectRepo('${esc(name)}')">${esc(name)}</div>`
+  ).join('') || '<div class="muted">no repos</div>';
+}
+
+async function openBrowser(fqdn, repo) {
+  browse.fqdn = fqdn;
+  browse.prefix = '';
+  document.getElementById('fileView').textContent = 'Select a file';
+  paintBrowserShell();
+  document.getElementById('browser').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (repo) await selectRepo(repo);
+}
+
+function closeBrowser() {
+  browse.fqdn = null; browse.repo = null; browse.branch = null; browse.prefix = '';
+  document.getElementById('browser').classList.remove('on');
+  snap();
+}
+
+async function selectRepo(repo) {
+  browse.repo = repo;
+  browse.branch = null;
+  browse.prefix = '';
+  paintBrowserShell();
+  document.getElementById('branchList').textContent = 'loading…';
+  document.getElementById('treeList').innerHTML = '';
+  document.getElementById('crumb').textContent = '';
+  document.getElementById('fileView').textContent = 'Select a file';
+  const q = new URLSearchParams({ fqdn: browse.fqdn, repo });
+  const r = await fetch('/api/git/refs?' + q.toString());
+  const d = await r.json();
+  if (!r.ok) {
+    document.getElementById('branchList').innerHTML = `<div class="bad">${esc(d.error || r.status)}</div>`;
+    return;
+  }
+  const rows = Array.isArray(d) ? d : [];
+  document.getElementById('branchList').innerHTML = rows.map(b =>
+    `<div class="link" data-br="${esc(b.name)}" onclick="selectBranch('${esc(b.name)}')">` +
+    `${esc(b.name)} <span class="sha">${esc(shortSha(b.sha))}</span></div>`
+  ).join('') || '<div class="muted">no branches</div>';
+  const prefer = rows.find(b => b.name === 'release') || rows.find(b => b.name === 'main') || rows[0];
+  if (prefer) await selectBranch(prefer.name);
+}
+
+async function selectBranch(name) {
+  browse.branch = name;
+  browse.prefix = '';
+  [...document.querySelectorAll('#branchList [data-br]')].forEach(el => {
+    el.classList.toggle('on', el.getAttribute('data-br') === name);
+  });
+  await loadTree('');
+}
+
+function crumbHtml() {
+  const parts = browse.prefix ? browse.prefix.split('/') : [];
+  let acc = '';
+  let html = `<span class="link" onclick="loadTree('')">${esc(browse.repo)}</span>`;
+  parts.forEach((p, i) => {
+    acc = parts.slice(0, i + 1).join('/');
+    html += ` / <span class="link" onclick="loadTree('${esc(acc)}')">${esc(p)}</span>`;
+  });
+  return html + (browse.branch ? ` <span class="sha">@ ${esc(browse.branch)}</span>` : '');
+}
+
+async function loadTree(prefix) {
+  browse.prefix = prefix || '';
+  document.getElementById('crumb').innerHTML = crumbHtml();
+  document.getElementById('treeList').textContent = 'loading…';
+  const q = new URLSearchParams({ fqdn: browse.fqdn, repo: browse.repo, git_ref: browse.branch, prefix: browse.prefix });
+  const r = await fetch('/api/git/tree?' + q.toString());
+  const d = await r.json();
+  if (!r.ok) {
+    document.getElementById('treeList').innerHTML = `<div class="bad">${esc(d.error || r.status)}</div>`;
+    return;
+  }
+  const rows = Array.isArray(d) ? d : [];
+  document.getElementById('treeList').innerHTML = rows.map(e => {
+    const next = browse.prefix ? browse.prefix + '/' + e.name : e.name;
+    if (e.kind === 'tree') {
+      return `<div class="link" onclick="loadTree('${esc(next)}')">📁 ${esc(e.name)}/</div>`;
+    }
+    return `<div class="link" onclick="openFile('${esc(next)}')">📄 ${esc(e.name)}</div>`;
+  }).join('') || '<div class="muted">empty</div>';
+}
+
+async function openFile(path) {
+  document.getElementById('fileView').textContent = 'loading ' + path + '…';
+  const q = new URLSearchParams({ fqdn: browse.fqdn, repo: browse.repo, git_ref: browse.branch, path });
+  const r = await fetch('/api/git/file?' + q.toString());
+  const d = await r.json();
+  if (!r.ok) {
+    document.getElementById('fileView').textContent = d.error || ('HTTP ' + r.status);
+    return;
+  }
+  const note = (d.binary ? 'binary · ' : '') + (d.truncated ? 'truncated · ' : '');
+  document.getElementById('fileView').textContent = (note ? '# ' + note + d.path + '\n\n' : '') + (d.text || '');
+}
+
 async function refresh() { await fetch('/api/refresh', {method:'POST'}); await snap(); }
 async function act(url, body) {
   const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : '{}'});

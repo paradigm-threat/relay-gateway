@@ -6,6 +6,8 @@ use std::sync::OnceLock;
 pub struct OpsTray {
     pub ui_url: String,
     pub unhealthy: usize,
+    pub down: usize,
+    pub sync: usize,
     pub nodes: usize,
     pub summary: String,
     pub mode: String,
@@ -20,6 +22,8 @@ impl OpsTray {
         Self {
             ui_url,
             unhealthy: 0,
+            down: 0,
+            sync: 0,
             nodes: 0,
             summary: "starting…".into(),
             mode: "Observer".into(),
@@ -92,7 +96,7 @@ impl ksni::Tray for OpsTray {
             .into(),
             MenuItem::Separator,
             StandardItem {
-                label: headline(self.unhealthy, self.nodes, &self.mode),
+                label: headline(self.down, self.nodes, self.sync, &self.mode),
                 enabled: false,
                 ..Default::default()
             }
@@ -109,6 +113,16 @@ impl ksni::Tray for OpsTray {
                 .into(),
             );
         }
+        items.push(MenuItem::Separator);
+        items.push(
+            StandardItem {
+                label: "Quit".into(),
+                icon_name: "application-exit".into(),
+                activate: Box::new(|_| request_quit()),
+                ..Default::default()
+            }
+            .into(),
+        );
         items
     }
 
@@ -119,6 +133,19 @@ impl ksni::Tray for OpsTray {
 
 fn open_ui(url: &str) {
     let _ = Command::new("xdg-open").arg(url).spawn();
+}
+
+/// Stop the user service when we were started by systemd; otherwise exit the process.
+/// `systemctl stop` is `--no-block` so we do not deadlock waiting for our own SIGTERM.
+fn request_quit() {
+    let under_systemd = std::env::var_os("INVOCATION_ID").is_some();
+    if under_systemd {
+        let _ = Command::new("systemctl")
+            .args(["--user", "stop", "--no-block", "relay-ops.service"])
+            .spawn();
+        return;
+    }
+    std::process::exit(0);
 }
 
 /// Canonical Relay mark from `media/icon.png` (same 1024² PNG as client-web / Android).
@@ -265,19 +292,25 @@ fn overlay_attention_dot(img: &mut image::RgbaImage) {
 #[derive(Clone, Debug, Default)]
 pub struct TrayView {
     pub unhealthy: usize,
+    pub down: usize,
+    pub sync: usize,
     pub nodes: usize,
     pub summary: String,
     pub mode: String,
     pub lines: Vec<String>,
 }
 
-pub fn headline(unhealthy: usize, nodes: usize, mode: &str) -> String {
+pub fn headline(down: usize, nodes: usize, sync: usize, mode: &str) -> String {
     if nodes == 0 {
         format!("{mode}  starting…")
-    } else if unhealthy == 0 {
+    } else if down == 0 && sync == 0 {
         format!("{mode}  {nodes} up")
+    } else if down == 0 {
+        format!("{mode}  {nodes} up  ·  {sync} sync")
+    } else if sync == 0 {
+        format!("{mode}  {down} / {nodes} down")
     } else {
-        format!("{mode}  {unhealthy} / {nodes} down")
+        format!("{mode}  {down} / {nodes} down  ·  {sync} sync")
     }
 }
 
@@ -339,15 +372,38 @@ pub fn menu_lines(
                     .map(|s| s.ip.as_str())
             })
         });
-        lines.push(node_line(
-            &n.fqdn,
-            n.healthy,
-            spot_ip,
-            &n.dns,
-            n.tcp443,
-            https_ok,
-            n.tcp_git,
-        ));
+        lines.push({
+            let mut line = node_line(
+                &n.fqdn,
+                n.healthy,
+                spot_ip,
+                &n.dns,
+                n.tcp443,
+                https_ok,
+                n.tcp_git,
+            );
+            if let Some(c) = &n.https_config {
+                let nrepos = if !c.repos.is_empty() {
+                    c.repos.len()
+                } else {
+                    n.git_tips.len()
+                };
+                if nrepos > 0 {
+                    line.push_str(&format!("  {nrepos} repos"));
+                }
+            } else if !n.git_tips.is_empty() {
+                line.push_str(&format!("  {} repos", n.git_tips.len()));
+            }
+            if n.healthy && !n.sync_ok {
+                if !n.missing_repos.is_empty() {
+                    line.push_str(&format!("  missing {}", n.missing_repos.len()));
+                }
+                if !n.drift.is_empty() {
+                    line.push_str(&format!("  drift {}", n.drift.len()));
+                }
+            }
+            line
+        });
     }
     if let Some(ing) = ingress {
         let keep = crate::probe::healthy_node_ips(nodes);
@@ -374,6 +430,8 @@ pub fn spawn_with_updates(
             handle
                 .update(|t| {
                     t.unhealthy = view.unhealthy;
+                    t.down = view.down;
+                    t.sync = view.sync;
                     t.nodes = view.nodes;
                     t.summary = view.summary.clone();
                     t.mode = view.mode.clone();
@@ -461,7 +519,8 @@ mod tests {
 
     #[test]
     fn headline_all_up() {
-        assert_eq!(headline(0, 3, "Admin"), "Admin  3 up");
-        assert_eq!(headline(1, 3, "Observer"), "Observer  1 / 3 down");
+        assert_eq!(headline(0, 3, 0, "Admin"), "Admin  3 up");
+        assert_eq!(headline(1, 3, 0, "Observer"), "Observer  1 / 3 down");
+        assert_eq!(headline(0, 3, 1, "Admin"), "Admin  3 up  ·  1 sync");
     }
 }

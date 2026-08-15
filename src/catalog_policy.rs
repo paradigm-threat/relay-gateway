@@ -131,6 +131,10 @@ pub struct CatalogRepoRecord {
     pub approved_head: Option<String>,
     #[serde(default = "default_publish_branch")]
     pub publish_branch: String,
+    /// FQDN of the Relay that should accept client `receive-pack` / PUT for this repo.
+    /// Empty / omitted: unset (fence not applied). Not a git branch.
+    #[serde(default)]
+    pub publish_origin: Option<String>,
     #[serde(default)]
     pub owner_key_id: Option<String>,
     #[serde(default)]
@@ -566,6 +570,7 @@ mod tests {
             relay_root_commit: "a".repeat(40),
             approved_head: None,
             publish_branch: "release".into(),
+            publish_origin: None,
             owner_key_id: None,
             signing_keys: vec![
                 SigningKeyEntry {
@@ -605,6 +610,7 @@ mod tests {
             relay_root_commit: "a".repeat(40),
             approved_head: None,
             publish_branch: "release".into(),
+            publish_origin: None,
             owner_key_id: None,
             signing_keys: vec![],
             allowed_keys: vec![],
@@ -677,5 +683,35 @@ mod tests {
         )]);
         let map = build_parked_domain_map(&idx).unwrap();
         assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn publish_origin_deserializes_and_defaults_absent() {
+        let with: CatalogRepoRecord = serde_json::from_str(
+            r#"{
+              "repo": "paradigm-threat-files",
+              "tier": "primary",
+              "relay_root_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "publish_branch": "main",
+              "publish_origin": "dfw1.relaygateway.net"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(with.publish_branch, "main");
+        assert_eq!(
+            with.publish_origin.as_deref(),
+            Some("dfw1.relaygateway.net")
+        );
+
+        let without: CatalogRepoRecord = serde_json::from_str(
+            r#"{
+              "repo": "sample",
+              "tier": "primary",
+              "relay_root_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(without.publish_branch, "main");
+        assert_eq!(without.publish_origin, None);
     }
 }

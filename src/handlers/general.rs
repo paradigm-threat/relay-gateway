@@ -823,7 +823,8 @@ pub async fn post_ensure_bare(
     }
 }
 
-/// `POST /api/index/warm/:repo` — JIT-warm SQLite index for a bare repo branch (default `main`).
+/// `POST /api/index/warm/:repo` — full SearchStore regen from git (default branch `main`).
+/// Always rebuilds; leftover `index.db.json` / a matching store head must not skip ingest.
 pub async fn post_index_warm(
     State(state): State<AppState>,
     AxPath(repo): AxPath<String>,
@@ -880,17 +881,9 @@ pub async fn post_index_warm(
             is_verified: true,
             files: Default::default(),
         };
-        if let Some(cfg) = git::read_relay_config(&repo, &tip) {
-            if git::has_index_hook(&cfg) {
-                let lock = git::branch_operation_mutex(ctx.repo_path.clone(), branch.clone());
-                let _guard = lock.lock().unwrap();
-                git::ensure_indexed(&ctx).map_err(|e| e.to_string())?;
-            } else {
-                return Err("repo has no index hook".into());
-            }
-        } else {
-            return Err("no .relay.yaml at tip".into());
-        }
+        let lock = git::branch_operation_mutex(ctx.repo_path.clone(), branch.clone());
+        let _guard = lock.lock().unwrap();
+        git::ensure_indexed_force(&ctx).map_err(|e| e.to_string())?;
         Ok(tip)
     })
     .await;

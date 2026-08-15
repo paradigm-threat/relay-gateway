@@ -1,10 +1,14 @@
 use crate::topology::{FleetFile, FleetNode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::process::Command;
 use tokio::time::timeout;
+
+/// Stay well under git daemon `--max-connections` (default 32) so probes do not
+/// crowd out mesh fetch / receive-pack.
+const LS_REMOTE_CONCURRENCY: usize = 4;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NodeProbe {
@@ -17,6 +21,32 @@ pub struct NodeProbe {
     pub git_tips: Vec<GitTip>,
     pub healthy: bool,
     pub error: Option<String>,
+    #[serde(default)]
+    pub missing_repos: Vec<String>,
+    #[serde(default)]
+    pub drift: Vec<RepoDrift>,
+    /// False when this up node is missing catalog repos or git tips disagree with the fleet.
+    #[serde(default = "sync_ok_default")]
+    pub sync_ok: bool,
+}
+
+#[allow(dead_code)]
+fn sync_ok_default() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RepoDrift {
+    pub repo: String,
+    pub branch: String,
+    pub sha: Option<String>,
+    pub expected_sha: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GitRef {
+    pub name: String,
+    pub sha: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -25,12 +55,49 @@ pub struct ConfigProbe {
     pub relay_server_id: Option<String>,
     pub peers: Vec<String>,
     pub status: u16,
+    #[serde(default)]
+    pub repos: Vec<String>,
+    #[serde(default)]
+    pub authorized_repos: Vec<String>,
+}
+
+/// Subset of gateway `POST /api/status` used for local per-repo tips (schema ≥ 2).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StatusRepo {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub on_disk: bool,
+    #[serde(default)]
+    pub in_catalog: bool,
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub head_branch: Option<String>,
+    #[serde(default)]
+    pub head_sha: Option<String>,
+    #[serde(default)]
+    pub publish_branch: Option<String>,
+    #[serde(default)]
+    pub publish_sha: Option<String>,
+    #[serde(default)]
+    pub branch_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct StatusProbe {
+    pub ok: bool,
+    pub schema_version: u32,
+    pub repos_ok: Option<bool>,
+    pub repos: Vec<StatusRepo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GitTip {
     pub repo: String,
     pub sha: Option<String>,
+    #[serde(default)]
+    pub refs: Vec<GitRef>,
     pub error: Option<String>,
 }
 
@@ -55,6 +122,7 @@ pub async fn probe_fleet(fleet: &FleetFile) -> (Vec<NodeProbe>, Option<IngressPr
         }
     }
     nodes.sort_by(|a, b| a.fqdn.cmp(&b.fqdn));
+    apply_catalog_sync(&mut nodes, &repos);
     let mut live_peers = Vec::new();
     for n in &nodes {
         if let Some(cfg) = &n.https_config {
@@ -78,17 +146,23 @@ pub async fn probe_fleet(fleet: &FleetFile) -> (Vec<NodeProbe>, Option<IngressPr
 
 async fn probe_node(node: &FleetNode, git_port: u16, repos: &[String]) -> NodeProbe {
     let fqdn = node.fqdn.clone();
-    let (dns, tcp22, tcp443, tcp_git, https_config) = tokio::join!(
+    let (dns, tcp22, tcp443, tcp_git, mut https_config, https_status) = tokio::join!(
         resolve_ips(&fqdn),
         tcp_open(&fqdn, 22),
         tcp_open(&fqdn, 443),
         tcp_open(&fqdn, git_port),
         https_api_config(&fqdn),
+        https_api_status(&fqdn),
     );
-    let mut git_tips = Vec::new();
-    for repo in repos {
-        git_tips.push(git_ls_remote(&fqdn, git_port, repo).await);
+    if let (Some(cfg), Some(st)) = (https_config.as_mut(), https_status.as_ref()) {
+        merge_status_into_config(cfg, st);
     }
+    // Prefer local `POST /api/status` tips (no git-daemon). Fall back to bounded
+    // ls-remote on nodes that have not been upgraded (schema < 2).
+    let git_tips = match https_status.as_ref() {
+        Some(s) if s.ok && s.schema_version >= 2 => git_tips_from_status(&s.repos),
+        _ => ls_remote_tips(&fqdn, git_port, https_config.as_ref(), repos).await,
+    };
     let healthy = https_config.as_ref().map(|c| c.ok).unwrap_or(false) && tcp_git;
     NodeProbe {
         fqdn,
@@ -100,7 +174,110 @@ async fn probe_node(node: &FleetNode, git_port: u16, repos: &[String]) -> NodePr
         git_tips,
         healthy,
         error: None,
+        missing_repos: Vec::new(),
+        drift: Vec::new(),
+        sync_ok: true,
     }
+}
+
+fn merge_status_into_config(cfg: &mut ConfigProbe, st: &StatusProbe) {
+    if st.schema_version < 2 {
+        return;
+    }
+    let on_disk: Vec<String> = st
+        .repos
+        .iter()
+        .filter(|r| r.on_disk && !r.name.is_empty())
+        .map(|r| r.name.clone())
+        .collect();
+    let catalog: Vec<String> = st
+        .repos
+        .iter()
+        .filter(|r| r.in_catalog && !r.name.is_empty())
+        .map(|r| r.name.clone())
+        .collect();
+    if !on_disk.is_empty() {
+        cfg.repos = on_disk;
+    }
+    if !catalog.is_empty() {
+        cfg.authorized_repos = catalog;
+    }
+}
+
+pub(crate) fn git_tips_from_status(repos: &[StatusRepo]) -> Vec<GitTip> {
+    let mut tips: Vec<GitTip> = repos
+        .iter()
+        .filter(|r| r.on_disk && !r.name.is_empty())
+        .map(|r| {
+            let mut refs = Vec::new();
+            push_ref(&mut refs, r.publish_branch.as_deref(), r.publish_sha.as_deref());
+            push_ref(&mut refs, r.head_branch.as_deref(), r.head_sha.as_deref());
+            GitTip {
+                repo: r.name.clone(),
+                sha: r
+                    .publish_sha
+                    .clone()
+                    .or_else(|| r.head_sha.clone())
+                    .or_else(|| refs.first().map(|x| x.sha.clone())),
+                refs,
+                error: None,
+            }
+        })
+        .collect();
+    tips.sort_by(|a, b| a.repo.cmp(&b.repo));
+    tips
+}
+
+fn push_ref(refs: &mut Vec<GitRef>, branch: Option<&str>, sha: Option<&str>) {
+    let Some(name) = branch.filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let Some(sha) = sha.filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if refs.iter().any(|r| r.name == name) {
+        return;
+    }
+    refs.push(GitRef {
+        name: name.to_string(),
+        sha: sha.to_string(),
+    });
+}
+
+async fn ls_remote_tips(
+    fqdn: &str,
+    git_port: u16,
+    https_config: Option<&ConfigProbe>,
+    repos: &[String],
+) -> Vec<GitTip> {
+    // Only probe tips for bares that exist (config.repos). Catalog names not on
+    // disk are "missing" without hitting git daemon. Unbounded parallel
+    // ls-remote exceeds git daemon --max-connections (default 32).
+    let mut want: Vec<String> = if let Some(cfg) = https_config {
+        cfg.repos.clone()
+    } else {
+        repos.to_vec()
+    };
+    want.sort();
+    want.dedup();
+    let mut git_tips = Vec::new();
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(LS_REMOTE_CONCURRENCY));
+    let mut set = tokio::task::JoinSet::new();
+    for repo in want {
+        let host = fqdn.to_string();
+        let sem = sem.clone();
+        set.spawn(async move {
+            let _permit = sem.acquire().await;
+            git_ls_remote(&host, git_port, &repo).await
+        });
+    }
+    while let Some(res) = set.join_next().await {
+        if let Ok(tip) = res {
+            git_tips.push(tip);
+        }
+    }
+    git_tips.sort_by(|a, b| a.repo.cmp(&b.repo));
+    git_tips
 }
 
 pub async fn resolve_ips(host: &str) -> Vec<String> {
@@ -142,21 +319,64 @@ async fn https_api_config(host: &str) -> Option<ConfigProbe> {
         .get("relay_server_id")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let peers = body
-        .get("peers")
+    let peers = json_string_vec(&body, "peers");
+    let repos = json_string_vec(&body, "repos");
+    let authorized_repos = json_string_vec(&body, "authorized_repos");
+    Some(ConfigProbe {
+        ok,
+        relay_server_id,
+        peers,
+        status,
+        repos,
+        authorized_repos,
+    })
+}
+
+async fn https_api_status(host: &str) -> Option<StatusProbe> {
+    let url = format!("https://{host}/api/status");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .danger_accept_invalid_certs(false)
+        .build()
+        .ok()?;
+    let resp = client
+        .post(&url)
+        .header("accept", "application/json")
+        .send()
+        .await
+        .ok()?;
+    let ok = resp.status().is_success();
+    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+    Some(parse_status_probe(ok, &body))
+}
+
+pub(crate) fn parse_status_probe(ok: bool, body: &serde_json::Value) -> StatusProbe {
+    let schema_version = body
+        .get("schema_version")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let repos_ok = body.get("repos_ok").and_then(|v| v.as_bool());
+    let repos = body
+        .get("repos")
+        .and_then(|v| serde_json::from_value::<Vec<StatusRepo>>(v.clone()).ok())
+        .unwrap_or_default();
+    StatusProbe {
+        ok,
+        schema_version,
+        repos_ok,
+        repos,
+    }
+}
+
+fn json_string_vec(body: &serde_json::Value, key: &str) -> Vec<String> {
+    body.get(key)
         .and_then(|v| v.as_array())
         .map(|a| {
             a.iter()
                 .filter_map(|x| x.as_str().map(|s| s.to_string()))
                 .collect()
         })
-        .unwrap_or_default();
-    Some(ConfigProbe {
-        ok,
-        relay_server_id,
-        peers,
-        status,
-    })
+        .unwrap_or_default()
 }
 
 async fn git_ls_remote(host: &str, port: u16, repo: &str) -> GitTip {
@@ -164,42 +384,196 @@ async fn git_ls_remote(host: &str, port: u16, repo: &str) -> GitTip {
         return GitTip {
             repo: repo.into(),
             sha: None,
+            refs: Vec::new(),
             error: Some("git not installed".into()),
         };
     }
     let url = format!("git://{host}:{port}/{repo}.git");
     let mut cmd = Command::new("git");
-    cmd.args(["ls-remote", &url, "refs/heads/main"]);
+    cmd.args(["ls-remote", "--heads", &url]);
     match timeout(Duration::from_secs(8), cmd.output()).await {
         Ok(Ok(out)) if out.status.success() => {
-            let text = String::from_utf8_lossy(&out.stdout);
-            let sha = text
-                .split_whitespace()
-                .next()
-                .filter(|s| s.len() >= 7)
-                .map(|s| s.to_string());
+            let refs = crate::browse::parse_ls_remote_heads(&String::from_utf8_lossy(&out.stdout));
+            let refs: Vec<GitRef> = refs
+                .into_iter()
+                .map(|b| GitRef {
+                    name: b.name,
+                    sha: b.sha,
+                })
+                .collect();
+            let sha = preferred_sha(&refs);
             GitTip {
                 repo: repo.into(),
                 sha,
+                refs,
                 error: None,
             }
         }
         Ok(Ok(out)) => GitTip {
             repo: repo.into(),
             sha: None,
+            refs: Vec::new(),
             error: Some(String::from_utf8_lossy(&out.stderr).trim().to_string()),
         },
         Ok(Err(e)) => GitTip {
             repo: repo.into(),
             sha: None,
+            refs: Vec::new(),
             error: Some(e.to_string()),
         },
         Err(_) => GitTip {
             repo: repo.into(),
             sha: None,
+            refs: Vec::new(),
             error: Some("timeout".into()),
         },
     }
+}
+
+fn preferred_sha(refs: &[GitRef]) -> Option<String> {
+    for want in ["release", "main", "master"] {
+        if let Some(r) = refs.iter().find(|r| r.name == want) {
+            return Some(r.sha.clone());
+        }
+    }
+    refs.first().map(|r| r.sha.clone())
+}
+
+/// Catalog repos any node advertised, plus topology `gitRepos`.
+pub fn expected_catalog_repos(nodes: &[NodeProbe], extra: &[String]) -> Vec<String> {
+    let mut set: Vec<String> = Vec::new();
+    fn push(set: &mut Vec<String>, s: &str) {
+        if !s.is_empty() && !set.iter().any(|x| x == s) {
+            set.push(s.to_string());
+        }
+    }
+    for n in nodes {
+        if let Some(cfg) = &n.https_config {
+            for r in &cfg.authorized_repos {
+                push(&mut set, r);
+            }
+        }
+    }
+    if set.is_empty() {
+        for n in nodes {
+            if let Some(cfg) = &n.https_config {
+                for r in &cfg.repos {
+                    push(&mut set, r);
+                }
+            }
+        }
+    }
+    for r in extra {
+        push(&mut set, r);
+    }
+    set.sort();
+    set
+}
+
+pub fn apply_catalog_sync(nodes: &mut [NodeProbe], extra_expected: &[String]) {
+    let expected = expected_catalog_repos(nodes, extra_expected);
+    let canonical = canonical_tips(nodes, &expected);
+    for n in nodes.iter_mut() {
+        n.missing_repos.clear();
+        n.drift.clear();
+        n.sync_ok = true;
+        if !n.healthy {
+            continue;
+        }
+        if n.git_tips
+            .iter()
+            .any(|t| t.error.as_deref() == Some("git not installed"))
+        {
+            continue;
+        }
+        let present: Vec<String> = n
+            .https_config
+            .as_ref()
+            .map(|c| c.repos.clone())
+            .unwrap_or_default();
+        for repo in &expected {
+            let on_disk = present.iter().any(|p| p == repo);
+            if !on_disk {
+                n.missing_repos.push(repo.clone());
+                continue;
+            }
+            // ls-remote errors (timeout, max-connections, etc.) are not "missing".
+            let Some(tip) = n
+                .git_tips
+                .iter()
+                .find(|t| t.repo == *repo && t.error.is_none())
+            else {
+                continue;
+            };
+            for ((repo_key, branch), want_sha) in &canonical {
+                if repo_key != repo {
+                    continue;
+                }
+                let have = tip.refs.iter().find(|r| r.name == *branch).map(|r| r.sha.as_str());
+                if have != Some(want_sha.as_str()) {
+                    n.drift.push(RepoDrift {
+                        repo: repo.clone(),
+                        branch: branch.clone(),
+                        sha: have.map(|s| s.to_string()),
+                        expected_sha: want_sha.clone(),
+                    });
+                }
+            }
+        }
+        n.missing_repos.sort();
+        n.drift.sort_by(|a, b| (&a.repo, &a.branch).cmp(&(&b.repo, &b.branch)));
+        n.sync_ok = n.missing_repos.is_empty() && n.drift.is_empty();
+    }
+}
+
+/// Most common SHA per (repo, branch) among up nodes that advertised that ref.
+fn canonical_tips(
+    nodes: &[NodeProbe],
+    expected: &[String],
+) -> std::collections::BTreeMap<(String, String), String> {
+    use std::collections::HashMap;
+    let mut counts: HashMap<(String, String), HashMap<String, usize>> = HashMap::new();
+    for n in nodes {
+        if !n.healthy {
+            continue;
+        }
+        for tip in &n.git_tips {
+            if !expected.iter().any(|r| r == &tip.repo) || tip.error.is_some() {
+                continue;
+            }
+            for r in &tip.refs {
+                *counts
+                    .entry((tip.repo.clone(), r.name.clone()))
+                    .or_default()
+                    .entry(r.sha.clone())
+                    .or_default() += 1;
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    for (key, shas) in counts {
+        let total: usize = shas.values().sum();
+        if total < 2 {
+            continue;
+        }
+        let Some((sha, _)) = shas.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0))) else {
+            continue;
+        };
+        out.insert(key, sha);
+    }
+    out
+}
+
+pub fn attention_nodes(nodes: &[NodeProbe]) -> usize {
+    nodes.iter().filter(|n| !n.healthy || !n.sync_ok).count()
+}
+
+pub fn down_nodes(nodes: &[NodeProbe]) -> usize {
+    nodes.iter().filter(|n| !n.healthy).count()
+}
+
+pub fn sync_issue_nodes(nodes: &[NodeProbe]) -> usize {
+    nodes.iter().filter(|n| n.healthy && !n.sync_ok).count()
 }
 
 fn which_git() -> Option<()> {
@@ -260,5 +634,192 @@ mod tests {
         };
         let keep = vec!["1.1.1.1".to_string()];
         assert_eq!(dead_ingress_ips(&ingress, &keep), vec!["2.2.2.2".to_string()]);
+    }
+
+    #[test]
+    fn config_probe_reads_repos() {
+        let body: serde_json::Value = serde_json::json!({
+            "relay_server_id": "relay-dfw1",
+            "peers": ["lon1.relaygateway.net"],
+            "repos": ["relay-master", "paradigm-threat-files"],
+            "authorized_repos": ["relay-master"]
+        });
+        let repos = json_string_vec(&body, "repos");
+        let auth = json_string_vec(&body, "authorized_repos");
+        assert_eq!(repos.len(), 2);
+        assert_eq!(auth, vec!["relay-master"]);
+    }
+
+    fn up_node(fqdn: &str, repos: &[&str], authorized: &[&str], tips: Vec<GitTip>) -> NodeProbe {
+        NodeProbe {
+            fqdn: fqdn.into(),
+            dns: vec!["1.1.1.1".into()],
+            tcp22: true,
+            tcp443: true,
+            tcp_git: true,
+            https_config: Some(ConfigProbe {
+                ok: true,
+                relay_server_id: Some(fqdn.into()),
+                peers: vec![],
+                status: 200,
+                repos: repos.iter().map(|s| s.to_string()).collect(),
+                authorized_repos: authorized.iter().map(|s| s.to_string()).collect(),
+            }),
+            git_tips: tips,
+            healthy: true,
+            error: None,
+            missing_repos: vec![],
+            drift: vec![],
+            sync_ok: true,
+        }
+    }
+
+    fn tip(repo: &str, branch: &str, sha: &str) -> GitTip {
+        GitTip {
+            repo: repo.into(),
+            sha: Some(sha.into()),
+            refs: vec![GitRef {
+                name: branch.into(),
+                sha: sha.into(),
+            }],
+            error: None,
+        }
+    }
+
+    #[test]
+    fn missing_catalog_repo_flags_sync() {
+        let mut nodes = vec![
+            up_node(
+                "a.example",
+                &["relay-master", "park"],
+                &["relay-master", "park"],
+                vec![tip("relay-master", "main", "aaa1111"), tip("park", "main", "bbb2222")],
+            ),
+            up_node(
+                "b.example",
+                &["relay-master"],
+                &["relay-master", "park"],
+                vec![tip("relay-master", "main", "aaa1111")],
+            ),
+        ];
+        apply_catalog_sync(&mut nodes, &[]);
+        assert!(nodes[0].sync_ok);
+        assert!(!nodes[1].sync_ok);
+        assert_eq!(nodes[1].missing_repos, vec!["park"]);
+        assert_eq!(sync_issue_nodes(&nodes), 1);
+        assert_eq!(attention_nodes(&nodes), 1);
+    }
+
+    #[test]
+    fn sha_mismatch_flags_drift() {
+        let mut nodes = vec![
+            up_node(
+                "a.example",
+                &["park"],
+                &["park"],
+                vec![tip("park", "release", "aaa1111")],
+            ),
+            up_node(
+                "b.example",
+                &["park"],
+                &["park"],
+                vec![tip("park", "release", "bbb2222")],
+            ),
+            up_node(
+                "c.example",
+                &["park"],
+                &["park"],
+                vec![tip("park", "release", "aaa1111")],
+            ),
+        ];
+        apply_catalog_sync(&mut nodes, &[]);
+        assert!(nodes[0].sync_ok);
+        assert!(!nodes[1].sync_ok);
+        assert_eq!(nodes[1].drift[0].branch, "release");
+        assert_eq!(nodes[1].drift[0].expected_sha, "aaa1111");
+        assert!(nodes[2].sync_ok);
+    }
+
+    #[test]
+    fn ls_remote_error_is_not_missing_repo() {
+        let mut nodes = vec![
+            up_node(
+                "a.example",
+                &["park"],
+                &["park"],
+                vec![tip("park", "main", "aaa1111")],
+            ),
+            up_node(
+                "b.example",
+                &["park"],
+                &["park"],
+                vec![GitTip {
+                    repo: "park".into(),
+                    sha: None,
+                    refs: vec![],
+                    error: Some("fatal: unable to connect".into()),
+                }],
+            ),
+        ];
+        apply_catalog_sync(&mut nodes, &[]);
+        assert!(nodes[1].missing_repos.is_empty());
+        assert!(nodes[1].drift.is_empty());
+        assert!(nodes[1].sync_ok);
+    }
+
+    #[test]
+    fn parse_status_v2_builds_tips_without_ls_remote() {
+        let body = serde_json::json!({
+            "schema_version": 2,
+            "repos_ok": false,
+            "repos": [
+                {
+                    "name": "park",
+                    "on_disk": true,
+                    "in_catalog": true,
+                    "ok": true,
+                    "publish_branch": "main",
+                    "publish_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "head_branch": "main",
+                    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "branch_count": 1
+                },
+                {
+                    "name": "ghost",
+                    "on_disk": false,
+                    "in_catalog": true,
+                    "ok": false,
+                    "publish_branch": "main"
+                }
+            ]
+        });
+        let st = parse_status_probe(true, &body);
+        assert_eq!(st.schema_version, 2);
+        assert_eq!(st.repos_ok, Some(false));
+        let tips = git_tips_from_status(&st.repos);
+        assert_eq!(tips.len(), 1);
+        assert_eq!(tips[0].repo, "park");
+        assert_eq!(
+            tips[0].sha.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        let mut cfg = ConfigProbe {
+            ok: true,
+            relay_server_id: None,
+            peers: vec![],
+            status: 200,
+            repos: vec![],
+            authorized_repos: vec![],
+        };
+        merge_status_into_config(&mut cfg, &st);
+        assert_eq!(cfg.repos, vec!["park"]);
+        assert_eq!(cfg.authorized_repos, vec!["park", "ghost"]);
+    }
+
+    #[test]
+    fn old_status_schema_is_not_treated_as_local_tips() {
+        let st = parse_status_probe(true, &serde_json::json!({"schema_version": 1, "healthy": true}));
+        assert_eq!(st.schema_version, 1);
+        assert!(st.repos.is_empty());
     }
 }

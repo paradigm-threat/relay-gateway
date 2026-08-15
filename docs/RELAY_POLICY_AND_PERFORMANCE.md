@@ -99,6 +99,7 @@ Implementation: [`src/git/ssr_html_cache.rs`](../src/git/ssr_html_cache.rs). Rel
 - **[`RELAY_BRANCH_POLICY.md`](./RELAY_BRANCH_POLICY.md)** — `branchRules` semantics
 - **[`RELAY_BRANCH_POLICY_OPERATOR.md`](./RELAY_BRANCH_POLICY_OPERATOR.md)** — fleet operator checklist
 - **[`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md)** — QUERY LRU; catalog hydrate warm (not SSR)
+- **[`RELAY_PUBLISH_ONCE.md`](./RELAY_PUBLISH_ONCE.md)** — on-commit index vs replica policy skip (plan)
 - **[`PARADIGM_PARK_LOCAL.md`](./PARADIGM_PARK_LOCAL.md)** — local SSR smoke
 - Park tip: `hooks/CLEVERSCRIPT_TIP.md` (P0–P3 + cache layers)
 

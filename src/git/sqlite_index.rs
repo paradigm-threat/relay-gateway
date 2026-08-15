@@ -1,74 +1,33 @@
-//! Default SQLite search/index plugin (`index.db` under `.relay_data/branches/<hash>/`).
-//!
-//! Heavy work stays in Rust: schema, FTS/filter QUERY, and rebuild from JSON collections /
-//! `meta.yaml` sync output. CleverScript must only route (plugin id + args).
+//! Default SQLite search helpers (legacy per-branch `index.db` path + unit-test store).
+//! Production QUERY uses [`crate::git::search_store`] (one node file, `repo`+`branch` columns).
 
+use crate::git::search_store::{
+    effective_filter_fields, store_at_path, SearchStore, StoreKey, UNIT_TEST_BRANCH, UNIT_TEST_REPO,
+};
 use crate::git::indexing::branch_data_dir;
-use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
-use tracing::{info, warn};
+use tracing::info;
 
-/// `.relay_data/branches/<hash>/index.db`
+/// `.relay_data/branches/<hash>/index.db` (legacy per-branch file; QUERY uses the node store).
 pub fn sqlite_db_path(repo_path: &Path, branch: &str) -> PathBuf {
     branch_data_dir(repo_path, branch).join("index.db")
 }
 
-fn open_db(path: &Path) -> anyhow::Result<Connection> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let conn = Connection::open(path)?;
-    conn.execute_batch(
-        "
-        PRAGMA journal_mode=WAL;
-        CREATE TABLE IF NOT EXISTS meta (
-            key TEXT PRIMARY KEY NOT NULL,
-            value TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS docs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            collection TEXT NOT NULL,
-            doc_id TEXT NOT NULL,
-            json TEXT NOT NULL,
-            search_text TEXT NOT NULL DEFAULT '',
-            UNIQUE(collection, doc_id)
-        );
-        CREATE INDEX IF NOT EXISTS docs_collection_sort_key
-            ON docs(collection, json_extract(json, '$.sort_key'));
-        CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
-            search_text,
-            content='docs',
-            content_rowid='id'
-        );
-        ",
-    )?;
-    Ok(conn)
+fn unit_key() -> StoreKey {
+    StoreKey::new(UNIT_TEST_REPO, UNIT_TEST_BRANCH)
 }
 
-fn set_meta(conn: &Connection, key: &str, value: &str) -> anyhow::Result<()> {
-    conn.execute(
-        "INSERT INTO meta(key, value) VALUES (?1, ?2)
-         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        params![key, value],
-    )?;
-    Ok(())
+fn unit_store(db_path: &Path) -> anyhow::Result<std::sync::Arc<crate::git::search_store::SqliteSearchStore>> {
+    store_at_path(db_path)
 }
 
-/// `metadata.indexed_head` from SQLite, if present.
+/// `metadata.indexed_head` from the unit-test / path-keyed store.
 pub fn read_indexed_head(db_path: &Path) -> anyhow::Result<Option<String>> {
     if !db_path.exists() {
         return Ok(None);
     }
-    let conn = Connection::open(db_path)?;
-    let v: Option<String> = conn
-        .query_row(
-            "SELECT value FROM meta WHERE key = 'indexed_head'",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
-    Ok(v)
+    unit_store(db_path)?.docs_indexed_head(&unit_key())
 }
 
 /// Number of docs in a collection (0 if DB missing).
@@ -76,15 +35,10 @@ pub fn count_collection_docs(db_path: &Path, collection: &str) -> anyhow::Result
     if !db_path.exists() {
         return Ok(0);
     }
-    let conn = Connection::open(db_path)?;
-    let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM docs WHERE collection = ?1",
-        params![collection],
-        |r| r.get(0),
-    )?;
-    Ok(n as u64)
+    unit_store(db_path)?.count_docs(&unit_key(), collection)
 }
 
+#[allow(dead_code)]
 fn doc_id_for(doc: &Value, fallback_index: usize, id_fields: Option<&[String]>) -> String {
     if let Some(fields) = id_fields {
         for k in fields {
@@ -107,6 +61,7 @@ fn doc_id_for(doc: &Value, fallback_index: usize, id_fields: Option<&[String]>) 
     format!("row-{fallback_index}")
 }
 
+#[allow(dead_code)]
 fn search_text_for(doc: &Value, fts_fields: Option<&[String]>) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(fields) = fts_fields {
@@ -157,124 +112,32 @@ fn search_text_for(doc: &Value, fts_fields: Option<&[String]>) -> String {
     parts.join(" ")
 }
 
-fn insert_doc(
-    conn: &Connection,
-    collection: &str,
-    doc: &Value,
-    index: usize,
-    id_fields: Option<&[String]>,
-    fts_fields: Option<&[String]>,
-) -> anyhow::Result<()> {
-    let doc_id = doc_id_for(doc, index, id_fields);
-    let json = serde_json::to_string(doc)?;
-    let search_text = search_text_for(doc, fts_fields);
-    conn.execute(
-        "INSERT INTO docs(collection, doc_id, json, search_text) VALUES (?1, ?2, ?3, ?4)",
-        params![collection, doc_id, json, search_text],
-    )?;
-    let id: i64 = conn.last_insert_rowid();
-    conn.execute(
-        "INSERT INTO docs_fts(rowid, search_text) VALUES (?1, ?2)",
-        params![id, search_text],
-    )?;
-    Ok(())
-}
-
-fn upsert_doc(
-    conn: &Connection,
-    collection: &str,
-    doc: &Value,
-    index: usize,
-    id_fields: Option<&[String]>,
-    fts_fields: Option<&[String]>,
-) -> anyhow::Result<()> {
-    let doc_id = doc_id_for(doc, index, id_fields);
-    let json = serde_json::to_string(doc)?;
-    let search_text = search_text_for(doc, fts_fields);
-    if let Ok(old_id) = conn.query_row(
-        "SELECT id FROM docs WHERE collection = ?1 AND doc_id = ?2",
-        params![collection, doc_id],
-        |r| r.get::<_, i64>(0),
-    ) {
-        let _ = conn.execute("DELETE FROM docs_fts WHERE rowid = ?1", params![old_id]);
-        conn.execute(
-            "UPDATE docs SET json = ?1, search_text = ?2 WHERE id = ?3",
-            params![json, search_text, old_id],
-        )?;
-        conn.execute(
-            "INSERT INTO docs_fts(rowid, search_text) VALUES (?1, ?2)",
-            params![old_id, search_text],
-        )?;
-    } else {
-        insert_doc(conn, collection, doc, index, id_fields, fts_fields)?;
-    }
-    Ok(())
-}
-
-fn replace_collection(
-    conn: &Connection,
-    collection: &str,
-    docs: &[Value],
-    id_fields: Option<&[String]>,
-    fts_fields: Option<&[String]>,
-) -> anyhow::Result<()> {
-    conn.execute(
-        "DELETE FROM docs_fts WHERE rowid IN (SELECT id FROM docs WHERE collection = ?1)",
-        params![collection],
-    )?;
-    conn.execute(
-        "DELETE FROM docs WHERE collection = ?1",
-        params![collection],
-    )?;
-    for (i, doc) in docs.iter().enumerate() {
-        insert_doc(conn, collection, doc, i, id_fields, fts_fields)?;
-    }
-    Ok(())
-}
-
-fn merge_collection(
-    conn: &Connection,
-    collection: &str,
-    docs: &[Value],
-    id_fields: Option<&[String]>,
-    fts_fields: Option<&[String]>,
-) -> anyhow::Result<()> {
-    for (i, doc) in docs.iter().enumerate() {
-        upsert_doc(conn, collection, doc, i, id_fields, fts_fields)?;
-    }
-    Ok(())
-}
-
-/// Rebuild SQLite collections from `index.db.json` and stamp `indexed_head`.
+/// Rebuild collections from `index.db.json` and stamp `docs_indexed_head`.
 pub fn sync_json_to_sqlite(json_path: &Path, db_path: &Path) -> anyhow::Result<()> {
     if !json_path.exists() {
         return Ok(());
     }
     let text = std::fs::read_to_string(json_path)?;
     let v: Value = serde_json::from_str(&text)?;
-    let conn = open_db(db_path)?;
-    let tx = conn.unchecked_transaction()?;
-
+    let store = unit_store(db_path)?;
+    let key = unit_key();
     if let Some(map) = v.get("collections").and_then(|c| c.as_object()) {
         for (name, val) in map {
             let docs = match val {
                 Value::Array(a) => a.clone(),
                 _ => continue,
             };
-            replace_collection(&tx, name, &docs, None, None)?;
+            store.replace_collection(&key, name, &docs, None, None, None)?;
             info!(collection = %name, docs = docs.len(), "sqlite sync_json replace");
         }
     }
-
     if let Some(head) = v
         .get("metadata")
         .and_then(|x| x.get("indexed_head"))
-        .and_then(|x| x.as_str())
+        .and_then(|h| h.as_str())
     {
-        set_meta(&tx, "indexed_head", head)?;
+        store.set_docs_indexed_head(&key, head)?;
     }
-
-    tx.commit()?;
     Ok(())
 }
 
@@ -296,13 +159,14 @@ pub fn replace_collection_docs_with_fields(
     id_fields: Option<&[String]>,
     fts_fields: Option<&[String]>,
 ) -> anyhow::Result<()> {
-    let conn = open_db(db_path)?;
-    let tx = conn.unchecked_transaction()?;
-    replace_collection(&tx, collection, docs, id_fields, fts_fields)?;
-    if let Some(head) = indexed_head {
-        set_meta(&tx, "indexed_head", head)?;
-    }
-    tx.commit()?;
+    unit_store(db_path)?.replace_collection(
+        &unit_key(),
+        collection,
+        docs,
+        id_fields,
+        fts_fields,
+        indexed_head,
+    )?;
     info!(
         collection = %collection,
         docs = docs.len(),
@@ -321,13 +185,14 @@ pub fn merge_collection_docs_with_fields(
     id_fields: Option<&[String]>,
     fts_fields: Option<&[String]>,
 ) -> anyhow::Result<()> {
-    let conn = open_db(db_path)?;
-    let tx = conn.unchecked_transaction()?;
-    merge_collection(&tx, collection, docs, id_fields, fts_fields)?;
-    if let Some(head) = indexed_head {
-        set_meta(&tx, "indexed_head", head)?;
-    }
-    tx.commit()?;
+    unit_store(db_path)?.merge_collection(
+        &unit_key(),
+        collection,
+        docs,
+        id_fields,
+        fts_fields,
+        indexed_head,
+    )?;
     info!(
         collection = %collection,
         docs = docs.len(),
@@ -522,6 +387,7 @@ fn row_matches_object_filter(item: &Value, q_obj: &Map<String, Value>) -> bool {
 
 /// Build `AND json_extract(json, '$.field') …` clauses with bound params.
 /// Field names are allowlisted identifiers only (never user-controlled SQL).
+#[allow(dead_code)]
 fn object_filter_sql(
     preds: &[(String, FieldPred)],
 ) -> Option<(String, Vec<String>)> {
@@ -563,6 +429,7 @@ fn object_filter_sql(
     Some((sql, binds))
 }
 
+#[allow(dead_code)]
 fn order_by_sql_fragment(order: QueryOrder) -> &'static str {
     match order {
         QueryOrder::Random => "ORDER BY RANDOM()",
@@ -597,7 +464,7 @@ pub enum QueryOrder {
     SortKeyAsc,
     /// `ORDER BY sort_key DESC`, then stable document id.
     SortKeyDesc,
-    /// `ORDER BY RANDOM()` — full scan; callers should cap `limit` (see [`clamp_query_limit`]).
+    /// Portable random: candidate cap then shuffle in Rust (not engine `RANDOM()`).
     Random,
 }
 
@@ -671,181 +538,16 @@ pub fn query_collection_ordered(
     if !db_path.exists() {
         return Ok(vec![]);
     }
-    let conn = Connection::open(db_path)?;
-    let lim = clamp_query_limit(order, limit);
-
-    let mut rows: Vec<Value> = Vec::new();
-
-    match query {
-        Some(Value::String(q_str)) if !q_str.trim().is_empty() => {
-            let match_q = fts_match_query(q_str);
-            if match_q.is_empty() {
-                return Ok(vec![]);
-            }
-            let sql = match order {
-                QueryOrder::Random => {
-                    "SELECT d.json FROM docs d
-                     WHERE d.collection = ?1
-                       AND d.id IN (
-                         SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?2
-                       )
-                     ORDER BY RANDOM()
-                     LIMIT ?3"
-                }
-                QueryOrder::PathAsc => {
-                    "SELECT d.json FROM docs d
-                     WHERE d.collection = ?1
-                       AND d.id IN (
-                         SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?2
-                       )
-                     ORDER BY json_extract(d.json, '$.path') ASC
-                     LIMIT ?3"
-                }
-                QueryOrder::PathDesc => {
-                    "SELECT d.json FROM docs d
-                     WHERE d.collection = ?1
-                       AND d.id IN (
-                         SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?2
-                       )
-                     ORDER BY json_extract(d.json, '$.path') DESC
-                     LIMIT ?3"
-                }
-                QueryOrder::SortKeyAsc => {
-                    "SELECT d.json FROM docs d
-                     WHERE d.collection = ?1
-                       AND d.id IN (
-                         SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?2
-                       )
-                     ORDER BY coalesce(
-                       json_extract(d.json, '$.sort_key'),
-                       json_extract(d.json, '$.md_path'),
-                       json_extract(d.json, '$.path')
-                     ) ASC, d.doc_id ASC
-                     LIMIT ?3"
-                }
-                QueryOrder::SortKeyDesc => {
-                    "SELECT d.json FROM docs d
-                     WHERE d.collection = ?1
-                       AND d.id IN (
-                         SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?2
-                       )
-                     ORDER BY coalesce(
-                       json_extract(d.json, '$.sort_key'),
-                       json_extract(d.json, '$.md_path'),
-                       json_extract(d.json, '$.path')
-                     ) DESC, d.doc_id DESC
-                     LIMIT ?3"
-                }
-            };
-            let mut stmt = conn.prepare(sql)?;
-            let iter = match stmt.query_map(params![collection, match_q, lim as i64], |r| {
-                let json: String = r.get(0)?;
-                Ok(json)
-            }) {
-                Ok(i) => i,
-                Err(e) => {
-                    warn!(error = %e, match_q = %match_q, "fts MATCH failed; returning empty");
-                    return Ok(vec![]);
-                }
-            };
-            for item in iter {
-                let json = match item {
-                    Ok(j) => j,
-                    Err(e) => {
-                        warn!(error = %e, match_q = %match_q, "fts MATCH row failed; returning empty");
-                        return Ok(vec![]);
-                    }
-                };
-                if let Ok(v) = serde_json::from_str::<Value>(&json) {
-                    rows.push(project_row(v, fields));
-                }
-            }
-        }
-        Some(Value::Object(q_obj)) => {
-            let Some(preds) = parse_object_predicates(q_obj) else {
-                return Ok(vec![]);
-            };
-            let Some((filter_sql, filter_binds)) = object_filter_sql(&preds) else {
-                return Ok(vec![]);
-            };
-            let order_sql = order_by_sql_fragment(order);
-            let lim_idx = 2 + filter_binds.len();
-            let sql = format!(
-                "SELECT json FROM docs WHERE collection = ?1{filter_sql} {order_sql} LIMIT ?{lim_idx}"
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            let mut sql_params: Vec<rusqlite::types::Value> =
-                Vec::with_capacity(2 + filter_binds.len());
-            sql_params.push(rusqlite::types::Value::Text(collection.to_string()));
-            for b in filter_binds {
-                sql_params.push(rusqlite::types::Value::Text(b));
-            }
-            sql_params.push(rusqlite::types::Value::Integer(lim as i64));
-            let iter = stmt.query_map(rusqlite::params_from_iter(sql_params), |r| {
-                let json: String = r.get(0)?;
-                Ok(json)
-            })?;
-            for item in iter {
-                let json = item?;
-                if let Ok(v) = serde_json::from_str::<Value>(&json) {
-                    // Defense in depth: re-check predicates in Rust.
-                    if row_matches_predicates(&v, &preds) {
-                        rows.push(project_row(v, fields));
-                    }
-                }
-            }
-        }
-        _ => {
-            let sql = match order {
-                QueryOrder::Random => {
-                    "SELECT json FROM docs WHERE collection = ?1
-                     ORDER BY RANDOM()
-                     LIMIT ?2"
-                }
-                QueryOrder::PathAsc => {
-                    "SELECT json FROM docs WHERE collection = ?1
-                     ORDER BY json_extract(json, '$.path') ASC
-                     LIMIT ?2"
-                }
-                QueryOrder::PathDesc => {
-                    "SELECT json FROM docs WHERE collection = ?1
-                     ORDER BY json_extract(json, '$.path') DESC
-                     LIMIT ?2"
-                }
-                QueryOrder::SortKeyAsc => {
-                    "SELECT json FROM docs WHERE collection = ?1
-                     ORDER BY coalesce(
-                       json_extract(json, '$.sort_key'),
-                       json_extract(json, '$.md_path'),
-                       json_extract(json, '$.path')
-                     ) ASC, doc_id ASC
-                     LIMIT ?2"
-                }
-                QueryOrder::SortKeyDesc => {
-                    "SELECT json FROM docs WHERE collection = ?1
-                     ORDER BY coalesce(
-                       json_extract(json, '$.sort_key'),
-                       json_extract(json, '$.md_path'),
-                       json_extract(json, '$.path')
-                     ) DESC, doc_id DESC
-                     LIMIT ?2"
-                }
-            };
-            let mut stmt = conn.prepare(sql)?;
-            let iter = stmt.query_map(params![collection, lim as i64], |r| {
-                let json: String = r.get(0)?;
-                Ok(json)
-            })?;
-            for item in iter {
-                let json = item?;
-                if let Ok(v) = serde_json::from_str::<Value>(&json) {
-                    rows.push(project_row(v, fields));
-                }
-            }
-        }
-    }
-
-    Ok(rows)
+    let filters = effective_filter_fields(None);
+    unit_store(db_path)?.query(
+        &unit_key(),
+        collection,
+        query,
+        fields,
+        limit,
+        order,
+        &filters,
+    )
 }
 
 /// Flatten nested paradigm-threat / catalog `index.json` into searchable docs.

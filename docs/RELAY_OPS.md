@@ -44,7 +44,7 @@ Global flags (before or with clap long opts): `--gitlab`, `--env-file`, `--only=
 | Command | Needs | Notes |
 |---------|--------|--------|
 | `hosts` | GitLab URL | Print FQDNs / SSH user / identity |
-| `status` | GitLab URL | JSON probes: DNS, TCP, HTTPS `/api/config`, git:// |
+| `status` | GitLab URL | JSON probes: DNS, TCP, HTTPS `/api/config` + `/api/status` (local repo tips; git:// ls-remote only on old nodes) |
 | `health` | GitLab URL | QUERY smoke (+ `--mcp` if checkout has validators) |
 | `ssl` | GitLab URL | HTTPS report |
 | `inventory` | — | Local capability JSON |
@@ -97,6 +97,8 @@ cp ops/config.toml.example ~/.config/relay-ops/config.toml
 Bind is loopback-only by default.
 
 UI **Repair** = remote `install.sh repair`. UI **Reclaim** = Spot install-only (confirm-gated). `bootstrap-ssh` and destructive `reinstall` stay CLI-only.
+
+Each node card shows the **bare repo count** and SHAs from that host’s **`POST /api/status`** (`schema_version` ≥ 2: local git tips, no git-daemon). Older nodes fall back to `POST /api/config` plus `git ls-remote --heads` with **4 concurrent connections per host** (under git daemon `--max-connections`, default **32**). **Missing** means a catalog name is not on disk. An `ls-remote` timeout is **not** treated as missing. SHA drift still marks `sync`. Tray lines look like `dfw1  up  12 repos` (or `missing` / `drift` when out of sync). **Quit** stops the user service (`systemctl --user stop relay-ops`) or exits a foreground `serve`. **Browse** opens a git:// file browser. Observer; no SSH.
 
 On Linux, `serve` shows a GNOME AppIndicator using the canonical Relay mark (`media/icon.png`; red dot if any node is down). The menu lists each node (up / DOWN, DNS≠Spot, https/git) plus fleet A. Click opens the UI. `install-service` copies the binary to `~/.local/bin/relay-ops`, enables a user systemd unit, and writes `~/.config/autostart/relay-ops.desktop` so it returns at login.
 

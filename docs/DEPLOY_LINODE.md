@@ -97,7 +97,7 @@ After **`install.sh`** (or an equivalent tarball install) has created **`/opt/re
 | **Atlanta3** | `curl -sS -X POST 'https://atlanta3.relaygateway.net/api/status?format=html'` | `curl -sS -X POST 'https://atlanta3.relaygateway.net/api/status'` | `curl -sS -X POST 'https://atlanta3.relaygateway.net/api/config'` |
 | **JP (Osaka)** | `curl -sS -X POST 'https://jp-osa.relaygateway.net/api/status?format=html'` | `curl -sS -X POST 'https://jp-osa.relaygateway.net/api/status'` | `curl -sS -X POST 'https://jp-osa.relaygateway.net/api/config'` |
 
-**`/api/config`** returns **JSON only** (no HTML). **`POST /api/status`** defaults to JSON; use **`?format=html`** or **`Accept: text/html`** for the operator page body. For load checks, **`?strict=1`** returns HTTP **503** when any configured peer probe fails.
+**`/api/config`** returns **JSON only** (no HTML). **`POST /api/status`** defaults to JSON; use **`?format=html`** or **`Accept: text/html`** for the operator page body (includes a **per-repo** table from local bares — catalog vs on disk, publish SHA). For load checks, **`?strict=1`** returns HTTP **503** when any configured peer probe fails (`repos_ok` is independent of `strict`).
 
 **Redeploy to masters (e.g. atlanta2 / atlanta3 / jp-osa):** build **`relay-linode-deploy.tgz`** on a trusted machine (**`./scripts/pack-linode-deploy.sh`**; see **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)**). Copy to each host and run **`sudo ./install.sh update`** from the unpacked bundle (or replace **`/opt/relay/bin/relay-gateway`** and **`relay-hook-handler`**, then **`sudo systemctl restart relay-gateway relay-git-daemon`**). Confirm with **`curl -sS -X POST 'http://127.0.0.1:8080/api/config' | head -c 400`** on the VM.
 

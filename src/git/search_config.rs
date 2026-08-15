@@ -26,6 +26,10 @@ pub struct SearchCollectionConfig {
     pub id_fields: Option<Vec<String>>,
     #[serde(default, rename = "ftsFields")]
     pub fts_fields: Option<Vec<String>>,
+    #[serde(default, rename = "filterFields")]
+    pub filter_fields: Option<Vec<String>>,
+    #[serde(default, rename = "sortFields")]
+    pub sort_fields: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -106,6 +110,8 @@ impl SearchFileConfig {
                 ],
                 id_fields: None,
                 fts_fields: None,
+                filter_fields: None,
+                sort_fields: None,
             },
         );
         collections.insert(
@@ -117,6 +123,8 @@ impl SearchFileConfig {
                 }],
                 id_fields: None,
                 fts_fields: None,
+                filter_fields: None,
+                sort_fields: None,
             },
         );
         Self {
@@ -215,6 +223,8 @@ collections:
         mode: merge
     idFields: [path, _meta_dir, id]
     ftsFields: [_title, title, _keywords, keywords, description]
+    filterFields: [content_kind, type, path, id]
+    sortFields: [path, sort_key, md_path]
   events:
     sources:
       - type: events_json
@@ -226,6 +236,15 @@ collections:
         assert_eq!(c.plugin.as_deref(), Some("sqlite"));
         let idx = c.collection("index").unwrap();
         assert_eq!(idx.sources.len(), 2);
+        assert_eq!(
+            idx.filter_fields.as_ref().unwrap(),
+            &[
+                "content_kind".to_string(),
+                "type".to_string(),
+                "path".to_string(),
+                "id".to_string()
+            ]
+        );
         assert!(matches!(
             &idx.sources[1],
             SearchSource::PathIndex {

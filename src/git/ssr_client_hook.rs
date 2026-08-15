@@ -107,9 +107,10 @@ impl RepoFetchHost {
             .map(|n| n as usize);
         let query = body.get("query").cloned();
 
-        let db = crate::git::indexing::branch_sqlite_path(&self.repo_path, &self.branch);
-        let rows = crate::git::sqlite_index::query_collection(
-            &db,
+        let rows = crate::git::search_plugins::run_plugin(
+            crate::git::search_plugins::PLUGIN_SQLITE,
+            &self.repo_path,
+            &self.branch,
             collection,
             query.as_ref(),
             None,

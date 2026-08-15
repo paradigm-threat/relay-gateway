@@ -1,0 +1,10 @@
+{
+  "schema": "relay.catalog-repo.v1",
+  "repo": "paradigm-threat-files",
+  "tier": "primary",
+  "forge_url": "https://gitlab.com/example/paradigm-threat-files.git",
+  "relay_root_commit": "0000000000000000000000000000000000000000",
+  "publish_branch": "main",
+  "publish_origin": "dfw1.relaygateway.net",
+  "signing_keys_source": "repo"
+}

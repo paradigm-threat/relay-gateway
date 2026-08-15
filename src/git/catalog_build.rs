@@ -1,6 +1,7 @@
 //! Build SQLite catalog docs from the tip tree (no committed index.json / events.json).
 //! Parity targets: paradigm-threat `generate-index.py` / `build-events-from-content.py`.
 
+use git2::{ObjectType, Repository, TreeWalkMode};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -61,6 +62,27 @@ fn re_hash_kw() -> &'static Regex {
 }
 
 fn git_ls_tree(repo: &Path, commit: &str) -> Result<Vec<String>, String> {
+    git2_ls_tree(repo, commit).or_else(|_| git_ls_tree_cli(repo, commit))
+}
+
+fn git2_ls_tree(repo: &Path, commit: &str) -> Result<Vec<String>, String> {
+    let r = Repository::open(repo).map_err(|e| e.to_string())?;
+    let oid = git2::Oid::from_str(commit).map_err(|e| e.to_string())?;
+    let commit = r.find_commit(oid).map_err(|e| e.to_string())?;
+    let tree = commit.tree().map_err(|e| e.to_string())?;
+    let mut paths = Vec::new();
+    tree.walk(TreeWalkMode::PreOrder, |dir, entry| {
+        if entry.kind() == Some(ObjectType::Blob) {
+            let name = entry.name().unwrap_or("");
+            paths.push(format!("{dir}{name}"));
+        }
+        0
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(paths)
+}
+
+fn git_ls_tree_cli(repo: &Path, commit: &str) -> Result<Vec<String>, String> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -81,6 +103,17 @@ fn git_ls_tree(repo: &Path, commit: &str) -> Result<Vec<String>, String> {
 }
 
 fn git_show(repo: &Path, commit: &str, path: &str) -> Option<String> {
+    git2_show(repo, commit, path).or_else(|| git_show_cli(repo, commit, path))
+}
+
+fn git2_show(repo: &Path, commit: &str, path: &str) -> Option<String> {
+    let r = Repository::open(repo).ok()?;
+    let obj = r.revparse_single(&format!("{commit}:{path}")).ok()?;
+    let blob = obj.peel_to_blob().ok()?;
+    String::from_utf8(blob.content().to_vec()).ok()
+}
+
+fn git_show_cli(repo: &Path, commit: &str, path: &str) -> Option<String> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -94,67 +127,31 @@ fn git_show(repo: &Path, commit: &str, path: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Last commit touching a path: committer ISO date + full hash.
+fn git2_commit_iso(repo: &Path, commit: &str) -> Option<String> {
+    let r = Repository::open(repo).ok()?;
+    let oid = git2::Oid::from_str(commit).ok()?;
+    let c = r.find_commit(oid).ok()?;
+    let t = c.time();
+    chrono_from_git_time(t.seconds())
+}
+
+fn chrono_from_git_time(secs: i64) -> Option<String> {
+    let odt = time::OffsetDateTime::from_unix_timestamp(secs).ok()?;
+    Some(format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        odt.year(),
+        u8::from(odt.month()),
+        odt.day(),
+        odt.hour(),
+        odt.minute(),
+        odt.second()
+    ))
+}
+
+/// Last commit touching a path: committer ISO date + full hash (tip commit for on-commit ingest).
 struct PathCommitMeta {
     updated: String,
     commit: String,
-}
-
-fn git_path_last_commit_times(
-    repo: &Path,
-    commit: &str,
-) -> Result<HashMap<String, PathCommitMeta>, String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .arg("log")
-        .arg("--no-renames")
-        .arg("--name-only")
-        .arg("--pretty=format:%H %cI")
-        .arg(commit)
-        .output()
-        .map_err(|e| format!("git log path times: {}", e))?;
-    if !out.status.success() {
-        return Err(format!(
-            "git log path times failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
-
-    let mut current: Option<PathCommitMeta> = None;
-    let mut by_path = HashMap::new();
-    for raw in String::from_utf8_lossy(&out.stdout).lines() {
-        let line = raw.trim();
-        if line.is_empty() {
-            continue;
-        }
-        // Header: "<40-hex> <ISO-8601>"
-        if let Some((hash, iso)) = line.split_once(' ') {
-            let iso = iso.trim();
-            if hash.len() == 40
-                && hash.bytes().all(|b| b.is_ascii_hexdigit())
-                && iso.len() >= 20
-                && iso.as_bytes().get(4) == Some(&b'-')
-                && iso.as_bytes().get(7) == Some(&b'-')
-                && iso.as_bytes().get(10) == Some(&b'T')
-            {
-                current = Some(PathCommitMeta {
-                    updated: iso.to_string(),
-                    commit: hash.to_string(),
-                });
-                continue;
-            }
-        }
-        if let Some(ref meta) = current {
-            by_path
-                .entry(line.to_string())
-                .or_insert_with(|| PathCommitMeta {
-                    updated: meta.updated.clone(),
-                    commit: meta.commit.clone(),
-                });
-        }
-    }
-    Ok(by_path)
 }
 
 fn path_excluded(path: &str, scoped_root: Option<&str>) -> bool {
@@ -252,33 +249,85 @@ pub fn build_path_tree_docs_scoped(
 ) -> Result<Vec<Value>, String> {
     let scoped_root = root.map(|r| r.trim_matches('/').to_string());
     let paths = git_ls_tree(repo, commit)?;
-    let path_times = git_path_last_commit_times(repo, commit).unwrap_or_default();
+    let tip_iso = git2_commit_iso(repo, commit);
+    let tip_meta = tip_iso.map(|iso| PathCommitMeta {
+        updated: iso,
+        commit: commit.to_string(),
+    });
     let mut docs = Vec::new();
     for path in paths {
-        if let Some(ref prefix) = scoped_root {
-            if path != *prefix && !path.starts_with(&format!("{}/", prefix)) {
-                continue;
-            }
+        if let Some(doc) = path_tree_doc_for(
+            repo,
+            commit,
+            &path,
+            scoped_root.as_deref(),
+            tip_meta.as_ref(),
+        ) {
+            docs.push(doc);
         }
-        if path_excluded(&path, scoped_root.as_deref()) {
-            continue;
-        }
-        let ext = ext_of(&path);
-        let is_hooks_cs = ext == ".cs" && path.starts_with("hooks/");
-        if !INCLUDE_EXTS.contains(&ext.as_str()) && !is_hooks_cs {
-            continue;
-        }
+    }
+    Ok(docs)
+}
 
-        let mut doc = Map::new();
-        doc.insert("path".into(), Value::String(path.clone()));
-        let basename = Path::new(&path)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(&path)
-            .to_string();
+/// Build path_tree docs for an explicit path list (incremental ingest).
+pub fn build_path_tree_docs_for_paths(
+    repo: &Path,
+    commit: &str,
+    root: Option<&str>,
+    paths: &[String],
+) -> Result<Vec<Value>, String> {
+    let scoped_root = root.map(|r| r.trim_matches('/').to_string());
+    let tip_iso = git2_commit_iso(repo, commit);
+    let tip_meta = tip_iso.map(|iso| PathCommitMeta {
+        updated: iso,
+        commit: commit.to_string(),
+    });
+    let mut docs = Vec::new();
+    for path in paths {
+        if let Some(doc) = path_tree_doc_for(
+            repo,
+            commit,
+            path,
+            scoped_root.as_deref(),
+            tip_meta.as_ref(),
+        ) {
+            docs.push(doc);
+        }
+    }
+    Ok(docs)
+}
+
+fn path_tree_doc_for(
+    repo: &Path,
+    commit: &str,
+    path: &str,
+    scoped_root: Option<&str>,
+    tip_meta: Option<&PathCommitMeta>,
+) -> Option<Value> {
+    if let Some(prefix) = scoped_root {
+        if path != prefix && !path.starts_with(&format!("{}/", prefix)) {
+            return None;
+        }
+    }
+    if path_excluded(path, scoped_root) {
+        return None;
+    }
+    let ext = ext_of(path);
+    let is_hooks_cs = ext == ".cs" && path.starts_with("hooks/");
+    if !INCLUDE_EXTS.contains(&ext.as_str()) && !is_hooks_cs {
+        return None;
+    }
+
+    let mut doc = Map::new();
+    doc.insert("path".into(), Value::String(path.to_string()));
+    let basename = Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path)
+        .to_string();
 
         if ext == ".md" {
-            if let Some(text) = git_show(repo, commit, &path) {
+            if let Some(text) = git_show(repo, commit, path) {
                 let (title, kw) = extract_md_title_keywords(&text);
                 if let Some(t) = title {
                     doc.insert("_title".into(), Value::String(t.clone()));
@@ -292,14 +341,12 @@ pub fn build_path_tree_docs_scoped(
                         Value::Array(kw.into_iter().map(Value::String).collect()),
                     );
                 }
-                // Chat comments: embed body + frontmatter so QUERY can serve posts
-                // without one HTTP GET (and CORS preflight) per file.
                 if path.contains("/.relay/chat/") || path.starts_with(".relay/chat/") {
                     enrich_chat_comment_doc(&mut doc, &text);
                 }
             }
         } else if is_hooks_cs {
-            if let Some(text) = git_show(repo, commit, &path) {
+            if let Some(text) = git_show(repo, commit, path) {
                 for line in text.lines().take(40) {
                     let s = line.trim();
                     if let Some(rest) = s.strip_prefix("//") {
@@ -327,30 +374,28 @@ pub fn build_path_tree_docs_scoped(
 
         doc.insert(
             "content_kind".into(),
-            Value::String(path_content_kind(&path).to_string()),
+            Value::String(path_content_kind(path).to_string()),
         );
 
         if ext == ".md" {
-            if let Some(published) = blog_updated_iso(&path) {
+            if let Some(published) = blog_updated_iso(path) {
                 doc.insert(
                     "_originalPublishedAt".into(),
                     Value::String(published.clone()),
                 );
-                if let Some(meta) = path_times.get(&path) {
+                if let Some(meta) = tip_meta {
                     doc.insert("_updated".into(), Value::String(meta.updated.clone()));
                     doc.insert("_commit".into(), Value::String(meta.commit.clone()));
                 } else {
                     doc.insert("_updated".into(), Value::String(published));
                 }
-            } else if let Some(meta) = path_times.get(&path) {
+            } else if let Some(meta) = tip_meta {
                 doc.insert("_updated".into(), Value::String(meta.updated.clone()));
                 doc.insert("_commit".into(), Value::String(meta.commit.clone()));
             }
         }
 
-        docs.push(Value::Object(doc));
-    }
-    Ok(docs)
+        Some(Value::Object(doc))
 }
 
 fn strip_frontmatter(content: &str) -> (&str, Option<&str>) {

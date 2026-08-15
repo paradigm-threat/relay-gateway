@@ -3,11 +3,17 @@
 
 use crate::git::hooks::HookContext;
 use crate::git::branch_index_paths;
-use crate::git::indexing::branch_sqlite_path;
+use crate::git::search_store::{store_for_bare_repo, store_key_for_bare, SearchStore, StoreKey};
 use crate::git::sqlite_index;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Command;
+
+const ZERO_OID: &str = "0000000000000000000000000000000000000000";
+
+fn is_full_rebuild(old: &str) -> bool {
+    old.is_empty() || old.chars().all(|c| c == '0') || old == ZERO_OID
+}
 
 fn git_paths_changed(repo: &Path, old: &str, new: &str) -> Result<Vec<String>, String> {
     let out = if old.is_empty() || old == "0000000000000000000000000000000000000000" {
@@ -139,16 +145,26 @@ pub fn sync_meta_yaml_index(ctx: &HookContext) -> anyhow::Result<()> {
 
     std::fs::write(&db_path, serde_json::to_string_pretty(&db)?)?;
 
-    // Keep SQLite in sync for the default search plugin (also picks up catalog indexes).
-    let sqlite_path = branch_sqlite_path(&ctx.repo_path, &ctx.branch);
-    sqlite_index::sync_json_to_sqlite(&db_path, &sqlite_path)?;
-    ingest_catalog_json_indexes(ctx, &sqlite_path)?;
+    let store = store_for_bare_repo(&ctx.repo_path)?;
+    let key = store_key_for_bare(&ctx.repo_path, &ctx.branch);
+    if let Some(map) = db.get("collections").and_then(|c| c.as_object()) {
+        for (name, val) in map {
+            let docs = match val {
+                Value::Array(a) => a.clone(),
+                _ => continue,
+            };
+            store.replace_collection(&key, name, &docs, None, None, None)?;
+        }
+    }
+    store.set_docs_indexed_head(&key, &ctx.new_commit)?;
+    ingest_catalog_json_indexes(ctx, store.as_ref(), &key)?;
 
     Ok(())
 }
 
 fn apply_collection_docs(
-    sqlite_path: &Path,
+    store: &dyn SearchStore,
+    key: &StoreKey,
     collection: &str,
     docs: &[Value],
     commit: &str,
@@ -161,29 +177,23 @@ fn apply_collection_docs(
         return Ok(());
     }
     match mode {
-        IngestMode::Merge => sqlite_index::merge_collection_docs_with_fields(
-            sqlite_path,
-            collection,
-            docs,
-            Some(commit),
-            id_f,
-            fts_f,
-        )?,
-        IngestMode::Replace => sqlite_index::replace_collection_docs_with_fields(
-            sqlite_path,
-            collection,
-            docs,
-            Some(commit),
-            id_f,
-            fts_f,
-        )?,
+        IngestMode::Merge => store.merge_collection(key, collection, docs, id_f, fts_f, Some(commit))?,
+        IngestMode::Replace => {
+            store.replace_collection(key, collection, docs, id_f, fts_f, Some(commit))?
+        }
     }
     Ok(())
 }
 
 /// Ingest catalog sources from `search.yaml` (JSON blobs and/or tip-tree builders).
-pub fn ingest_catalog_json_indexes(ctx: &HookContext, sqlite_path: &Path) -> anyhow::Result<()> {
-    use crate::git::catalog_build::{build_content_events_docs, build_path_tree_docs_scoped};
+pub fn ingest_catalog_json_indexes(
+    ctx: &HookContext,
+    store: &dyn SearchStore,
+    key: &StoreKey,
+) -> anyhow::Result<()> {
+    use crate::git::catalog_build::{
+        build_content_events_docs, build_path_tree_docs_for_paths, build_path_tree_docs_scoped,
+    };
     use crate::git::repo::read_relay_config;
     use crate::git::search_config::{self, SearchSource};
 
@@ -194,14 +204,30 @@ pub fn ingest_catalog_json_indexes(ctx: &HookContext, sqlite_path: &Path) -> any
         .unwrap_or_default();
     let cfg = search_config::load_search_config(&ctx.repo_path, &ctx.new_commit, &relay, None);
 
-    if cfg.collections.is_empty() {
-        // builtins fall back when empty after merge — load_search_config already merges builtins
-    }
+    let incremental = !is_full_rebuild(&ctx.old_commit);
+    let changed = if incremental {
+        git_paths_changed(&ctx.repo_path, &ctx.old_commit, &ctx.new_commit).ok()
+    } else {
+        None
+    };
 
     let mut any = false;
     for (coll_name, coll) in &cfg.collections {
         let id_f = coll.id_fields.as_deref();
         let fts_f = coll.fts_fields.as_deref();
+        store.ensure_schema(
+            key,
+            coll_name,
+            &crate::git::search_store::CollectionSchema {
+                fts_fields: crate::git::search_store::effective_fts_fields(fts_f),
+                filter_fields: crate::git::search_store::effective_filter_fields(
+                    coll.filter_fields.as_deref(),
+                ),
+                sort_fields: crate::git::search_store::effective_sort_fields(
+                    coll.sort_fields.as_deref(),
+                ),
+            },
+        )?;
         for src in &coll.sources {
             match src {
                 SearchSource::MetaYaml { .. } => {}
@@ -211,13 +237,7 @@ pub fn ingest_catalog_json_indexes(ctx: &HookContext, sqlite_path: &Path) -> any
                             .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
                         let docs = sqlite_index::flatten_path_index(&v);
                         apply_collection_docs(
-                            sqlite_path,
-                            coll_name,
-                            &docs,
-                            &ctx.new_commit,
-                            *mode,
-                            id_f,
-                            fts_f,
+                            store, key, coll_name, &docs, &ctx.new_commit, *mode, id_f, fts_f,
                         )?;
                         any = true;
                     }
@@ -228,46 +248,57 @@ pub fn ingest_catalog_json_indexes(ctx: &HookContext, sqlite_path: &Path) -> any
                             .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
                         let docs = flatten_timeline_events(&v);
                         apply_collection_docs(
-                            sqlite_path,
-                            coll_name,
-                            &docs,
-                            &ctx.new_commit,
-                            *mode,
-                            id_f,
-                            fts_f,
+                            store, key, coll_name, &docs, &ctx.new_commit, *mode, id_f, fts_f,
                         )?;
                         any = true;
                     }
                 }
                 SearchSource::PathTree { root, mode } => {
-                    let docs = build_path_tree_docs_scoped(
-                        &ctx.repo_path,
-                        &ctx.new_commit,
-                        root.as_deref(),
-                    )
-                    .map_err(|e| anyhow::anyhow!("path_tree: {e}"))?;
-                    apply_collection_docs(
-                        sqlite_path,
-                        coll_name,
-                        &docs,
-                        &ctx.new_commit,
-                        *mode,
-                        id_f,
-                        fts_f,
-                    )?;
-                    any = true;
+                    if incremental {
+                        if let Some(ref paths) = changed {
+                            let docs = build_path_tree_docs_for_paths(
+                                &ctx.repo_path,
+                                &ctx.new_commit,
+                                root.as_deref(),
+                                paths,
+                            )
+                            .map_err(|e| anyhow::anyhow!("path_tree: {e}"))?;
+                            store.merge_collection(
+                                key,
+                                coll_name,
+                                &docs,
+                                id_f,
+                                fts_f,
+                                Some(&ctx.new_commit),
+                            )?;
+                            let gone: Vec<String> = paths
+                                .iter()
+                                .filter(|p| git_show(&ctx.repo_path, &ctx.new_commit, p).is_none())
+                                .cloned()
+                                .collect();
+                            if !gone.is_empty() {
+                                store.delete_docs_by_paths(key, coll_name, &gone)?;
+                            }
+                            any = true;
+                        }
+                    } else {
+                        let docs = build_path_tree_docs_scoped(
+                            &ctx.repo_path,
+                            &ctx.new_commit,
+                            root.as_deref(),
+                        )
+                        .map_err(|e| anyhow::anyhow!("path_tree: {e}"))?;
+                        apply_collection_docs(
+                            store, key, coll_name, &docs, &ctx.new_commit, *mode, id_f, fts_f,
+                        )?;
+                        any = true;
+                    }
                 }
                 SearchSource::ContentEvents { root: _, mode } => {
                     let docs = build_content_events_docs(&ctx.repo_path, &ctx.new_commit)
                         .map_err(|e| anyhow::anyhow!("content_events: {e}"))?;
                     apply_collection_docs(
-                        sqlite_path,
-                        coll_name,
-                        &docs,
-                        &ctx.new_commit,
-                        *mode,
-                        id_f,
-                        fts_f,
+                        store, key, coll_name, &docs, &ctx.new_commit, *mode, id_f, fts_f,
                     )?;
                     any = true;
                 }
@@ -275,19 +306,13 @@ pub fn ingest_catalog_json_indexes(ctx: &HookContext, sqlite_path: &Path) -> any
         }
     }
 
-    // Legacy fallbacks when search.yaml has no usable sources
     if !any {
         if let Some(bytes) = git_show(&ctx.repo_path, &ctx.new_commit, "index.json") {
             let v: Value = serde_json::from_slice(&bytes)
                 .map_err(|e| anyhow::anyhow!("index.json: {}", e))?;
             let docs = sqlite_index::flatten_path_index(&v);
             if !docs.is_empty() {
-                sqlite_index::replace_collection_docs(
-                    sqlite_path,
-                    "index",
-                    &docs,
-                    Some(&ctx.new_commit),
-                )?;
+                store.replace_collection(key, "index", &docs, None, None, Some(&ctx.new_commit))?;
             }
         }
         if let Some(bytes) = git_show(&ctx.repo_path, &ctx.new_commit, "data/events.json") {
@@ -295,12 +320,7 @@ pub fn ingest_catalog_json_indexes(ctx: &HookContext, sqlite_path: &Path) -> any
                 .map_err(|e| anyhow::anyhow!("data/events.json: {}", e))?;
             let docs = flatten_timeline_events(&v);
             if !docs.is_empty() {
-                sqlite_index::replace_collection_docs(
-                    sqlite_path,
-                    "events",
-                    &docs,
-                    Some(&ctx.new_commit),
-                )?;
+                store.replace_collection(key, "events", &docs, None, None, Some(&ctx.new_commit))?;
             }
         }
     }
@@ -506,20 +526,23 @@ mod tests {
             files: HashMap::new(),
         };
         sync_meta_yaml_index(&ctx).unwrap();
-        let sqlite = branch_sqlite_path(&repo_path, "main");
-        assert!(sqlite.exists());
-        let hits = sqlite_index::query_collection(
-            &sqlite,
-            "index",
-            Some(&serde_json::Value::String("portal".into())),
-            None,
-            None,
-        )
-        .unwrap();
+        let store = store_for_bare_repo(&repo_path).unwrap();
+        let key = store_key_for_bare(&repo_path, "main");
+        let hits = store
+            .query(
+                &key,
+                "index",
+                Some(&serde_json::Value::String("portal".into())),
+                None,
+                None,
+                crate::git::sqlite_index::QueryOrder::default(),
+                &crate::git::search_store::effective_filter_fields(None),
+            )
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0]["path"], "blog/post.md");
         assert_eq!(
-            sqlite_index::read_indexed_head(&sqlite).unwrap().as_deref(),
+            store.docs_indexed_head(&key).unwrap().as_deref(),
             Some(commit.as_str())
         );
     }
@@ -553,15 +576,19 @@ mod tests {
             files: HashMap::new(),
         };
         sync_meta_yaml_index(&ctx).unwrap();
-        let sqlite = branch_sqlite_path(&repo_path, "main");
-        let hits = sqlite_index::query_collection(
-            &sqlite,
-            "events",
-            Some(&serde_json::Value::String("blip".into())),
-            None,
-            None,
-        )
-        .unwrap();
+        let store = store_for_bare_repo(&repo_path).unwrap();
+        let key = store_key_for_bare(&repo_path, "main");
+        let hits = store
+            .query(
+                &key,
+                "events",
+                Some(&serde_json::Value::String("blip".into())),
+                None,
+                None,
+                crate::git::sqlite_index::QueryOrder::default(),
+                &crate::git::search_store::effective_filter_fields(None),
+            )
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0]["id"], "evt-1");
     }

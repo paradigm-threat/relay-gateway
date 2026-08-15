@@ -5,9 +5,9 @@ use crate::probe::{dead_ingress_ips, healthy_node_ips, probe_fleet, IngressProbe
 use crate::spot::SpotAssignment;
 use crate::topology::FleetFile;
 use crate::vercel::Vercel;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -38,11 +38,13 @@ pub struct Inner {
 struct Snapshot {
     gitlab_url: String,
     topology_source: String,
+    git_port: u16,
     inventory: Inventory,
     nodes: Vec<NodeJson>,
     ingress: Option<IngressProbe>,
     live_peers: Vec<String>,
     spot: Vec<SpotAssignment>,
+    catalog_repos: Vec<String>,
     job: Option<crate::jobs::JobState>,
     last_error: Option<String>,
 }
@@ -57,6 +59,9 @@ struct NodeJson {
     https_config: Option<crate::probe::ConfigProbe>,
     git_tips: Vec<crate::probe::GitTip>,
     healthy: bool,
+    missing_repos: Vec<String>,
+    drift: Vec<crate::probe::RepoDrift>,
+    sync_ok: bool,
     spot_cloudspace: Option<String>,
     deploy_target: Option<String>,
 }
@@ -94,11 +99,22 @@ pub async fn refresh_inner(app: &App) {
                     }
                 }
             }
-            let unhealthy = nodes.iter().filter(|n| !n.healthy).count();
+            let unhealthy = crate::probe::attention_nodes(&nodes);
             let nlen = nodes.len();
+            let down = crate::probe::down_nodes(&nodes);
+            let sync = crate::probe::sync_issue_nodes(&nodes);
             let summary = nodes
                 .iter()
-                .map(|n| format!("{} {}", n.fqdn, if n.healthy { "up" } else { "down" }))
+                .map(|n| {
+                    let st = if !n.healthy {
+                        "down"
+                    } else if !n.sync_ok {
+                        "sync"
+                    } else {
+                        "up"
+                    };
+                    format!("{} {st}", n.fqdn)
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
             #[cfg(unix)]
@@ -106,6 +122,8 @@ pub async fn refresh_inner(app: &App) {
                 let inv = crate::inventory::Inventory::collect(&cfg);
                 crate::tray::TrayView {
                     unhealthy,
+                    down,
+                    sync,
                     nodes: nlen,
                     summary: summary.clone(),
                     mode: if inv.admin_ready {
@@ -157,6 +175,9 @@ pub async fn serve(app: App, bind: &str) -> anyhow::Result<()> {
         .route("/api/reclaim", post(reclaim))
         .route("/api/job", post(job))
         .route("/api/known-hosts-reset", post(known_hosts))
+        .route("/api/git/refs", get(git_refs))
+        .route("/api/git/tree", get(git_tree))
+        .route("/api/git/file", get(git_file))
         .with_state(app.clone());
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("relay-ops UI http://{bind}");
@@ -185,6 +206,9 @@ async fn snapshot(State(app): State<App>) -> Json<Snapshot> {
                 https_config: n.https_config.clone(),
                 git_tips: n.git_tips.clone(),
                 healthy: n.healthy,
+                missing_repos: n.missing_repos.clone(),
+                drift: n.drift.clone(),
+                sync_ok: n.sync_ok,
                 spot_cloudspace: meta.and_then(|m| m.spot_cloudspace.clone()),
                 deploy_target: meta.and_then(|m| m.deploy_target.clone()),
             }
@@ -193,11 +217,13 @@ async fn snapshot(State(app): State<App>) -> Json<Snapshot> {
     Json(Snapshot {
         gitlab_url: app.gitlab_url.clone(),
         topology_source: g.topology_source.clone(),
+        git_port: g.fleet.git_port(),
         inventory: inv,
         nodes,
         ingress: g.ingress.clone(),
         live_peers: g.live_peers.clone(),
         spot: g.spot.clone(),
+        catalog_repos: crate::probe::expected_catalog_repos(&g.nodes, &g.fleet.git_repos),
         job: app.jobs.snapshot().await,
         last_error: g.last_error.clone(),
     })
@@ -474,5 +500,80 @@ async fn known_hosts(State(app): State<App>, Json(body): Json<FqdnIp>) -> impl I
     match crate::jobs::reset_known_hosts(&body.fqdn, body.ip.as_deref()) {
         Ok(msg) => (StatusCode::OK, msg),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e:#}")),
+    }
+}
+
+#[derive(Deserialize)]
+struct BrowseQ {
+    fqdn: String,
+    repo: String,
+    #[serde(default)]
+    git_ref: Option<String>,
+    #[serde(default)]
+    prefix: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+async fn browse_port(app: &App, fqdn: &str) -> Result<u16, String> {
+    let g = app.inner.lock().await;
+    if !g.fleet.nodes.iter().any(|n| n.fqdn.eq_ignore_ascii_case(fqdn)) {
+        return Err("unknown fleet host".into());
+    }
+    Ok(g.fleet.git_port())
+}
+
+async fn git_refs(State(app): State<App>, Query(q): Query<BrowseQ>) -> Response {
+    let port = match browse_port(&app, &q.fqdn).await {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+    };
+    match crate::browse::list_heads(&q.fqdn, port, &q.repo).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("{e:#}")})),
+        )
+            .into_response(),
+    }
+}
+
+async fn git_tree(State(app): State<App>, Query(q): Query<BrowseQ>) -> Response {
+    let port = match browse_port(&app, &q.fqdn).await {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+    };
+    let git_ref = q.git_ref.as_deref().unwrap_or("main");
+    let prefix = q.prefix.as_deref().unwrap_or("");
+    match crate::browse::list_tree(&q.fqdn, port, &q.repo, git_ref, prefix).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("{e:#}")})),
+        )
+            .into_response(),
+    }
+}
+
+async fn git_file(State(app): State<App>, Query(q): Query<BrowseQ>) -> Response {
+    let port = match browse_port(&app, &q.fqdn).await {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+    };
+    let git_ref = q.git_ref.as_deref().unwrap_or("main");
+    let Some(path) = q.path.filter(|s| !s.is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "path required"})),
+        )
+            .into_response();
+    };
+    match crate::browse::show_file(&q.fqdn, port, &q.repo, git_ref, &path).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("{e:#}")})),
+        )
+            .into_response(),
     }
 }

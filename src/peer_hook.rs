@@ -528,6 +528,7 @@ pub async fn post_peer_hook(
                         crate::git::spawn_ensure_indexed(
                             bare.clone(),
                             r.branch.clone(),
+                            r.before.clone().unwrap_or_default(),
                             sha.clone(),
                         );
                         if let Some(git) =

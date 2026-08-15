@@ -14,7 +14,7 @@ Relay repositories are governed by a unified configuration file `.relay.yaml` lo
 | **Push / anti-squat (whitelisted names)** | **`anchor_commit`** / **`relayRootCommit`** must be recorded **before** the bare repo exists; **`pre-receive`** should reject pushes whose branch tips do not contain that anchor (same ancestry rule as pull) — **planned**; see **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**. |
 | **Branch names vs host slugs** | Planned: **`pre-receive`** rejects **`refs/heads/*`** updates that violate **[`DEPLOY_WEB_AND_CI.md`](./DEPLOY_WEB_AND_CI.md)** §9 (non-empty canonical slug; **unique** slug across branches) so **`Host`**-based branch selection cannot collide. |
 | Who may push **content** | Signed commits + **`allowedKeys`** / **`allowedKeyFingerprints`**; server hooks validate every change. |
-| Which **Relay nodes** may participate | **`git.relayTrust.authorizedServerIds`**; **`autoPush.originList`** aligned with that list. |
+| Which **Relay nodes** may participate | **`git.relayTrust.authorizedServerIds`**. Prefer mesh tip-notify over **`autoPush.originList`**. |
 | New nodes | **`RELAY_SERVER_ID`** + same **`relay-master`** revision → **`sync-relay-catalog.sh --write-authorized-repos`**. **`relay-bootstrap.sh`** is optional for extra dev clones, not the catalog allowlist. |
 
 Until **`allowedKeys` / fingerprint matching** is fully enforced in Rust, combine **`requireSigned: true`** with strict firewall rules on **9418**.
@@ -60,10 +60,8 @@ server:
 git:
   # P2P Synchronization between peers
   autoPush:
-    branches: [ "main" ] # Branches to sync on successful push
-    originList:
-      - "peer1.relay.online"
-      - "peer2.relay.online"
+    branches: [ "main" ] # publish_branch; prefer tip-notify over originList
+    originList: []
     debounceSeconds: 2
   
   # Native Branch Protection Rules
@@ -104,21 +102,19 @@ When a commit is pushed via the Git protocol:
 4.  It then runs the CleverScript `pre-receive` hook if configured (same contract as pre-commit).
 5.  If any step fails, the push is rejected.
 
-### Post-receive (side effects — non-blocking on modern builds)
+### Post-receive (index blocks ACK; Slack / autoPush stay async)
 
-After the ref is updated, **`relay-hook-handler`** schedules (does **not** block the git client on):
+After the ref is updated, **`relay-hook-handler`**:
 
-1. Slack commit notify (thread; see `RELAY_SLACK_TIMEOUT_SECS`)
-2. SQLite index warm via **`spawn_ensure_indexed`** (QUERY may wait on the branch mutex until warm finishes)
+1. Runs **on-commit SearchStore index inline** (`ensure_indexed` with the real `old_commit` so ingest can be incremental). QUERY never JITs.
+2. Slack commit notify (thread; see `RELAY_SLACK_TIMEOUT_SECS`)
 3. **`autoPush`** in a thread with **`RELAY_AUTOPUSH_TIMEOUT_SECS`** per origin (`timeout(1)` + `git push`) — prefer tip-notify over autoPush
 4. Mesh tip-notify (`spawn_notify_after_push`) with **`RELAY_PEER_NOTIFY_TIMEOUT_SECS`**; `notifyMode: next` retries **next+1** once on failure
 
-See **[`RELAY_MESH_OPS.md`](./RELAY_MESH_OPS.md)** for hung-push runbook and deploy order. **Do not** put heavy corpus work in CleverScript `pre-receive` — only changed `ctx.files`.
+See **[`RELAY_MESH_OPS.md`](./RELAY_MESH_OPS.md)** for hung-push runbook and deploy order. **Do not** put heavy corpus work in CleverScript `pre-receive` — only changed `ctx.files`. Whether origin ACK should wait on ingest, and whether replicas re-run this policy: **[`RELAY_PUBLISH_ONCE.md`](./RELAY_PUBLISH_ONCE.md)** (plan).
 
 ### Index hook (`server.hooks.index`)
-When QUERY (or MCP search) needs an up-to-date index, the gateway runs **Rust** indexing of `data/**/meta.yaml` into `index.db.json`, syncs **SQLite** `index.db` (default search plugin) and legacy **redb**, ingests catalog `index.json` / `data/events.json` when present, then optionally runs `server.hooks.index` CleverScript for thin extra logic. Paths must be `.cs`. See [`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md).
-
-Post-receive warms the same path asynchronously; QUERY JIT still calls `ensure_indexed` under a per-branch mutex if the tip is stale.
+On commit (and `POST /api/index/warm/:repo`), the gateway runs **Rust** indexing of `data/**/meta.yaml` into `index.db.json`, upserts the node **SearchStore** (one SQLite file; default search plugin) and legacy **redb**, ingests catalog `index.json` / `data/events.json` / `path_tree` when present, then optionally runs `server.hooks.index` CleverScript for thin extra logic. Paths must be `.cs`. Skip/freshness uses SearchStore `docs_indexed_head`, not JSON. `/api/index/warm` always regenerates from git. QUERY / MCP only **read** the store; if `indexed_head` lags the tip they return `indexFresh: false`. See [`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md).
 
 ### QUERY hook (`server.hooks.query`)
 Thin CleverScript that **`import { search } from '@relay/search/sqlite'`** (or redb) and returns `search(ctx)`. Do not implement corpus scan/rank in CS. Normative details: [`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md).
@@ -228,7 +224,7 @@ Use a real `git push` against a test bare repo with **`relay-hook-handler`** ins
 ### Docker Peer Verification
 To test the full "Push -> Protect -> Sync" flow:
 1.  Ensure you have at least two peer containers running.
-2.  Configure `.relay.yaml` with the peer's hostname in `originList`.
+2.  Prefer mesh tip-notify. Leave `autoPush.originList` empty unless you are testing auto-push on purpose.
 3.  Push a commit and check the logs of both peers:
     ```bash
     docker logs relay-peer-1

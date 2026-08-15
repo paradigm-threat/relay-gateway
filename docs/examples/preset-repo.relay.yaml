@@ -13,10 +13,11 @@ git:
       # ssh-keygen -lf -E sha256 /path/to/deploy_key.pub
       - "SHA256:REPLACE_WITH_SEED_NODE_DEPLOY_KEY_FINGERPRINT"
 
+  # Prefer mesh tip-notify over originList auto-push (auto-push re-runs full
+  # pre-receive on each destination). Leave originList empty unless you need it.
   autoPush:
     branches: [ "main" ]
-    originList:
-      - "other-authorized-relay.example.com"
+    originList: []
     debounceSeconds: 2
 
   branchRules:
@@ -42,7 +43,7 @@ server:
       path: hooks/server/pre-receive.cs
     index:
       path: hooks/server/index.cs
-      # Optional: only these branches get JIT index + QUERY (omit = all branches)
+      # Optional: only these branches get on-commit index + QUERY (omit = all branches)
       # branches: [ "main" ]
       # Optional: QUERY row projection / column order (CSV, JSON, XML)
       # query:

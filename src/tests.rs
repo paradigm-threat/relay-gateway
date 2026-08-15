@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use crate::git::search_store::SearchStore;
     use crate::{git, handlers, helpers, peer_hook, types::*};
     use axum::http::header::{ACCEPT, CONTENT_TYPE, HOST};
     use axum::{
@@ -37,7 +38,8 @@ mod tests {
     const INDEX_STUB_CS: &str = "export default function run(ctx) {\n  return null;\n}\n";
     const META_YAML: &str = "title: Test Item\n";
 
-    /// Bare `repo.git` with `.relay.yaml`, `data/t/meta.yaml`, and `hooks/server/index.cs` on `main` (QUERY / JIT tests).
+    /// Bare `repo.git` with `.relay.yaml`, `data/t/meta.yaml`, and `hooks/server/index.cs` on `main`.
+    /// Warms the SearchStore so QUERY is read-only (no JIT).
     fn query_text_fixture(config_yaml: &str) -> (tempfile::TempDir, AppState) {
         let repo_dir = tempdir().unwrap();
         let repo_path = repo_dir.path().join("repo.git");
@@ -66,10 +68,39 @@ mod tests {
         tb.insert("hooks", hooks_tid, 0o040000).unwrap();
         let tree_id = tb.write().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
-        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+        let commit = repo
+            .commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
             .unwrap();
+        git::ensure_indexed(&git::HookContext {
+            repo_path: repo_path.clone(),
+            old_commit: String::new(),
+            new_commit: commit.to_string(),
+            refname: "refs/heads/main".into(),
+            branch: "main".into(),
+            is_verified: true,
+            files: Default::default(),
+        })
+        .unwrap();
         let state = test_state(repo_dir.path().to_path_buf());
         (repo_dir, state)
+    }
+
+    fn warm_index_at(bare: &std::path::Path, branch: &str) {
+        let repo = Repository::open_bare(bare).unwrap();
+        let tip = repo
+            .refname_to_id(&format!("refs/heads/{branch}"))
+            .unwrap()
+            .to_string();
+        git::ensure_indexed(&git::HookContext {
+            repo_path: bare.to_path_buf(),
+            old_commit: String::new(),
+            new_commit: tip,
+            refname: format!("refs/heads/{branch}"),
+            branch: branch.to_string(),
+            is_verified: true,
+            files: Default::default(),
+        })
+        .unwrap();
     }
 
     const QUERY_DEFAULT_YAML: &str = r#"
@@ -498,6 +529,50 @@ server:
             String::from_utf8_lossy(&bytes)
         );
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let results = json["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["title"], "Test Item");
+    }
+
+    /// QUERY is read-only: a newer tip without re-index returns rows with indexFresh=false.
+    #[tokio::test]
+    async fn test_query_stale_sets_index_fresh_false() {
+        let (_tmp, state) = query_text_fixture(QUERY_DEFAULT_YAML);
+        let bare = state.repo_path.join("repo.git");
+        let repo = Repository::open_bare(&bare).unwrap();
+        let sig = Signature::now("relay", "relay@local").unwrap();
+        let head = repo.refname_to_id("refs/heads/main").unwrap();
+        let parent = repo.find_commit(head).unwrap();
+        let tree = parent.tree().unwrap();
+        repo.commit(
+            Some("refs/heads/main"),
+            &sig,
+            &sig,
+            "second",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+
+        let mut headers = host_header("repo");
+        headers.insert(HEADER_BRANCH, "main".parse().unwrap());
+        headers.insert(ACCEPT, "application/json".parse().unwrap());
+        let response = handlers::handle_query(
+            State(state),
+            headers,
+            AxPath("query".to_string()),
+            None,
+            Some(Json(serde_json::json!({
+                "collection": "index",
+                "query": { "title": "Test Item" }
+            }))),
+        )
+        .await;
+        let (parts, body) = response.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let json: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(body, usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(json["indexFresh"], false);
         let results = json["results"].as_array().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["title"], "Test Item");
@@ -997,6 +1072,7 @@ export default function run(ctx) {
         let tree = repo.find_tree(tree_id).unwrap();
         repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
             .unwrap();
+        warm_index_at(&repo_path, "main");
         let state = test_state(repo_dir.path().to_path_buf());
 
         let mut headers = host_header("repo");
@@ -1025,9 +1101,13 @@ export default function run(ctx) {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["title"], "Test Item");
 
-        // SQLite file must exist after QUERY JIT
-        let sqlite = git::branch_sqlite_path(&repo_path, "main");
-        assert!(sqlite.exists(), "expected {}", sqlite.display());
+        // Node-local SearchStore must exist after on-commit index
+        let store = git::store_for_bare_repo(&repo_path).unwrap();
+        let key = git::store_key_for_bare(&repo_path, "main");
+        assert!(
+            store.docs_indexed_head(&key).unwrap().is_some(),
+            "expected indexed_head in SearchStore"
+        );
     }
 
     /// Preferred: `import { search } from '@relay/search/sqlite'` then `return search(ctx)`.
@@ -1091,6 +1171,7 @@ export default function run(ctx) {
         let tree = repo.find_tree(tree_id).unwrap();
         repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
             .unwrap();
+        warm_index_at(&repo_path, "main");
         let state = test_state(repo_dir.path().to_path_buf());
 
         let mut headers = host_header("repo");
@@ -1125,8 +1206,16 @@ export default function run(ctx) {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0]["title"], "Earlier Item");
         assert_eq!(results[1]["title"], "Later Item");
-        let sqlite = git::branch_sqlite_path(&repo_path, "main");
-        assert!(sqlite.exists(), "expected {}", sqlite.display());
+        let sqlite = git::search_db_path(repo_dir.path());
+        assert!(
+            git::store_for_bare_repo(&repo_path)
+                .unwrap()
+                .docs_indexed_head(&git::store_key_for_bare(&repo_path, "main"))
+                .unwrap()
+                .is_some(),
+            "expected SearchStore indexed_head (db {})",
+            sqlite.display()
+        );
     }
 
     #[tokio::test]
@@ -1199,6 +1288,7 @@ export default function run(ctx) {
         let tree = repo.find_tree(tree_id).unwrap();
         repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
             .unwrap();
+        warm_index_at(&repo_path, "main");
         let state = test_state(repo_dir.path().to_path_buf());
 
         let health = handlers::mcp::get_mcp(
@@ -1346,6 +1436,7 @@ export default function run(ctx) {
         let tree = repo.find_tree(tree_id).unwrap();
         repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
             .unwrap();
+        warm_index_at(&repo_path, "main");
         let state = test_state(repo_dir.path().to_path_buf());
 
         let mut headers = host_header("repo");
@@ -1514,6 +1605,7 @@ server:
         let tree = repo.find_tree(tb.write().unwrap()).unwrap();
         repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
             .unwrap();
+        warm_index_at(&repo_path, "main");
         let state = test_state(repo_dir.path().to_path_buf());
 
         let init = handlers::mcp::post_mcp(
@@ -1607,6 +1699,20 @@ server:
             .and_then(|s| s.to_str())
             .unwrap()
             .to_string();
+        git::ensure_indexed(&git::HookContext {
+            repo_path: bare.clone(),
+            old_commit: String::new(),
+            new_commit: git2::Repository::open_bare(&bare)
+                .unwrap()
+                .refname_to_id("refs/heads/main")
+                .unwrap()
+                .to_string(),
+            refname: "refs/heads/main".into(),
+            branch: "main".into(),
+            is_verified: true,
+            files: Default::default(),
+        })
+        .ok();
         let rows = git::query::execute_query_limited(
             parent,
             &name,
@@ -1623,7 +1729,7 @@ server:
         );
     }
 
-    /// Regression: `server.hooks.index.branches` excludes current branch → empty results (no JIT).
+    /// Regression: `server.hooks.index.branches` excludes current branch → empty results.
     #[tokio::test]
     async fn test_query_branch_allowlist_excludes_current_branch() {
         let yaml = r#"

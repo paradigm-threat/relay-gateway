@@ -26,6 +26,7 @@ pub mod query;
 pub mod query_cache;
 pub mod search_config;
 pub mod search_plugins;
+pub mod search_store;
 pub mod sqlite_index;
 pub mod relay_config_cache;
 pub mod ssr_html_cache;
@@ -47,8 +48,9 @@ pub use get_hook_http::get_hook_json_to_response;
 pub use hooks::{execute_repo_hook, HookContext};
 pub use indexing::{
     branch_data_dir, branch_hash_short, branch_index_paths, branch_operation_mutex,
-    branch_sqlite_path, ensure_indexed, spawn_ensure_indexed,
+    branch_sqlite_path, ensure_indexed, ensure_indexed_force, spawn_ensure_indexed,
 };
+pub use search_store::{search_db_path, store_for_bare_repo, store_key_for_bare};
 pub use index_policy::has_index_hook;
 pub use repo::{
     apply_bare_receive_security, apply_bare_receive_security_at_path, bare_repo_names,

@@ -17,7 +17,7 @@ relay-master/
 | Profile (`tier`) | Rules |
 |------------------|--------|
 | **`primary`** | Lax — binaries OK, `publish_branch` usually `main`, signing may stay in repo `.relay.yaml` during migration (`signing_keys_source: repo`) |
-| **`hosted`** | Strict — text-only Git, default `publish_branch` **`release`**, catalog-authoritative `signing_keys` |
+| **`hosted`** | Strict — text-only Git, `publish_branch` still **`main` unless the record overrides it**, catalog-authoritative `signing_keys` |
 
 ## Per-repo record (`relay.catalog-repo.v1`)
 
@@ -27,7 +27,8 @@ relay-master/
 | `tier` | `primary` \| `hosted` |
 | `forge_url` | Upstream clone URL |
 | `relay_root_commit` | Trusted root (40 hex) |
-| `publish_branch` | Branch served on Relay HTTPS / anchor checks |
+| `publish_branch` | Branch served on Relay HTTPS / anchor checks (this fleet: **`main`**) |
+| `publish_origin` | Optional FQDN of the one Relay that should accept client `git push` (this fleet: **`dfw1.relaygateway.net`**). Hostname, not a git branch. Gateways parse it; the receive-pack fence is not implemented yet. |
 | `signing_keys` | Append-only identity list (`active` / `disabled`) |
 | `signing_keys_source` | `repo` \| `catalog` \| `hybrid` |
 | `domains` | Optional globally unique parked apex/subdomain hosts served by this repo |
@@ -55,10 +56,30 @@ The gateway materializes the signed assignment for HTTP routing and Caddy's on-d
 
 | Tier | Default | Notes |
 |------|---------|--------|
-| `primary` | `main` | Per-repo override OK; do not force `release` mesh-wide |
-| `hosted` | `release` | Relay serves **`publish_branch`** only; `main` may be local draft |
+| `primary` | `main` | Per-repo override OK |
+| `hosted` | `main` | Same default. Do not force a second branch mesh-wide |
 
-Auxiliary branches (`comments`, `dev`) are not publish branches.
+Existing hosted records may still set `publish_branch` to another name (for example `relay-web-assets` embed HTTP). New records default to `main`.
+
+Example record (field is inert until the publish-once fence lands):
+
+```json
+{
+  "schema": "relay.catalog-repo.v1",
+  "repo": "paradigm-threat-files",
+  "tier": "primary",
+  "publish_branch": "main",
+  "publish_origin": "dfw1.relaygateway.net"
+}
+```
+
+See also [`examples/catalog-repo.v1.json`](./examples/catalog-repo.v1.json).
+
+Authors push:
+
+```text
+git push git://dfw1.relaygateway.net:9418/paradigm-threat-files.git main
+```
 
 ## Identity keys
 

@@ -3,7 +3,7 @@ use base64::Engine;
 use relay_server::git::{execute_repo_hook, HookContext};
 use std::io::{self, Read};
 use std::path::PathBuf;
-use tracing::{debug, error, info, Level};
+use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 fn main() -> anyhow::Result<()> {
@@ -107,8 +107,7 @@ fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
 
-        // Special handling for post-receive: schedule side effects, return quickly so
-        // `git push` ACK is not blocked on index / Slack / mesh / autoPush.
+        // post-receive: index inline (QUERY is read-only). Slack / autoPush stay async.
         if hook_name == "post-receive" {
             let repo_slug = relay_server::notify::normalize_repo_slug(
                 ctx.repo_path
@@ -128,12 +127,10 @@ fn main() -> anyhow::Result<()> {
                 sid.as_deref(),
                 node.as_deref(),
             );
-            // Warm SQLite index off the push critical path (QUERY JIT still waits on mutex).
-            relay_server::git::spawn_ensure_indexed(
-                ctx.repo_path.clone(),
-                ctx.branch.clone(),
-                ctx.new_commit.clone(),
-            );
+            // Index inline so QUERY never JITs. Slack / autoPush stay async.
+            if let Err(e) = relay_server::git::ensure_indexed(&ctx) {
+                warn!(error = %e, "post-receive index failed");
+            }
             // autoPush can hang on a dead peer — run with per-origin timeout in a thread.
             {
                 let ctx_ap = ctx.clone();

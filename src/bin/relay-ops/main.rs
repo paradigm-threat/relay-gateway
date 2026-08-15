@@ -1,3 +1,4 @@
+mod browse;
 mod config;
 mod fleet_cmd;
 mod gitlab;

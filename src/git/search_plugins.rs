@@ -2,7 +2,11 @@
 
 use crate::git::chat_index;
 use crate::git::index_store;
-use crate::git::indexing::{branch_index_paths, branch_sqlite_path};
+use crate::git::indexing::branch_index_paths;
+use crate::git::search_config;
+use crate::git::search_store::{
+    effective_filter_fields, store_for_bare_repo, store_key_for_bare, SearchStore,
+};
 use crate::git::sqlite_index;
 use crate::types::RelayConfig;
 use serde_json::Value;
@@ -57,8 +61,31 @@ pub fn run_plugin_ordered(
 ) -> anyhow::Result<Vec<Value>> {
     match plugin {
         PLUGIN_SQLITE => {
-            let db = branch_sqlite_path(repo_full_path, branch);
-            sqlite_index::query_collection_ordered(&db, collection, query, fields, limit, order)
+            let store = store_for_bare_repo(repo_full_path)?;
+            let key = store_key_for_bare(repo_full_path, branch);
+            let head = git2::Repository::open_bare(repo_full_path)
+                .ok()
+                .and_then(|r| r.refname_to_id(&format!("refs/heads/{branch}")).ok())
+                .map(|oid| oid.to_string())
+                .unwrap_or_default();
+            let relay = git2::Repository::open_bare(repo_full_path)
+                .ok()
+                .and_then(|r| crate::git::repo::read_relay_config(&r, &head))
+                .unwrap_or_default();
+            let cfg = search_config::load_search_config(repo_full_path, &head, &relay, None);
+            let filter_fields = cfg
+                .collection(collection)
+                .map(|c| effective_filter_fields(c.filter_fields.as_deref()))
+                .unwrap_or_else(|| effective_filter_fields(None));
+            store.query(
+                &key,
+                collection,
+                query,
+                fields,
+                limit,
+                order,
+                &filter_fields,
+            )
         }
         PLUGIN_REDB => {
             let (json_path, redb_path) = branch_index_paths(repo_full_path, branch);
@@ -71,17 +98,15 @@ pub fn run_plugin_ordered(
                 .as_array_mut()
                 .ok_or_else(|| anyhow::anyhow!("collection {} is not an array", collection))?;
             filter_redb_array(arr, query);
-            // redb plugin: apply limit; random order is sqlite-only.
             let lim = sqlite_index::clamp_query_limit(order, limit);
             let rows: Vec<Value> = arr.iter().take(lim).cloned().collect();
             Ok(project_rows(rows, fields))
         }
         PLUGIN_CHAT => {
-            let _ = collection; // chat plugin uses `chat_comments` table
-            let _ = order; // chat keeps its own path-desc ordering for now
-            let db = branch_sqlite_path(repo_full_path, branch);
-            let rows = chat_index::query_chat(&db, query, limit)?;
-            Ok(project_rows(rows, fields))
+            let _ = collection;
+            let _ = order;
+            chat_index::query_chat_for_bare(repo_full_path, branch, query, limit)
+                .map(|rows| project_rows(rows, fields))
         }
         other => anyhow::bail!("unknown search plugin: {other}"),
     }
@@ -101,7 +126,7 @@ fn project_rows(rows: Vec<Value>, fields: Option<&[String]>) -> Vec<Value> {
                     }
                 }
             }
-            Value::Object(m)
+            serde_json::Value::Object(m)
         })
         .collect()
 }

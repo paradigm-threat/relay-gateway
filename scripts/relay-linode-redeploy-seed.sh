@@ -31,7 +31,7 @@ TARGET="${SSH_USER}@${NODE}"
 [[ -f "$KEY" ]] || { echo "Missing SSH key: $KEY" >&2; exit 1; }
 
 MESH_ENV=""
-cleanup_mesh() { [[ -n "$MESH_ENV" && -f "$MESH_ENV" ]] && rm -f "$MESH_ENV"; }
+cleanup_mesh() { [[ -n "${MESH_ENV:-}" && -f "$MESH_ENV" ]] && rm -f "$MESH_ENV"; return 0; }
 trap cleanup_mesh EXIT
 if [[ -n "${RELAY_MASTER_PEER_LIST:-}${RELAY_PEER_SECRET:-}${RELAY_MASTER_MESH_SECRET:-}" ]]; then
   MESH_ENV="$(mktemp)"

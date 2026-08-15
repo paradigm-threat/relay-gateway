@@ -1,10 +1,8 @@
 use crate::git;
 use crate::git::clever_script_host::CleverScriptServerHost;
-use crate::git::hooks::HookContext;
 use crate::git::index_policy;
-use crate::git::indexing::{branch_operation_mutex, branch_sqlite_path, ensure_indexed};
-use crate::git::search_config::{self, SearchFileConfig};
 use crate::git::search_plugins;
+use crate::git::search_store::{store_for_bare_repo, store_key_for_bare, SearchStore};
 use crate::git::sqlite_index::{self, QueryOrder};
 use crate::git::repo::{read_file_from_repo, read_relay_config};
 use relay_runtime::value::Value as CsValue;
@@ -124,19 +122,18 @@ fn routing_from_cs(
 }
 
 fn finish_outcome(
-    repo_full_path: &Path,
-    branch: &str,
+    _repo_full_path: &Path,
+    _branch: &str,
     tip_head: &str,
     collection: &str,
     query: Option<Value>,
     results: Vec<Value>,
     started: Instant,
+    indexed_head: Option<String>,
+    doc_count: u64,
 ) -> anyhow::Result<QueryOutcome> {
-    let db = branch_sqlite_path(repo_full_path, branch);
-    let indexed_head = sqlite_index::read_indexed_head(&db)?;
-    let doc_count = sqlite_index::count_collection_docs(&db, collection)?;
     let index_fresh = indexed_head.as_deref() == Some(tip_head);
-    let status = if !db.exists() || indexed_head.is_none() {
+    let status = if indexed_head.is_none() {
         "not_indexed"
     } else {
         "ok"
@@ -154,7 +151,7 @@ fn finish_outcome(
     })
 }
 
-/// Run JIT index if needed, then QUERY via search plugin (default **sqlite**).
+/// QUERY via search plugin (default **sqlite**). Read-only: never rebuilds the index.
 pub fn execute_query(
     repo_root: &Path,
     repo_name: &str,
@@ -225,8 +222,12 @@ pub fn execute_query_outcome(
     }
 
     let relay_cfg = read_relay_config(&repo, &head).unwrap_or_default();
+    let store = store_for_bare_repo(&repo_full_path)?;
+    let store_key = store_key_for_bare(&repo_full_path, branch);
 
     if !index_policy::branch_allowed_for_query_request(&relay_cfg, branch) {
+        let indexed_head = store.docs_indexed_head(&store_key)?;
+        let doc_count = store.count_docs(&store_key, collection)?;
         return finish_outcome(
             &repo_full_path,
             branch,
@@ -235,34 +236,18 @@ pub fn execute_query_outcome(
             query,
             vec![],
             started,
+            indexed_head,
+            doc_count,
         );
     }
 
     let export_fields = index_policy::export_fields_for_collection(&relay_cfg, collection);
     let default_plugin = search_plugins::default_plugin_id(&relay_cfg);
-    let _search_cfg: SearchFileConfig =
-        search_config::load_search_config(&repo_full_path, &head, &relay_cfg, None);
-
-    let ctx = HookContext {
-        repo_path: repo_full_path.clone(),
-        old_commit: String::new(),
-        new_commit: head.clone(),
-        refname: format!("refs/heads/{}", branch),
-        branch: branch.to_string(),
-        is_verified: true,
-        files: std::collections::HashMap::new(),
-    };
-
-    let lock = branch_operation_mutex(ctx.repo_path.clone(), ctx.branch.clone());
-    let _guard = lock.lock().unwrap();
-
-    if index_policy::has_index_hook(&relay_cfg) {
-        ensure_indexed(&ctx)?;
-    }
 
     let mut rows: Vec<Value>;
     let mut used_collection = collection.to_string();
     let mut used_query = query.clone();
+    let mut used_plugin = default_plugin.to_string();
 
     if let Some(cs_path) = index_policy::clever_query_hook_path(&relay_cfg) {
         let source_bytes = read_file_from_repo(&repo_full_path, branch, &cs_path)?;
@@ -287,6 +272,7 @@ pub fn execute_query_outcome(
         } else {
             let (plugin, coll, q, cs_limit, _cfg, cs_order) =
                 routing_from_cs(&raw, default_plugin, collection, query.as_ref(), order);
+            used_plugin = plugin.clone();
             used_collection = coll.clone();
             used_query = q.clone();
             let effective_limit = cs_limit.or(limit);
@@ -314,6 +300,17 @@ pub fn execute_query_outcome(
         )?;
     }
 
+    let (indexed_head, doc_count) = if used_plugin == search_plugins::PLUGIN_CHAT {
+        (
+            store.chat_indexed_head(&store_key)?,
+            store.chat_count(&store_key)? as u64,
+        )
+    } else {
+        (
+            store.docs_indexed_head(&store_key)?,
+            store.count_docs(&store_key, &used_collection)?,
+        )
+    };
     let outcome = finish_outcome(
         &repo_full_path,
         branch,
@@ -322,6 +319,8 @@ pub fn execute_query_outcome(
         used_query,
         rows,
         started,
+        indexed_head,
+        doc_count,
     )?;
     if use_cache {
         crate::git::query_cache::put(cache_key, outcome.clone());

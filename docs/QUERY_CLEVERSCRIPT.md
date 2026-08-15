@@ -49,12 +49,16 @@ export default function run(ctx) {
 }
 ```
 
-## Default database: SQLite
+## Default database: SQLite SearchStore
 
-On index / JIT QUERY / **post-receive**, the gateway builds **`.relay_data/branches/<hash>/index.db`**:
+Indexing runs **on commit** (post-receive, peer-fetch, HTTP PUT, `POST /api/index/warm/:repo`). QUERY / MCP are **read-only**: they never rebuild the catalog. Freshness is **SearchStore `docs_indexed_head` only** — leftover `index.db.json` metadata must not skip ingest. If the store lags the git tip, rows still return with **`indexFresh: false`**. Operators re-index with a push or `/api/index/warm` (warm always regenerates from git). Mesh hop cost and whether origin ACK waits on ingest: **[`RELAY_PUBLISH_ONCE.md`](./RELAY_PUBLISH_ONCE.md)** (plan, not implemented).
 
-- Syncs `data/**/meta.yaml` → `index.db.json` → SQLite (+ legacy redb)
-- Ingests catalog sources from **`search.yaml`** (or builtins): `index.json`, `data/events.json`
+The v1 backend is **one SQLite file per node** (`RELAY_SEARCH_DB` or `{repo_root}/.relay_search.db`) with `repo` + `branch` columns and a long-lived WAL connection. Per-branch `.relay_data/branches/<hash>/index.db` is legacy and is deleted after a successful on-commit index. Do not import old files — regen from git.
+
+On index / post-receive the gateway:
+
+- Syncs `data/**/meta.yaml` → `index.db.json` → SearchStore (+ legacy redb)
+- Ingests catalog sources from **`search.yaml`** (or builtins): `index.json`, `data/events.json`, `path_tree`, `content_events`
 - QUERY JSON envelope includes `status`, `indexFresh`, `docCount`, `indexedHead`, `tookMs`
 
 ### `search.yaml` (recommended)
@@ -73,6 +77,8 @@ collections:
         mode: merge          # merge|replace
     idFields: [path, _meta_dir, id]
     ftsFields: [_title, title, _keywords, keywords, description]
+    filterFields: [content_kind, type, path, id]   # portable object QUERY keys
+    sortFields: [path, sort_key, md_path]
   events:
     sources:
       - type: events_json
@@ -81,9 +87,21 @@ collections:
     ftsFields: [title, keywords, name]
 ```
 
-Without `search.yaml`, builtins still ingest meta.yaml + `index.json` (replace) + `data/events.json`.
+Without `search.yaml`, builtins still ingest meta.yaml + `index.json` (replace) + `data/events.json`. Default **`filterFields`**: `content_kind`, `type`, `path`, `id`, `channel`, `author`, `title`. Default **`sortFields`**: `path`, `sort_key`, `md_path`, `created`. Undeclared object-filter keys yield an **empty result** (not a SQL `json_extract` of every key).
 
-String QUERY uses FTS (AND of terms). Object QUERY uses exact field match.
+String QUERY uses FTS (AND of terms + prefix). Object QUERY uses exact field match on declared filter fields.
+
+### Portable backends (SQLite now; Postgres / NoSQL later)
+
+Indexing (git sources, on-commit, regen) does not depend on the engine. QUERY and upsert go through `SearchStore`. v1 is SQLite (`RELAY_SEARCH_STORE=sqlite`, default). `postgres` and `meilisearch` are reserved names — they must implement the **same** declared-schema contract:
+
+- **Filter** only keys listed in `filterFields` (or builtins). Never “any JSON key.”
+- **Sort** is the closed HTTP set: `path`, `-path`, `sort_key`, `-sort_key`, `random`. `sortFields` tells the backend which columns/attributes to index.
+- **`order=random`** is shuffled in Rust after a capped candidate fetch (not SQL `RANDOM()` / Meili ranking). Postgres may use SQL `random()` as an optimization behind the same limit/cap.
+- **FTS** is AND of tokens + prefix (`iran*`). Engine-specific ranking is not part of the HTTP contract.
+- Identity is `(repo slug, branch, collection)` — never hostname. Shared-catalog later is `RELAY_DATABASE_URL` plus a second backend on this trait.
+
+Writes (post-receive index) may be slow; QUERY must stay a read.
 
 Legacy **`redb`** remains available via `@relay/search/redb` or `plugin: "redb"` / `server.search.plugin: redb`.
 
@@ -145,7 +163,7 @@ curl -X QUERY "https://dfw1.relaygateway.net/paradigm-threat-files" \
 | `limit` | Row cap (`1..=10000`; **`1..=100` when `order=random`**) |
 | `order` | `path` (asc, default), `-path`, `sort_key`, `-sort_key`, or `random`. Timeline events should use `sort_key` (falls back to `md_path`/`path` when unreindexed). |
 
-Object `query` (JSON body) supports field predicates on allowlisted keys (`[A-Za-z0-9_]{1,64}`):
+Object `query` (JSON body) supports field predicates on **declared** `filterFields` (builtins if omitted):
 
 | Shape | Meaning |
 |-------|---------|
@@ -155,9 +173,9 @@ Object `query` (JSON body) supports field predicates on allowlisted keys (`[A-Za
 | `{ "content_kind": { "$ne": "exclude" } }` | Not equal (missing field matches) |
 | `{ "type": { "$ne": ["manifest"] } }` | Not in list |
 
-Predicates are pushed into SQL (`json_extract` + bound params) so `order=random&limit=N` returns N matching rows, not N random rows filtered afterward. Invalid / unsafe shapes yield an empty result set (never interpolated SQL).
+Predicates are applied on declared `filterFields` first, then `order=random` shuffles a capped candidate set in Rust so `limit=N` is N matching rows. Invalid / unsafe shapes yield an empty result set (never interpolated SQL).
 
-Unknown keys are ignored. Invalid `order` → HTTP 400. `order` selects fixed SQL `ORDER BY` templates only (never interpolated).
+Unknown keys are ignored. Invalid `order` → HTTP 400. `order` is a closed token set (`path`, `-path`, `sort_key`, `-sort_key`, `random`).
 
 ```bash
 # Curl-friendly: no body

@@ -8,7 +8,7 @@ use serde::Deserialize;
 use tracing::{error, info, warn};
 
 use crate::git::hooks::HookContext;
-use crate::git::{branch_operation_mutex, ensure_indexed, has_index_hook, read_relay_config};
+use crate::git::{branch_operation_mutex, ensure_indexed, read_relay_config};
 use crate::notify;
 use crate::peer_notify;
 
@@ -269,16 +269,10 @@ fn warm_index_if_needed(repo_path: &PathBuf, branch: &str, tip: &str) {
         is_verified: true,
         files: Default::default(),
     };
-    if let Ok(repo) = git2::Repository::open_bare(repo_path) {
-        if let Some(cfg) = read_relay_config(&repo, tip) {
-            if has_index_hook(&cfg) {
-                let lock = branch_operation_mutex(repo_path.clone(), branch.to_string());
-                let _guard = lock.lock().unwrap();
-                if let Err(e) = ensure_indexed(&ctx) {
-                    warn!(error = %e, "catalog apply: ensure_indexed failed");
-                }
-            }
-        }
+    let lock = branch_operation_mutex(repo_path.clone(), branch.to_string());
+    let _guard = lock.lock().unwrap();
+    if let Err(e) = ensure_indexed(&ctx) {
+        warn!(error = %e, "catalog apply: ensure_indexed failed");
     }
 }
 

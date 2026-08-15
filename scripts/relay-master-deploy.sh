@@ -335,7 +335,7 @@ REMOTE
 
 if [[ "$SKIP_SEED" != 1 && "$TARGET" == spot-* ]]; then
   echo "[deploy] peer-clone PT repos from ${PEER_SOURCE}"
-  REPOS=(paradigm-threat-files paradigm-threat-timeline paradigm-threat-site)
+  REPOS=(paradigm-threat-files paradigm-threat-timeline)
   for repo in "${REPOS[@]}"; do
     "${SSH[@]}" "$SSH_TARGET" sudo bash -s "$repo" "$PEER_SOURCE" <<'REMOTE' || true
 set -euo pipefail
