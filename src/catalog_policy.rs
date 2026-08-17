@@ -224,11 +224,7 @@ impl CatalogRepoRecord {
     }
 
     pub fn branch_feature_allows_unsigned(&self, branch: &str) -> Option<bool> {
-        if let Some(ref dev) = self
-            .branch_features
-            .as_ref()
-            .and_then(|b| b.dev.as_ref())
-        {
+        if let Some(ref dev) = self.branch_features.as_ref().and_then(|b| b.dev.as_ref()) {
             if dev.enabled && dev.branch_name == branch {
                 return Some(dev.allow_unsigned_commits);
             }
@@ -296,8 +292,8 @@ pub fn load_catalog_index(catalog_path: &Path) -> anyhow::Result<CatalogIndex> {
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let s = std::fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let s =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let rec: CatalogRepoRecord =
             serde_json::from_str(&s).with_context(|| format!("parse {}", path.display()))?;
         let slug = rec.repo.clone();
@@ -335,9 +331,7 @@ fn is_valid_domain(d: &str) -> bool {
         && d.split('.').all(|label| {
             !label.is_empty()
                 && label.len() <= 63
-                && label
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
                 && !label.starts_with('-')
                 && !label.ends_with('-')
         })
@@ -407,10 +401,7 @@ pub fn write_parked_domains_allowlist(map: &HashMap<String, String>) {
 
 /// Like [`write_parked_domains_allowlist`], but filter the TLS allowlist using
 /// `.relay.yaml` from bare repos under `repo_path`.
-pub fn write_parked_domains_allowlist_at(
-    repo_path: Option<&Path>,
-    map: &HashMap<String, String>,
-) {
+pub fn write_parked_domains_allowlist_at(repo_path: Option<&Path>, map: &HashMap<String, String>) {
     if let Some(rp) = repo_path {
         crate::park_tls::write_tls_allowlist(rp, map);
         return;
@@ -423,7 +414,8 @@ pub fn write_parked_domains_allowlist_at(
     }
     let mut domains: Vec<&String> = map.keys().collect();
     domains.sort();
-    let mut body = String::from("# relay parked domains (Host -> repo); managed by relay-gateway\n");
+    let mut body =
+        String::from("# relay parked domains (Host -> repo); managed by relay-gateway\n");
     for d in domains {
         body.push_str(d);
         body.push('\n');
@@ -635,7 +627,10 @@ mod tests {
         assert_eq!(normalize_domain("CleverTree.NET"), "clevertree.net");
         assert_eq!(normalize_domain("clevertree.net:443"), "clevertree.net");
         assert_eq!(normalize_domain("clevertree.net."), "clevertree.net");
-        assert_eq!(normalize_domain(" www.clevertree.net "), "www.clevertree.net");
+        assert_eq!(
+            normalize_domain(" www.clevertree.net "),
+            "www.clevertree.net"
+        );
     }
 
     #[test]
@@ -713,5 +708,16 @@ mod tests {
         .unwrap();
         assert_eq!(without.publish_branch, "main");
         assert_eq!(without.publish_origin, None);
+
+        let empty: CatalogRepoRecord = serde_json::from_str(
+            r#"{
+              "repo": "sample",
+              "tier": "primary",
+              "relay_root_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "publish_origin": ""
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(empty.publish_origin.as_deref(), Some(""));
     }
 }

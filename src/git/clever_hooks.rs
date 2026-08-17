@@ -38,7 +38,7 @@ mod tests {
     use base64::engine::general_purpose::STANDARD as B64;
     use base64::Engine;
     use git2::{Repository, Signature};
-    use image::{Rgb, RgbImage, ImageBuffer, ImageFormat, Rgba};
+    use image::{ImageBuffer, ImageFormat, Rgb, RgbImage, Rgba};
     use serial_test::serial;
     use std::io::Cursor;
     use tempfile::tempdir;
@@ -73,14 +73,8 @@ mod tests {
 export default function run(c) {
   return { body: readFile("note.txt") };
 }"#;
-        let j = run_clever_hook(
-            src,
-            &serde_json::json!({}),
-            repo_path,
-            "main".into(),
-            false,
-        )
-        .unwrap();
+        let j =
+            run_clever_hook(src, &serde_json::json!({}), repo_path, "main".into(), false).unwrap();
         assert_eq!(j["body"], "payload-bytes");
     }
 
@@ -132,9 +126,7 @@ export default function run(ctx, next) {
         assert_eq!(j["kind"], "file");
         let st = &j["status"];
         assert!(
-            st.as_u64() == Some(404)
-                || st.as_i64() == Some(404)
-                || st.as_f64() == Some(404.0),
+            st.as_u64() == Some(404) || st.as_i64() == Some(404) || st.as_f64() == Some(404.0),
             "unexpected status field: {:?}",
             st
         );
@@ -196,11 +188,7 @@ export default function run(c) { return x; }"#,
             false,
         )
         .unwrap_err();
-        assert!(
-            err.to_string().contains("unknown module"),
-            "{}",
-            err
-        );
+        assert!(err.to_string().contains("unknown module"), "{}", err);
     }
 
     #[test]
@@ -345,7 +333,10 @@ export default function run(ctx) { return queryWidth(ctx); }"#;
             true,
         )
         .unwrap();
-        assert!(j.is_null(), "width must come from ctx.query only, not ctx.w");
+        assert!(
+            j.is_null(),
+            "width must come from ctx.query only, not ctx.w"
+        );
 
         let j = run_clever_hook(
             src,
@@ -397,7 +388,10 @@ export default function run(ctx) {
             true,
         )
         .unwrap();
-        assert!(j.is_null(), "ipfs opts must not imply width or trigger resize");
+        assert!(
+            j.is_null(),
+            "ipfs opts must not imply width or trigger resize"
+        );
     }
 
     #[test]
@@ -434,7 +428,9 @@ export default function run(ctx) {
         .unwrap();
         assert_eq!(j["contentType"], "image/png");
         assert!(j["cacheKey"].as_str().unwrap().starts_with("ipfs:"));
-        let body = B64.decode(j["bodyBase64"].as_str().unwrap().as_bytes()).unwrap();
+        let body = B64
+            .decode(j["bodyBase64"].as_str().unwrap().as_bytes())
+            .unwrap();
         assert_eq!(body, payload);
     }
 
@@ -490,7 +486,9 @@ export default function run(ctx) {
             j["contentType"].as_str().unwrap().contains("jpeg"),
             "resolveIpfs must not defer when ?w= is present"
         );
-        let body = B64.decode(j["bodyBase64"].as_str().unwrap().as_bytes()).unwrap();
+        let body = B64
+            .decode(j["bodyBase64"].as_str().unwrap().as_bytes())
+            .unwrap();
         assert_eq!(body, payload);
     }
 
@@ -571,7 +569,9 @@ export default function run(ctx) {
         .unwrap();
         assert_eq!(j["kind"], "file");
         assert_eq!(j["contentType"], "image/png");
-        let body = B64.decode(j["bodyBase64"].as_str().unwrap().as_bytes()).unwrap();
+        let body = B64
+            .decode(j["bodyBase64"].as_str().unwrap().as_bytes())
+            .unwrap();
         assert_eq!(body, payload);
     }
 
@@ -640,7 +640,9 @@ export default function run(ctx) {{
             "expected webp from IPFS+raster pipeline, got {:?}",
             j["contentType"]
         );
-        let webp = B64.decode(j["bodyBase64"].as_str().unwrap().as_bytes()).unwrap();
+        let webp = B64
+            .decode(j["bodyBase64"].as_str().unwrap().as_bytes())
+            .unwrap();
         assert!(webp.starts_with(b"RIFF"));
     }
 
@@ -679,7 +681,9 @@ export default function run(ctx) {
         )
         .unwrap();
         assert_eq!(j["contentType"], "image/jpeg");
-        let body = B64.decode(j["bodyBase64"].as_str().unwrap().as_bytes()).unwrap();
+        let body = B64
+            .decode(j["bodyBase64"].as_str().unwrap().as_bytes())
+            .unwrap();
         assert_eq!(body, payload);
     }
 }

@@ -7,20 +7,22 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::error;
 
+use crate::catalog_policy::{self, CatalogRepoRecord};
 use crate::git::clever_hooks::run_clever_hook;
-use crate::git::embed_html::merge_vary_accept;
 use crate::git::clever_script_host::augment_get_context_headers;
+use crate::git::embed_html::merge_vary_accept;
 use crate::git::get_hook_http::{get_hook_execution_error_response, get_hook_json_to_response};
 use crate::git::index_policy;
-use crate::catalog_policy::{self, CatalogRepoRecord};
 use crate::git::ipfs::{
     is_asset_like_path, manifest_cid_for_path, parse_manifest_bytes, parse_pointer_bytes,
     resolve_ipfs_pointer, AssetsManifest, IpfsResolveOptions, MANIFEST_PATH,
 };
-use crate::git::repo::{open_repo_for_state, read_file_from_repo, read_relay_config};
 use crate::git::open_repo;
+use crate::git::repo::{open_repo_for_state, read_file_from_repo, read_relay_config};
 use crate::git::worktree::{read_worktree_file, worktree_file_response};
-use crate::types::{AppState, GitResolveResult, ServeContext, HEADER_BRANCH, HEADER_REPO};
+use crate::types::{
+    AppState, GitResolveResult, ServeContext, HEADER_BRANCH, HEADER_REPO, HEADER_TREE,
+};
 use git2::Repository;
 
 fn load_assets_manifest(repo: &Repository, commit: &git2::Commit) -> Option<AssetsManifest> {
@@ -197,15 +199,108 @@ fn embed_query_flag(q: &HashMap<String, String>) -> bool {
         .unwrap_or(false)
 }
 
+/// Media type for explicit git tree listings (`X-Relay-Tree: 1`).
+pub const RELAY_TREE_MEDIA_TYPE: &str = "application/vnd.relay.tree+json";
+
+fn header_flag_enabled(headers: &HeaderMap, name: &str) -> bool {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            let v = v.trim();
+            if v.is_empty() {
+                return true;
+            }
+            let v = v.to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes" || v == "on"
+        })
+        .unwrap_or(false)
+}
+
+/// Explicit file-tree listing: `X-Relay-Tree: 1`.
+///
+/// A request header (never sent by normal browser navigation) so listing cannot collide
+/// with blobs (`index.html`, `index.json`) or the repo-host site shell on `GET /`.
+pub fn wants_relay_tree(headers: &HeaderMap) -> bool {
+    header_flag_enabled(headers, HEADER_TREE)
+}
+
+fn tree_entry_type(kind: Option<ObjectType>) -> &'static str {
+    match kind {
+        Some(ObjectType::Blob) => "file",
+        Some(ObjectType::Tree) => "dir",
+        Some(ObjectType::Commit) => "commit",
+        _ => "unknown",
+    }
+}
+
+fn relay_tree_json(
+    repo_name: &str,
+    branch: &str,
+    commit: &git2::Commit,
+    path: &str,
+    dir_tree: &git2::Tree,
+) -> serde_json::Value {
+    let mut entries = Vec::new();
+    for item in dir_tree.iter() {
+        let Some(name) = item.name() else {
+            continue;
+        };
+        let child_path = if path.is_empty() {
+            name.to_string()
+        } else {
+            format!("{path}/{name}")
+        };
+        entries.push(serde_json::json!({
+            "name": name,
+            "type": tree_entry_type(item.kind()),
+            "path": child_path,
+            "mode": format!("{:06o}", item.filemode()),
+            "oid": item.id().to_string(),
+        }));
+    }
+    entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    serde_json::json!({
+        "schema": "relay.tree.v1",
+        "repo": repo_name,
+        "branch": branch,
+        "commit": commit.id().to_string(),
+        "path": path,
+        "entries": entries,
+    })
+}
+
+fn relay_tree_response(
+    repo_name: &str,
+    branch: &str,
+    commit: &git2::Commit,
+    path: &str,
+    dir_tree: &git2::Tree,
+) -> axum::response::Response {
+    let body = serde_json::to_string(&relay_tree_json(repo_name, branch, commit, path, dir_tree))
+        .unwrap_or_else(|_| "{}".to_string());
+    (
+        StatusCode::OK,
+        [
+            (
+                "Content-Type",
+                format!("{RELAY_TREE_MEDIA_TYPE}; charset=utf-8"),
+            ),
+            (HEADER_BRANCH, branch.to_string()),
+            (HEADER_REPO, repo_name.to_string()),
+        ],
+        body,
+    )
+        .into_response()
+}
+
 fn want_static_markdown_html(
     headers: &HeaderMap,
     q: &HashMap<String, String>,
     content_type: &str,
     uri_path: &str,
 ) -> bool {
-    is_markdown_blob(content_type, uri_path)
-        && accept_prefers_html(headers)
-        && !embed_query_flag(q)
+    is_markdown_blob(content_type, uri_path) && accept_prefers_html(headers) && !embed_query_flag(q)
 }
 
 /// Site shell (embed SSR / CSR): markdown blob and either `?embed=1` or `Accept: text/html`.
@@ -304,9 +399,15 @@ pub fn git_resolve_and_respond(
     };
 
     let rel = decoded.trim_matches('/');
+    let wants_tree = wants_relay_tree(headers);
 
-    // Empty path -> delegate to dynamic GET (`server.hooks.get` CleverScript) after Git miss
+    // Empty path: `X-Relay-Tree: 1` lists the commit root; otherwise fall through to the site shell.
     if rel.is_empty() {
+        if wants_tree {
+            return GitResolveResult::Respond(relay_tree_response(
+                repo_name, branch, &commit, "", &tree,
+            ));
+        }
         return GitResolveResult::NotFound(rel.to_string());
     }
 
@@ -353,17 +454,7 @@ pub fn git_resolve_and_respond(
                     serde_json::json!({})
                 };
                 if let Some(resp) = try_server_get_hook(
-                    &repo,
-                    branch,
-                    repo_name,
-                    rel,
-                    headers,
-                    &commit,
-                    None,
-                    &ct,
-                    None,
-                    &qmap,
-                    extra,
+                    &repo, branch, repo_name, rel, headers, &commit, None, &ct, None, &qmap, extra,
                 ) {
                     if wants_shell {
                         if response_content_type_is_html(&resp) {
@@ -529,6 +620,11 @@ pub fn git_resolve_and_respond(
         },
         Some(ObjectType::Tree) => match repo.find_tree(entry.id()) {
             Ok(dir_tree) => {
+                if wants_tree {
+                    return GitResolveResult::Respond(relay_tree_response(
+                        repo_name, branch, &commit, rel, &dir_tree,
+                    ));
+                }
                 let mut entries = serde_json::json!({});
                 for item in dir_tree.iter() {
                     if let Some(name) = item.name() {
@@ -735,7 +831,10 @@ export default function run(ctx) {
             .get(axum::http::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        assert!(ct.contains("png"), "zero width should skip resize, got {ct:?}");
+        assert!(
+            ct.contains("png"),
+            "zero width should skip resize, got {ct:?}"
+        );
         assert_eq!(parts.status, StatusCode::OK);
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         assert!(bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]));
@@ -830,9 +929,7 @@ export default function run(ctx, next) {
         server.insert("get.cs", get_cs_oid, 0o100644).unwrap();
         let server_id = server.write().unwrap();
         let mut client = repo.treebuilder(None).unwrap();
-        client
-            .insert("get.jsx", client_get_oid, 0o100644)
-            .unwrap();
+        client.insert("get.jsx", client_get_oid, 0o100644).unwrap();
         let client_id = client.write().unwrap();
         let mut hooks = repo.treebuilder(None).unwrap();
         hooks.insert("server", server_id, 0o040000).unwrap();
@@ -841,9 +938,7 @@ export default function run(ctx, next) {
 
         let mut root_tree = repo.treebuilder(None).unwrap();
         root_tree.insert("readme.md", md_oid, 0o100644).unwrap();
-        root_tree
-            .insert(".relay.yaml", yaml_oid, 0o100644)
-            .unwrap();
+        root_tree.insert(".relay.yaml", yaml_oid, 0o100644).unwrap();
         root_tree.insert("hooks", hooks_id, 0o040000).unwrap();
         let tree_id = root_tree.write().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
@@ -864,8 +959,13 @@ export default function run(ctx, next) {
         };
         let (parts, body) = resp.into_response().into_parts();
         assert_eq!(parts.status, StatusCode::OK);
-        let text = String::from_utf8(axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec())
-            .unwrap();
+        let text = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(text.starts_with("# Hello"));
     }
 
@@ -888,8 +988,13 @@ export default function run(ctx, next) {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         assert!(ct.contains("text/html"), "expected text/html, got {ct:?}");
-        let html = String::from_utf8(axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec())
-            .unwrap();
+        let html = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(html.contains("<article"));
         assert!(html.contains("Hello"));
         assert!(!html.contains("/assets/embed.js"));
@@ -917,8 +1022,13 @@ export default function run(ctx, next) {
         };
         let (parts, body) = resp.into_response().into_parts();
         assert_eq!(parts.status, StatusCode::OK);
-        let html = String::from_utf8(axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec())
-            .unwrap();
+        let html = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(html.contains("/assets/embed.js"));
         assert!(html.contains("relay-embed-config"));
         let vary = parts
@@ -955,8 +1065,13 @@ export default function run(ctx, next) {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         assert!(ct.contains("text/html"), "expected HTML embed, got {ct:?}");
-        let html = String::from_utf8(axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec())
-            .unwrap();
+        let html = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(html.contains("/assets/embed.js"), "{html}");
         assert!(html.contains("relay-embed-config"), "{html}");
         assert!(
@@ -989,8 +1104,13 @@ export default function run(ctx, next) {
         };
         let (parts, body) = resp.into_response().into_parts();
         assert_eq!(parts.status, StatusCode::OK);
-        let html = String::from_utf8(axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec())
-            .unwrap();
+        let html = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(html.contains("data-relay-ssr=\"1\""), "{html}");
         assert!(html.contains("Opt-in SSR"), "{html}");
         assert!(html.contains("data-relay-hid=\"1\""), "{html}");
@@ -1015,8 +1135,13 @@ export default function run(ctx, next) {
         };
         let (parts, body) = resp.into_response().into_parts();
         assert_eq!(parts.status, StatusCode::OK);
-        let html = String::from_utf8(axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec())
-            .unwrap();
+        let html = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(html.contains("data-relay-ssr=\"1\""), "{html}");
         assert!(html.contains("Opt-in SSR"), "{html}");
         assert!(html.contains("/assets/embed.js"), "{html}");
@@ -1038,8 +1163,13 @@ export default function run(ctx, next) {
             .expect("site shell HTML");
         let (parts, body) = resp.into_response().into_parts();
         assert_eq!(parts.status, StatusCode::OK);
-        let html = String::from_utf8(axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec())
-            .unwrap();
+        let html = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(html.contains("data-relay-ssr=\"1\""), "{html}");
         assert!(html.contains("Opt-in SSR"), "{html}");
         assert!(html.contains("/assets/embed.js"), "{html}");
@@ -1063,8 +1193,13 @@ export default function run(ctx, next) {
         };
         let (parts, body) = resp.into_response().into_parts();
         assert_eq!(parts.status, StatusCode::OK);
-        let html = String::from_utf8(axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec())
-            .unwrap();
+        let html = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(html.contains("data-relay-ssr=\"1\""), "{html}");
         assert!(html.contains("Opt-in SSR"), "{html}");
         assert!(html.contains("/assets/embed.js"), "{html}");
@@ -1099,8 +1234,13 @@ export default function run(ctx, next) {
             ct.contains("markdown") || ct.contains("text/plain"),
             "expected markdown-ish content-type, got {ct:?}"
         );
-        let text = String::from_utf8(axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec())
-            .unwrap();
+        let text = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(text.starts_with("# Hello"));
     }
 
@@ -1116,8 +1256,147 @@ export default function run(ctx, next) {
             panic!("expected Respond");
         };
         let (_parts, body) = resp.into_response().into_parts();
-        let html = String::from_utf8(axum::body::to_bytes(body, usize::MAX).await.unwrap().to_vec())
-            .unwrap();
+        let html = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(html.contains("/assets/embed.js"));
+    }
+
+    fn bare_site_with_indexes() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let repo_path = root.join("site.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+        let index_html = repo.blob(b"<html>home</html>").unwrap();
+        let index_json = repo.blob(br#"{"ok":true}"#).unwrap();
+        let readme = repo.blob(b"# site\n").unwrap();
+        let blog_index = repo.blob(b"<html>blog</html>").unwrap();
+        let post = repo.blob(b"# post\n").unwrap();
+        let mut tb_blog = repo.treebuilder(None).unwrap();
+        tb_blog.insert("index.html", blog_index, 0o100644).unwrap();
+        tb_blog.insert("post.md", post, 0o100644).unwrap();
+        let blog_tid = tb_blog.write().unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert("index.html", index_html, 0o100644).unwrap();
+        tb.insert("index.json", index_json, 0o100644).unwrap();
+        tb.insert("README.md", readme, 0o100644).unwrap();
+        tb.insert("blog", blog_tid, 0o040000).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        (dir, root)
+    }
+
+    fn tree_header() -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(HEADER_TREE, HeaderValue::from_static("1"));
+        h
+    }
+
+    async fn resolve_json(
+        state: &AppState,
+        headers: &HeaderMap,
+        path: &str,
+    ) -> (StatusCode, String, serde_json::Value) {
+        let r = git_resolve_and_respond(state, headers, "main", "site", path, None);
+        let GitResolveResult::Respond(resp) = r else {
+            panic!("expected Respond for path {path}");
+        };
+        let (parts, body) = resp.into_response().into_parts();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let ct = parts
+            .headers
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or_else(|_| serde_json::json!(null));
+        (parts.status, ct, json)
+    }
+
+    #[tokio::test]
+    async fn relay_tree_header_lists_root_despite_index_files() {
+        let (_dir, root) = bare_site_with_indexes();
+        let state = bare_fleet_state(root);
+        let (status, ct, json) = resolve_json(&state, &tree_header(), "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            ct.contains(RELAY_TREE_MEDIA_TYPE),
+            "expected tree media type, got {ct:?}"
+        );
+        assert_eq!(json["schema"], "relay.tree.v1");
+        assert_eq!(json["path"], "");
+        let names: Vec<&str> = json["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"index.html"));
+        assert!(names.contains(&"index.json"));
+        assert!(names.contains(&"blog"));
+        let blog = json["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == "blog")
+            .unwrap();
+        assert_eq!(blog["type"], "dir");
+    }
+
+    #[tokio::test]
+    async fn empty_path_without_tree_header_is_not_found() {
+        let (_dir, root) = bare_site_with_indexes();
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &HeaderMap::new(), "main", "site", "", None);
+        assert!(matches!(r, GitResolveResult::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn relay_tree_header_lists_dir_despite_index_html() {
+        let (_dir, root) = bare_site_with_indexes();
+        let state = bare_fleet_state(root);
+        let (status, ct, json) = resolve_json(&state, &tree_header(), "blog").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(ct.contains(RELAY_TREE_MEDIA_TYPE));
+        assert_eq!(json["path"], "blog");
+        let names: Vec<&str> = json["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"index.html"));
+        assert!(names.contains(&"post.md"));
+    }
+
+    #[tokio::test]
+    async fn relay_tree_header_does_not_steal_blob_get() {
+        let (_dir, root) = bare_site_with_indexes();
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &tree_header(), "main", "site", "index.json", None);
+        let GitResolveResult::Respond(resp) = r else {
+            panic!("expected Respond");
+        };
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let ct = parts
+            .headers
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            !ct.contains(RELAY_TREE_MEDIA_TYPE),
+            "blob GET must not become a tree listing, got {ct:?}"
+        );
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        assert_eq!(bytes.as_ref(), br#"{"ok":true}"#);
     }
 }

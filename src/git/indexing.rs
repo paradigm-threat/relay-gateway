@@ -4,9 +4,7 @@ use crate::git::index_store;
 use crate::git::repo::read_relay_config;
 use crate::git::search_config;
 use crate::git::search_plugins::{self, PLUGIN_CHAT};
-use crate::git::search_store::{
-    store_for_bare_repo, store_key_for_bare, SearchStore,
-};
+use crate::git::search_store::{store_for_bare_repo, store_key_for_bare, SearchStore};
 use crate::git::sqlite_index;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -98,12 +96,7 @@ fn ensure_indexed_impl(ctx: &HookContext, force: bool) -> anyhow::Result<()> {
         );
         return Ok(());
     }
-    let search = search_config::load_search_config(
-        &ctx.repo_path,
-        &ctx.new_commit,
-        &relay,
-        None,
-    );
+    let search = search_config::load_search_config(&ctx.repo_path, &ctx.new_commit, &relay, None);
     let plugin = search
         .plugin
         .as_deref()
@@ -291,9 +284,7 @@ server:
         std::fs::create_dir_all(json_path.parent().unwrap()).unwrap();
         std::fs::write(
             &json_path,
-            format!(
-                r#"{{"metadata":{{"indexed_head":"{commit}"}},"collections":{{"index":[]}}}}"#
-            ),
+            format!(r#"{{"metadata":{{"indexed_head":"{commit}"}},"collections":{{"index":[]}}}}"#),
         )
         .unwrap();
 

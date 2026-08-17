@@ -557,13 +557,8 @@ fn hook_file_object_asset_error(err: &AssetResolveError) -> CsValue {
             Some(cid) => crate::git::ipfs::probe_seed_status(cid),
             None => crate::git::ipfs::SeedStatus::unknown("no CID"),
         });
-    let body = crate::git::ipfs::asset_status_body(
-        Some(err),
-        err.cid.as_deref(),
-        "",
-        &seed,
-    )
-    .to_string();
+    let body =
+        crate::git::ipfs::asset_status_body(Some(err), err.cid.as_deref(), "", &seed).to_string();
     let mut headers = HashMap::new();
     headers.insert(
         ASSET_ERROR_HEADER.to_string(),
@@ -693,10 +688,8 @@ fn markdown_html_from_get_context_native(
     let bytes = markdown_body_from_ctx(m, &repo_root, &branch)?;
     let md = String::from_utf8_lossy(&bytes);
     let portraits = crate::git::portrait::portrait_sibling_set(&repo_root, &branch);
-    let html = crate::git::markdown_html::markdown_to_html_fragment_with_portraits(
-        &md,
-        Some(&portraits),
-    )?;
+    let html =
+        crate::git::markdown_html::markdown_to_html_fragment_with_portraits(&md, Some(&portraits))?;
     Ok(hook_file_object_html(&html))
 }
 
@@ -843,27 +836,24 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
         } else {
             None
         };
-        let article_seo = md_rel_guess.and_then(|md_rel| {
-            match crate::git::repo::read_file_from_repo(
-                &repo_root,
-                request_branch,
-                &md_rel,
-            ) {
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    Some(crate::git::seo_from_markdown::seo_from_markdown(
-                        crate::git::seo_from_markdown::SeoFromMarkdownInput {
-                            markdown: &text,
-                            rel_path: &md_rel,
-                            public_origin: public_canonical_origin.as_deref(),
-                            request_origin: Some(origin.as_str()),
-                            site_name: site_name.as_deref(),
-                        },
-                    ))
+        let article_seo =
+            md_rel_guess.and_then(|md_rel| {
+                match crate::git::repo::read_file_from_repo(&repo_root, request_branch, &md_rel) {
+                    Ok(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        Some(crate::git::seo_from_markdown::seo_from_markdown(
+                            crate::git::seo_from_markdown::SeoFromMarkdownInput {
+                                markdown: &text,
+                                rel_path: &md_rel,
+                                public_origin: public_canonical_origin.as_deref(),
+                                request_origin: Some(origin.as_str()),
+                                site_name: site_name.as_deref(),
+                            },
+                        ))
+                    }
+                    Err(_) => None,
                 }
-                Err(_) => None,
-            }
-        });
+            });
 
         let doc_title = article_seo
             .as_ref()
@@ -880,13 +870,8 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                 // Site-level canonical alone is only useful for `/`.
                 public_canonical_origin.clone()
             });
-        let og_image = article_seo
-            .as_ref()
-            .and_then(|s| s.image_url.clone());
-        let is_article = article_seo
-            .as_ref()
-            .map(|s| s.is_article)
-            .unwrap_or(false);
+        let og_image = article_seo.as_ref().and_then(|s| s.image_url.clone());
+        let is_article = article_seo.as_ref().map(|s| s.is_article).unwrap_or(false);
 
         let html = crate::git::embed_html::embed_html_document_with_assets_and_seo_extras(
             repo,
@@ -910,7 +895,8 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
         );
         let portraits_json =
             crate::git::portrait::portrait_sibling_set_json(&repo_root, request_branch);
-        let html = crate::git::embed_html::inject_portrait_sibling_bootstrap(&html, &portraits_json);
+        let html =
+            crate::git::embed_html::inject_portrait_sibling_bootstrap(&html, &portraits_json);
         crate::git::ssr_html_cache::put(
             &repo_root,
             request_branch,

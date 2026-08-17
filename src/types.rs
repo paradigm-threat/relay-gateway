@@ -10,6 +10,8 @@ use std::sync::Arc;
 /// Legacy response header (informational only; **not** used for repo selection).
 pub const HEADER_REPO: &str = "X-Relay-Repo";
 pub const HEADER_BRANCH: &str = "X-Relay-Branch";
+/// Opt-in git tree listing on GET/HEAD of `/` or a directory path (`1` / `true` / `yes` / `on`).
+pub const HEADER_TREE: &str = "X-Relay-Tree";
 pub const DEFAULT_BRANCH: &str = "main";
 pub const DEFAULT_IPFS_CACHE_ROOT: &str = "/tmp/ipfs-cache";
 

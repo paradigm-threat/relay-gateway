@@ -72,8 +72,32 @@ fn main() -> anyhow::Result<()> {
             ctx.files = fs;
         }
 
-        // Enforce branch rules for pre-receive BEFORE execute_repo_hook
+        // Publish-origin fence, then branch rules, before execute_repo_hook.
         if hook_name == "pre-receive" {
+            let hostname = std::env::var("RELAY_PUBLIC_HOSTNAME")
+                .or_else(|_| std::env::var("RELAY_NODE_FQDN"))
+                .ok();
+            if let Err(e) =
+                relay_server::git::enforce_publish_origin_fence(&ctx.repo_path, hostname.as_deref())
+            {
+                error!("publish_origin fence: {}", e);
+                eprintln!("[relay-hook-handler] publish_origin fence: {}", e);
+                let repo_slug = relay_server::notify::normalize_repo_slug(
+                    ctx.repo_path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown.git"),
+                );
+                relay_server::notify::notify_pre_receive_rejection(
+                    &repo_slug,
+                    &ctx.branch,
+                    &ctx.refname,
+                    &ctx.old_commit,
+                    &ctx.new_commit,
+                    &e,
+                );
+                std::process::exit(1);
+            }
             match enforce_branch_rules(&ctx) {
                 Ok(_) => ctx.is_verified = true,
                 Err(e) => {

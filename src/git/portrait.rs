@@ -317,15 +317,12 @@ mod tests {
             portrait_sibling_if_present(&bare, "main", "/governance/war/hero.png?w=800").as_deref(),
             Some("/governance/war/hero-portrait.png?w=800")
         );
-        assert!(
-            portrait_sibling_if_present(&bare, "main", "/governance/war/lonely.png").is_none()
-        );
+        assert!(portrait_sibling_if_present(&bare, "main", "/governance/war/lonely.png").is_none());
     }
 
     #[test]
     fn portrait_set_json_is_object_map() {
-        let (_dir, bare) =
-            bare_with_blobs(&[("foo-portrait.png", b"x"), ("foo.png", b"y")]);
+        let (_dir, bare) = bare_with_blobs(&[("foo-portrait.png", b"x"), ("foo.png", b"y")]);
         let json = portrait_sibling_set_json(&bare, "main");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["foo-portrait.png"], true);

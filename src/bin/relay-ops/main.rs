@@ -10,9 +10,9 @@ mod serve;
 mod spot;
 mod ssh;
 mod topology;
-mod vercel;
 #[cfg(unix)]
 mod tray;
+mod vercel;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -44,6 +44,9 @@ struct Cli {
     /// With update/deploy-all: pack the deploy tarball first.
     #[arg(long, global = true)]
     build: bool,
+    /// With update/deploy-all --build: allow packing a dirty/unpushed tree.
+    #[arg(long, global = true)]
+    allow_dirty: bool,
     /// Allow SSH password prompts (omit BatchMode).
     #[arg(long, global = true)]
     interactive: bool,
@@ -219,7 +222,13 @@ async fn main() -> Result<()> {
             let (fleet, _) = load_fleet(&cfg, only).await?;
             print!(
                 "{}",
-                fleet_cmd::update(&cfg, &fleet, interactive, cli.build || build)?
+                fleet_cmd::update(
+                    &cfg,
+                    &fleet,
+                    interactive,
+                    cli.build || build,
+                    cli.allow_dirty,
+                )?
             );
             Ok(())
         }
@@ -268,10 +277,7 @@ async fn main() -> Result<()> {
         }
         Commands::FixBareHead => {
             let (fleet, _) = load_fleet(&cfg, only).await?;
-            print!(
-                "{}",
-                fleet_cmd::fix_bare_head(&cfg, &fleet, interactive)?
-            );
+            print!("{}", fleet_cmd::fix_bare_head(&cfg, &fleet, interactive)?);
             Ok(())
         }
         Commands::BootstrapSsh => {
@@ -291,14 +297,8 @@ async fn main() -> Result<()> {
             let (fleet, _) = load_fleet(&cfg, only).await?;
             print!(
                 "{}",
-                fleet_cmd::fleet_dns(
-                    &cfg,
-                    &fleet,
-                    drop_unhealthy,
-                    dry_run,
-                    ingress.as_deref(),
-                )
-                .await?
+                fleet_cmd::fleet_dns(&cfg, &fleet, drop_unhealthy, dry_run, ingress.as_deref(),)
+                    .await?
             );
             Ok(())
         }
@@ -316,13 +316,16 @@ async fn main() -> Result<()> {
             } else {
                 print!(
                     "{}",
-                    fleet_cmd::update(&cfg, &fleet, interactive, cli.build)?
+                    fleet_cmd::update(&cfg, &fleet, interactive, cli.build, cli.allow_dirty)?
                 );
             }
             Ok(())
         }
         Commands::Inventory => {
-            println!("{}", serde_json::to_string_pretty(&Inventory::collect(&cfg))?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&Inventory::collect(&cfg))?
+            );
             Ok(())
         }
         Commands::Serve { bind } => cmd_serve(&cfg, bind).await,
@@ -457,6 +460,9 @@ fn install_service(cfg: &OpsConfig) -> Result<()> {
         fs::create_dir_all(&bin)?;
         let dest = bin.join("relay-ops");
         if exe != dest {
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "stop", "relay-ops.service"])
+                .status();
             fs::copy(&exe, &dest).with_context(|| format!("copy to {}", dest.display()))?;
             #[cfg(unix)]
             {
@@ -492,7 +498,10 @@ fn install_service(cfg: &OpsConfig) -> Result<()> {
         }
         let mut workdir = String::new();
         if let Some(root) = cfg.checkout_path() {
-            env_lines.push_str(&format!("Environment=RELAY_OPS_CHECKOUT={}\n", root.display()));
+            env_lines.push_str(&format!(
+                "Environment=RELAY_OPS_CHECKOUT={}\n",
+                root.display()
+            ));
             workdir = format!("WorkingDirectory={}\n", root.display());
         }
         let body = format!(
@@ -532,7 +541,10 @@ fn install_service(cfg: &OpsConfig) -> Result<()> {
         if !st.success() {
             anyhow::bail!("systemctl --user enable --now relay-ops.service failed");
         }
-        println!("installed {} (tray + http://127.0.0.1:7780)", dest.display());
+        println!(
+            "installed {} (tray + http://127.0.0.1:7780)",
+            dest.display()
+        );
         println!("unit {}", unit.display());
         println!("autostart {}", desktop.display());
         Ok(())

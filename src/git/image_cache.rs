@@ -56,8 +56,7 @@ fn path_under_root(root: &Path, key_hex: &str) -> PathBuf {
 }
 
 fn sibling_temp(path: &Path) -> PathBuf {
-    format!("{}.{}", path.display(), std::process::id())
-        .into()
+    format!("{}.{}", path.display(), std::process::id()).into()
 }
 
 /// Total size of `.webp` files under `root`.
@@ -79,9 +78,7 @@ pub fn cached_bytes_total(root: &Path) -> Result<u64> {
                     sum += fs::metadata(f.path())?.len();
                 }
             }
-        } else if meta.is_file()
-            && p.extension().map(|x| x == "webp").unwrap_or(false)
-        {
+        } else if meta.is_file() && p.extension().map(|x| x == "webp").unwrap_or(false) {
             sum += meta.len();
         }
     }
@@ -101,17 +98,14 @@ fn list_webp_entries(root: &Path) -> Result<Vec<(PathBuf, u64, SystemTime)>> {
             for f in fs::read_dir(&p)? {
                 let f = f?;
                 let fp = f.path();
-                if f.file_type()?.is_file()
-                    && fp.extension().map(|x| x == "webp").unwrap_or(false)
+                if f.file_type()?.is_file() && fp.extension().map(|x| x == "webp").unwrap_or(false)
                 {
                     let m = fs::metadata(&fp)?;
                     let tm = m.modified().unwrap_or_else(|_| SystemTime::UNIX_EPOCH);
                     out.push((fp, m.len(), tm));
                 }
             }
-        } else if meta.is_file()
-            && p.extension().map(|x| x == "webp").unwrap_or(false)
-        {
+        } else if meta.is_file() && p.extension().map(|x| x == "webp").unwrap_or(false) {
             let tm = meta.modified().unwrap_or_else(|_| SystemTime::UNIX_EPOCH);
             out.push((p, meta.len(), tm));
         }

@@ -1,6 +1,6 @@
 //! Let's Encrypt HTTP-01 via `instant-acme` for park-plugin domains.
 
-use super::fanout::{spawn_fanout_challenge, spawn_fanout_cert};
+use super::fanout::{spawn_fanout_cert, spawn_fanout_challenge};
 use super::store::{persist_cert_pair, persist_challenge, remove_challenge};
 use crate::types::AppState;
 use anyhow::{anyhow, Context};
@@ -90,10 +90,7 @@ async fn issue_one(state: &AppState, domain: &str) -> anyhow::Result<()> {
                 for t in &challenge_tokens {
                     remove_challenge(t);
                 }
-                return Err(anyhow!(
-                    "ACME order invalid for {domain}: {:?}",
-                    st.error
-                ));
+                return Err(anyhow!("ACME order invalid for {domain}: {:?}", st.error));
             }
             OrderStatus::Pending | OrderStatus::Processing => {
                 attempts += 1;

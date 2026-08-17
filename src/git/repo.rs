@@ -1,6 +1,6 @@
+use crate::types::ReadError;
 use git2::Repository;
 use std::path::{Path, PathBuf};
-use crate::types::ReadError;
 
 /// Fast-forward-only pushes: `git push --force` and non-FF updates are rejected by `receive-pack`.
 pub fn apply_bare_receive_security(repo: &Repository) -> Result<(), git2::Error> {
@@ -13,6 +13,40 @@ pub fn apply_bare_receive_security(repo: &Repository) -> Result<(), git2::Error>
 pub fn apply_bare_receive_security_at_path(repo_path: &Path) -> Result<(), String> {
     let repo = Repository::open_bare(repo_path).map_err(|e| e.to_string())?;
     apply_bare_receive_security(&repo).map_err(|e| e.to_string())
+}
+
+/// Create or open `root/<slug>.git` as a bare repo with `receive.denyNonFastForwards`.
+///
+/// Returns `(created, dest)`. Same logic as `POST /api/git/ensure-bare/:repo` and first-push
+/// provision on `git-receive-pack`. `slug` must already be validated.
+pub fn ensure_bare_repo(root: &Path, slug: &str) -> Result<(bool, PathBuf), String> {
+    let dest = root.join(format!("{slug}.git"));
+    std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    if dest.exists() {
+        return open_existing_bare(&dest).map(|()| (false, dest));
+    }
+    match Repository::init_bare(&dest) {
+        Ok(_) => {
+            apply_bare_receive_security_at_path(&dest)?;
+            Ok((true, dest))
+        }
+        Err(e) => {
+            // First-push race: another connection created the path first.
+            if dest.exists() {
+                open_existing_bare(&dest).map(|()| (false, dest))
+            } else {
+                Err(e.to_string())
+            }
+        }
+    }
+}
+
+fn open_existing_bare(dest: &Path) -> Result<(), String> {
+    let r = Repository::open(dest).map_err(|e| e.to_string())?;
+    if !r.is_bare() {
+        return Err("path exists but is not a bare git repository".to_string());
+    }
+    apply_bare_receive_security_at_path(dest)
 }
 
 /// Returns a sorted list of bare repository names (without .git suffix) in the given root directory
@@ -63,10 +97,7 @@ pub fn open_repo(root: &PathBuf, name: &str) -> Option<Repository> {
 
 /// True when `refs/heads/{branch}` exists on the bare repo.
 pub fn branch_ref_exists(repo: &Repository, branch: &str) -> bool {
-    !branch.is_empty()
-        && repo
-            .find_reference(&format!("refs/heads/{branch}"))
-            .is_ok()
+    !branch.is_empty() && repo.find_reference(&format!("refs/heads/{branch}")).is_ok()
 }
 
 /// Default branch name from the bare repo's symbolic `HEAD` (e.g. `refs/heads/main` → `main`).
@@ -166,12 +197,8 @@ pub fn read_file_from_revision(
     path: &str,
 ) -> Result<Vec<u8>, ReadError> {
     let repo = Repository::open_bare(repo_path).map_err(|e| ReadError::Other(e.into()))?;
-    let obj = repo
-        .revparse_single(rev)
-        .map_err(|_| ReadError::NotFound)?;
-    let commit = obj
-        .peel_to_commit()
-        .map_err(|_| ReadError::NotFound)?;
+    let obj = repo.revparse_single(rev).map_err(|_| ReadError::NotFound)?;
+    let commit = obj.peel_to_commit().map_err(|_| ReadError::NotFound)?;
     let tree = commit.tree().map_err(|e| ReadError::Other(e.into()))?;
     let entry = tree
         .get_path(std::path::Path::new(path))

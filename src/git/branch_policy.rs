@@ -8,18 +8,17 @@
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
-use std::sync::OnceLock;
 
 use tempfile::NamedTempFile;
 
-use crate::catalog_policy::{
-    self, CatalogIndex, CatalogRepoRecord, RepoTier, SigningKeysSource,
-};
+use crate::catalog_policy::{self, CatalogIndex, CatalogRepoRecord, RepoTier, SigningKeysSource};
 use crate::git::read_git_config_from_revision;
 use crate::types::{BranchRule, BranchRulesConfig};
 
-static CATALOG_INDEX: OnceLock<Option<CatalogIndex>> = OnceLock::new();
+#[cfg(not(test))]
+static CATALOG_INDEX: std::sync::OnceLock<Option<CatalogIndex>> = std::sync::OnceLock::new();
 
+#[cfg(not(test))]
 fn catalog_index() -> Option<&'static CatalogIndex> {
     CATALOG_INDEX
         .get_or_init(|| {
@@ -38,9 +37,68 @@ fn repo_slug_from_path(repo_path: &Path) -> String {
         .to_string()
 }
 
-fn catalog_record_for_repo(repo_path: &Path) -> Option<&'static CatalogRepoRecord> {
+fn catalog_record_for_repo(repo_path: &Path) -> Option<CatalogRepoRecord> {
     let slug = repo_slug_from_path(repo_path);
-    catalog_index().and_then(|idx| catalog_policy::catalog_record_for_slug(idx, &slug))
+    let lookup = |idx: &CatalogIndex| catalog_policy::catalog_record_for_slug(idx, &slug).cloned();
+    // Tests reload from env so PUT/DELETE fixtures can set RELAY_MASTER_CATALOG_PATH.
+    #[cfg(test)]
+    {
+        return catalog_policy::catalog_path_from_env()
+            .and_then(|p| catalog_policy::try_load_catalog_index(&p))
+            .and_then(|idx| lookup(&idx));
+    }
+    #[cfg(not(test))]
+    {
+        catalog_index().and_then(lookup)
+    }
+}
+
+/// Reject client `receive-pack` / HTTP PUT/DELETE when this node is not catalog `publish_origin`.
+///
+/// Empty or omitted `publish_origin` = no fence (compat). Do **not** call this from peer-fetch.
+pub fn enforce_publish_origin_fence(
+    repo_path: &Path,
+    public_hostname: Option<&str>,
+) -> Result<(), String> {
+    let rec = catalog_record_for_repo(repo_path);
+    enforce_publish_origin_fence_for_record(
+        rec.as_ref(),
+        public_hostname,
+        &repo_slug_from_path(repo_path),
+    )
+}
+
+/// Same as [`enforce_publish_origin_fence`] with an explicit catalog record (tests).
+pub fn enforce_publish_origin_fence_for_record(
+    record: Option<&CatalogRepoRecord>,
+    public_hostname: Option<&str>,
+    repo_slug: &str,
+) -> Result<(), String> {
+    let Some(rec) = record else {
+        return Ok(());
+    };
+    let origin = match rec.publish_origin.as_deref().map(str::trim) {
+        Some(s) if !s.is_empty() => s,
+        _ => return Ok(()),
+    };
+    let want = catalog_policy::normalize_domain(origin);
+    let have = public_hostname
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(catalog_policy::normalize_domain)
+        .unwrap_or_default();
+    if !have.is_empty() && have == want {
+        return Ok(());
+    }
+    let this_host = if have.is_empty() {
+        "(unset RELAY_PUBLIC_HOSTNAME)".to_string()
+    } else {
+        have
+    };
+    Err(format!(
+        "this node ({this_host}) is not the catalog publish_origin for {repo_slug} \
+(publish_origin={origin}). Push git://{origin}:9418/{repo_slug}.git — not fleet.relaygateway.net"
+    ))
 }
 
 const ZERO_OID: &str = "0000000000000000000000000000000000000000";
@@ -258,10 +316,7 @@ fn commit_committer_iso8601(repo_path: &Path, commit: &str) -> Result<String, St
         .output()
         .map_err(|e| format!("git log committer date: {}", e))?;
     if !out.status.success() {
-        return Err(format!(
-            "git log committer date for {} failed",
-            commit
-        ));
+        return Err(format!("git log committer date for {} failed", commit));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
@@ -288,7 +343,11 @@ fn merge_parent_count(repo_path: &Path, commit: &str) -> Result<usize, String> {
     Ok(parts.len().saturating_sub(1))
 }
 
-fn apply_catalog_branch_flags(rule: &BranchRule, catalog: Option<&CatalogRepoRecord>, branch: &str) -> BranchRule {
+fn apply_catalog_branch_flags(
+    rule: &BranchRule,
+    catalog: Option<&CatalogRepoRecord>,
+    branch: &str,
+) -> BranchRule {
     let mut r = rule.clone();
     if let Some(rec) = catalog {
         if let Some(allow_unsigned) = rec.branch_feature_allows_unsigned(branch) {
@@ -319,7 +378,10 @@ fn effective_allowed_keys_for_verify(
     match rec.signing_keys_source {
         SigningKeysSource::Catalog => {
             if catalog_verify.is_empty() && repo_keys.is_empty() {
-                return Err("catalog signing_keys_source=catalog but no signing_keys in catalog record".into());
+                return Err(
+                    "catalog signing_keys_source=catalog but no signing_keys in catalog record"
+                        .into(),
+                );
             }
             Ok(if catalog_verify.is_empty() {
                 repo_keys
@@ -331,13 +393,17 @@ fn effective_allowed_keys_for_verify(
             if catalog_verify.is_empty() {
                 return Ok(repo_keys);
             }
-            let cat_set: std::collections::HashSet<_> = catalog_verify.iter().map(|s| s.trim()).collect();
+            let cat_set: std::collections::HashSet<_> =
+                catalog_verify.iter().map(|s| s.trim()).collect();
             let inter: Vec<String> = repo_keys
                 .into_iter()
                 .filter(|k| cat_set.contains(k.trim()))
                 .collect();
             if inter.is_empty() {
-                return Err("hybrid signing: no overlap between repo allowedKeys and catalog signing_keys".into());
+                return Err(
+                    "hybrid signing: no overlap between repo allowedKeys and catalog signing_keys"
+                        .into(),
+                );
             }
             Ok(inter)
         }
@@ -473,7 +539,8 @@ pub fn enforce_push_range(
     new_oid: &str,
     branch: &str,
 ) -> Result<(), String> {
-    enforce_push_range_with_catalog(repo_path, old_oid, new_oid, branch, catalog_record_for_repo(repo_path))
+    let rec = catalog_record_for_repo(repo_path);
+    enforce_push_range_with_catalog(repo_path, old_oid, new_oid, branch, rec.as_ref())
 }
 
 pub fn enforce_push_range_with_catalog(
@@ -514,9 +581,7 @@ pub fn enforce_all_commits_on_branch(
         cmd.arg("--first-parent");
     }
     cmd.arg(&refname);
-    let out = cmd
-        .output()
-        .map_err(|e| format!("git rev-list: {}", e))?;
+    let out = cmd.output().map_err(|e| format!("git rev-list: {}", e))?;
     if !out.status.success() {
         return Err(format!(
             "git rev-list failed: {}",
@@ -530,18 +595,15 @@ pub fn enforce_all_commits_on_branch(
         .filter(|l| !l.is_empty())
         .collect();
     for commit in commits {
-        enforce_single_commit_with_catalog(
-            repo_path,
-            &commit,
-            branch,
-            catalog_record_for_repo(repo_path),
-        )?;
+        let rec = catalog_record_for_repo(repo_path);
+        enforce_single_commit_with_catalog(repo_path, &commit, branch, rec.as_ref())?;
     }
     Ok(())
 }
 
 pub fn enforce_single_commit(repo_path: &Path, commit: &str, branch: &str) -> Result<(), String> {
-    enforce_single_commit_with_catalog(repo_path, commit, branch, catalog_record_for_repo(repo_path))
+    let rec = catalog_record_for_repo(repo_path);
+    enforce_single_commit_with_catalog(repo_path, commit, branch, rec.as_ref())
 }
 
 fn enforce_single_commit_with_catalog(
@@ -594,7 +656,8 @@ fn enforce_single_commit_with_catalog(
     }
 
     if let Some(parent) = first_parent(repo_path, commit) {
-        if crate::git::privileged_policy::privileged_relay_yaml_changed(repo_path, &parent, commit) {
+        if crate::git::privileged_policy::privileged_relay_yaml_changed(repo_path, &parent, commit)
+        {
             let parent_git =
                 read_git_config_from_revision(repo_path, &parent).ok_or_else(|| {
                     format!(
@@ -728,5 +791,122 @@ mod tests {
             }]),
         };
         assert!(resolve_branch_rule("feature", &cfg).is_none());
+    }
+
+    fn rec_with_origin(origin: Option<&str>) -> CatalogRepoRecord {
+        CatalogRepoRecord {
+            schema: None,
+            repo: "demo-repo".into(),
+            tier: crate::catalog_policy::RepoTier::Hosted,
+            forge_url: None,
+            relay_root_commit: "a".repeat(40),
+            approved_head: None,
+            publish_branch: "main".into(),
+            publish_origin: origin.map(|s| s.to_string()),
+            owner_key_id: None,
+            signing_keys: vec![],
+            allowed_keys: vec![],
+            signing_keys_source: crate::catalog_policy::SigningKeysSource::Catalog,
+            domains: vec![],
+            branch_features: None,
+            limits: None,
+            last_history_reset: None,
+        }
+    }
+
+    #[test]
+    fn publish_origin_match_allows() {
+        let rec = rec_with_origin(Some("dfw1.relaygateway.net"));
+        assert!(enforce_publish_origin_fence_for_record(
+            Some(&rec),
+            Some("dfw1.relaygateway.net"),
+            "demo-repo",
+        )
+        .is_ok());
+        assert!(enforce_publish_origin_fence_for_record(
+            Some(&rec),
+            Some("DFW1.relaygateway.net."),
+            "demo-repo",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn publish_origin_mismatch_rejects_and_names_fqdn() {
+        let rec = rec_with_origin(Some("dfw1.relaygateway.net"));
+        let err = enforce_publish_origin_fence_for_record(
+            Some(&rec),
+            Some("lon1.relaygateway.net"),
+            "demo-repo",
+        )
+        .expect_err("mismatch must reject");
+        assert!(err.contains("dfw1.relaygateway.net"), "{err}");
+        assert!(
+            err.contains("git://dfw1.relaygateway.net:9418/demo-repo.git"),
+            "{err}"
+        );
+        assert!(err.contains("lon1.relaygateway.net"), "{err}");
+        assert!(err.contains("fleet.relaygateway.net"), "{err}");
+    }
+
+    #[test]
+    fn publish_origin_omitted_allows() {
+        let rec = rec_with_origin(None);
+        assert!(enforce_publish_origin_fence_for_record(
+            Some(&rec),
+            Some("lon1.relaygateway.net"),
+            "demo-repo",
+        )
+        .is_ok());
+        let rec_empty = rec_with_origin(Some("  "));
+        assert!(enforce_publish_origin_fence_for_record(
+            Some(&rec_empty),
+            Some("lon1.relaygateway.net"),
+            "demo-repo",
+        )
+        .is_ok());
+        assert!(enforce_publish_origin_fence_for_record(
+            None,
+            Some("lon1.relaygateway.net"),
+            "demo-repo",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn publish_origin_unset_hostname_rejects_when_origin_set() {
+        let rec = rec_with_origin(Some("dfw1.relaygateway.net"));
+        let err = enforce_publish_origin_fence_for_record(Some(&rec), None, "demo-repo")
+            .expect_err("no hostname must fail closed");
+        assert!(err.contains("unset RELAY_PUBLIC_HOSTNAME"), "{err}");
+        assert!(err.contains("dfw1.relaygateway.net"), "{err}");
+        let err = enforce_publish_origin_fence_for_record(Some(&rec), Some("  "), "files")
+            .expect_err("blank hostname must fail closed");
+        assert!(err.contains("unset RELAY_PUBLIC_HOSTNAME"), "{err}");
+        assert!(err.contains("files"), "{err}");
+    }
+
+    #[test]
+    fn publish_origin_strips_port_and_case() {
+        let rec = rec_with_origin(Some("DFW1.relaygateway.net:9418"));
+        assert!(enforce_publish_origin_fence_for_record(
+            Some(&rec),
+            Some("dfw1.relaygateway.net"),
+            "demo-repo",
+        )
+        .is_ok());
+        assert!(enforce_publish_origin_fence_for_record(
+            Some(&rec),
+            Some("dfw1.relaygateway.net:443"),
+            "demo-repo",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn missing_catalog_record_does_not_fence() {
+        let p = std::path::Path::new("/opt/relay/data/zz-no-such-repo-fence-test.git");
+        assert!(enforce_publish_origin_fence(p, Some("lon1.relaygateway.net")).is_ok());
+        assert!(enforce_publish_origin_fence(p, None).is_ok());
     }
 }

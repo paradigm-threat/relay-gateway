@@ -114,7 +114,11 @@ pub fn read_relay_config_cached(repo: &Repository, rev: &str) -> Option<crate::t
     };
 
     if cache_enabled() {
-        if let Some(hit) = state().lock().ok().and_then(|s| s.configs.get(&key).cloned()) {
+        if let Some(hit) = state()
+            .lock()
+            .ok()
+            .and_then(|s| s.configs.get(&key).cloned())
+        {
             return Some((*hit).clone());
         }
     }
@@ -158,7 +162,11 @@ pub fn read_relay_config_at_path_cached(
     };
 
     if cache_enabled() {
-        if let Some(hit) = state().lock().ok().and_then(|s| s.configs.get(&key).cloned()) {
+        if let Some(hit) = state()
+            .lock()
+            .ok()
+            .and_then(|s| s.configs.get(&key).cloned())
+        {
             return Some((*hit).clone());
         }
     }
@@ -192,7 +200,8 @@ pub fn read_hook_source_cached(
     rev: &str,
     path: &str,
 ) -> Result<String, crate::types::ReadError> {
-    let repo = Repository::open_bare(repo_path).map_err(|e| crate::types::ReadError::Other(e.into()))?;
+    let repo =
+        Repository::open_bare(repo_path).map_err(|e| crate::types::ReadError::Other(e.into()))?;
     let commit = resolve_commit_oid(&repo, rev).ok_or(crate::types::ReadError::NotFound)?;
     let key = HookSourceKey {
         repo: repo_key(repo_path),
@@ -224,8 +233,7 @@ pub fn read_hook_source_cached(
                 }
             }
             s.hook_source_order.push(key.clone());
-            s.hook_sources
-                .insert(key, Arc::new(source.clone()));
+            s.hook_sources.insert(key, Arc::new(source.clone()));
         }
     }
 

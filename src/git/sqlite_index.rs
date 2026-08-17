@@ -1,10 +1,10 @@
 //! Default SQLite search helpers (legacy per-branch `index.db` path + unit-test store).
 //! Production QUERY uses [`crate::git::search_store`] (one node file, `repo`+`branch` columns).
 
+use crate::git::indexing::branch_data_dir;
 use crate::git::search_store::{
     effective_filter_fields, store_at_path, SearchStore, StoreKey, UNIT_TEST_BRANCH, UNIT_TEST_REPO,
 };
-use crate::git::indexing::branch_data_dir;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -18,7 +18,9 @@ fn unit_key() -> StoreKey {
     StoreKey::new(UNIT_TEST_REPO, UNIT_TEST_BRANCH)
 }
 
-fn unit_store(db_path: &Path) -> anyhow::Result<std::sync::Arc<crate::git::search_store::SqliteSearchStore>> {
+fn unit_store(
+    db_path: &Path,
+) -> anyhow::Result<std::sync::Arc<crate::git::search_store::SqliteSearchStore>> {
     store_at_path(db_path)
 }
 
@@ -292,9 +294,7 @@ enum FieldPred {
 fn is_safe_json_field(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn string_list_from_array(arr: &[Value]) -> Option<Vec<String>> {
@@ -388,9 +388,7 @@ fn row_matches_object_filter(item: &Value, q_obj: &Map<String, Value>) -> bool {
 /// Build `AND json_extract(json, '$.field') …` clauses with bound params.
 /// Field names are allowlisted identifiers only (never user-controlled SQL).
 #[allow(dead_code)]
-fn object_filter_sql(
-    preds: &[(String, FieldPred)],
-) -> Option<(String, Vec<String>)> {
+fn object_filter_sql(preds: &[(String, FieldPred)]) -> Option<(String, Vec<String>)> {
     let mut sql = String::new();
     let mut binds = Vec::new();
     for (key, pred) in preds {
@@ -722,11 +720,7 @@ mod tests {
         assert_eq!(fts_match_query("mud flood"), "\"mud\" AND flood*");
         assert!(fts_match_query("!!!").is_empty());
         assert_eq!(
-            collapse_prefix_redundant_terms(vec![
-                "iran".into(),
-                "iranian".into(),
-                "iran".into()
-            ]),
+            collapse_prefix_redundant_terms(vec!["iran".into(), "iranian".into(), "iran".into()]),
             vec!["iran"]
         );
     }
@@ -1002,10 +996,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let paths: Vec<_> = hits
-            .iter()
-            .filter_map(|r| r["path"].as_str())
-            .collect();
+        let paths: Vec<_> = hits.iter().filter_map(|r| r["path"].as_str()).collect();
         assert_eq!(paths, vec!["a.md", "g.md"]);
     }
 
@@ -1024,9 +1015,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hits.len(), 4);
-        assert!(hits
-            .iter()
-            .all(|r| r["content_kind"] != "exclude"));
+        assert!(hits.iter().all(|r| r["content_kind"] != "exclude"));
     }
 
     #[test]
@@ -1053,15 +1042,9 @@ mod tests {
         let db = seed_content_kind_docs(&dir);
         let q = json!({ "content_kind": ["article", "investigation", "blog"] });
         for _ in 0..8 {
-            let hits = query_collection_ordered(
-                &db,
-                "index",
-                Some(&q),
-                None,
-                Some(3),
-                QueryOrder::Random,
-            )
-            .unwrap();
+            let hits =
+                query_collection_ordered(&db, "index", Some(&q), None, Some(3), QueryOrder::Random)
+                    .unwrap();
             assert_eq!(hits.len(), 3);
             assert!(hits.iter().all(|r| {
                 matches!(

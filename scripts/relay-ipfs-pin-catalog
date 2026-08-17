@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""
+Pin CIDs referenced by thin catalog repos (Git pointers + assets.manifest.json).
+
+This is IPFS seeding (Kubo pin), not git ensure-bare seed.
+
+  RELAY_REPO_PATH=/opt/relay/data IPFS_PATH=/opt/relay/ipfs \\
+    /opt/relay/bin/relay-ipfs-pin-catalog [--dry-run]
+
+Uses localhost Kubo API via the `ipfs` CLI (IPFS_PATH). Caps concurrent pins at 1.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+POINTER_MAGIC = "relay-ipfs-v1"
+MANIFEST = "assets.manifest.json"
+MAX_PINS_PER_RUN = int(os.environ.get("RELAY_IPFS_PIN_MAX", "200"))
+
+
+def plausible_cid(cid: str) -> bool:
+    cid = cid.strip()
+    if len(cid) < 46 or len(cid) > 120:
+        return False
+    if any(x in cid for x in ("/", "\\", "..")):
+        return False
+    if not all(c.isalnum() or c in "-_." for c in cid):
+        return False
+    return cid.startswith(("bafy", "bafk", "Qm"))
+
+
+def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+def catalog_publish_branch(catalog_path: Path | None, slug: str) -> str:
+    if catalog_path is None:
+        return "main"
+    p = catalog_path / "catalog" / "repos" / f"{slug}.json"
+    if p.is_file():
+        try:
+            doc = json.loads(p.read_text(encoding="utf-8"))
+            return doc.get("publish_branch", "main")
+        except json.JSONDecodeError:
+            return "main"
+    return "main"
+
+
+def catalog_is_thin(catalog_path: Path | None, slug: str) -> bool:
+    if catalog_path is None:
+        return True
+    p = catalog_path / "catalog" / "repos" / f"{slug}.json"
+    if not p.is_file():
+        return True
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return True
+    limits = doc.get("limits") or {}
+    if limits.get("thin_ipfs_assets") is True:
+        return True
+    return False
+
+
+def collect_cids_from_repo(repo: Path, branch: str) -> set[str]:
+    cids: set[str] = set()
+    proc = run(["git", "-C", str(repo), "ls-tree", "-r", "--name-only", branch])
+    if proc.returncode != 0:
+        return cids
+    paths = [ln for ln in proc.stdout.splitlines() if ln]
+    want = [p for p in paths if p == MANIFEST or p.startswith(".relay/assets/") and p.endswith(".ipfs")]
+    for path in want:
+        show = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{branch}:{path}"],
+            capture_output=True,
+        )
+        if show.returncode != 0:
+            continue
+        try:
+            text = show.stdout.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if path == MANIFEST:
+            try:
+                doc = json.loads(text)
+                for a in doc.get("assets", []):
+                    cid = (a.get("ipfs") or "").strip()
+                    if plausible_cid(cid):
+                        cids.add(cid)
+            except json.JSONDecodeError:
+                pass
+            continue
+        if text.startswith(POINTER_MAGIC + "\n"):
+            lines = text.splitlines()
+            if len(lines) >= 2 and plausible_cid(lines[1].strip()):
+                cids.add(lines[1].strip())
+    return cids
+
+
+def ipfs_bin() -> str:
+    return os.environ.get("RELAY_IPFS_BIN", "/opt/relay/lib/kubo/ipfs")
+
+
+def wait_for_ipfs(ipfs: str, env: dict[str, str], attempts: int = 30) -> bool:
+    for _ in range(attempts):
+        proc = run([ipfs, "id"], env=env)
+        if proc.returncode == 0:
+            return True
+        time.sleep(2)
+    return False
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--self-test", action="store_true", help="fixture thin-repo CID collect")
+    args = ap.parse_args()
+    if args.self_test:
+        return self_test()
+
+    repo_root = Path(os.environ.get("RELAY_REPO_PATH", "/opt/relay/data"))
+    catalog_path = os.environ.get("RELAY_MASTER_CATALOG_PATH")
+    catalog = Path(catalog_path) if catalog_path else None
+    ipfs = ipfs_bin()
+    env = os.environ.copy()
+    env.setdefault("IPFS_PATH", os.environ.get("IPFS_PATH", "/opt/relay/ipfs"))
+
+    if not args.dry_run and not os.access(ipfs, os.X_OK):
+        print(f"ipfs binary missing: {ipfs}", file=sys.stderr)
+        return 1
+    if not args.dry_run and not wait_for_ipfs(ipfs, env):
+        print("ipfs daemon not ready (ipfs id failed)", file=sys.stderr)
+        return 1
+
+    all_cids: list[str] = []
+    seen: set[str] = set()
+    for bare in sorted(repo_root.glob("*.git")):
+        slug = bare.name.removesuffix(".git")
+        if not catalog_is_thin(catalog, slug):
+            continue
+        branch = catalog_publish_branch(catalog, slug)
+        found = collect_cids_from_repo(bare, branch)
+        print(f"{slug}@{branch}: {len(found)} cids")
+        for cid in sorted(found):
+            if cid in seen:
+                continue
+            seen.add(cid)
+            all_cids.append(cid)
+            if len(all_cids) >= MAX_PINS_PER_RUN:
+                break
+        if len(all_cids) >= MAX_PINS_PER_RUN:
+            print(f"capped at RELAY_IPFS_PIN_MAX={MAX_PINS_PER_RUN}")
+            break
+
+    pinned = 0
+    failed = 0
+    for cid in all_cids:
+        if args.dry_run:
+            print(f"would pin {cid}")
+            pinned += 1
+            continue
+        proc = run([ipfs, "pin", "add", "--progress=false", cid], env=env)
+        if proc.returncode == 0:
+            print(f"pinned {cid}")
+            pinned += 1
+        else:
+            err = (proc.stderr or proc.stdout or "").strip().splitlines()
+            print(f"pin failed {cid}: {err[-1] if err else proc.returncode}", file=sys.stderr)
+            failed += 1
+
+    print(f"done; pinned={pinned} failed={failed} dry_run={args.dry_run}")
+    return 0 if failed == 0 else 1
+
+
+def self_test() -> int:
+    import tempfile
+
+    cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    with tempfile.TemporaryDirectory() as td:
+        work = Path(td) / "work"
+        work.mkdir()
+        run(["git", "init", "-b", "main", str(work)], check=True)
+        assets = work / ".relay" / "assets"
+        assets.mkdir(parents=True)
+        (assets / "hero.png.ipfs").write_text(f"{POINTER_MAGIC}\n{cid}\n", encoding="utf-8")
+        (work / "assets.manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema": "relay.assets-manifest.v1",
+                    "assets": [{"path": "cover.png", "ipfs": cid}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        run(["git", "-C", str(work), "add", "-A"], check=True)
+        run(["git", "-C", str(work), "commit", "-m", "thin"], check=True, env=env)
+        repo = Path(td) / "thin.git"
+        run(["git", "clone", "--bare", str(work), str(repo)], check=True)
+        found = collect_cids_from_repo(repo, "main")
+        if found != {cid}:
+            print(f"self-test failed: {found!r}", file=sys.stderr)
+            return 1
+    print("self-test ok")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

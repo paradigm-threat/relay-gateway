@@ -238,7 +238,11 @@ RELAY_MASTER_PEER_LIST="a.example.net;b.example.net"
         let f = FleetFile::parse_json(raw).unwrap();
         assert!(f.nodes.len() >= 3);
         assert_eq!(f.schema, "relay.ops.fleet.v1");
-        assert!(f.fleet_ingress.as_deref().unwrap().contains("relaygateway.net"));
+        assert!(f
+            .fleet_ingress
+            .as_deref()
+            .unwrap()
+            .contains("relaygateway.net"));
         assert!(f.nodes.iter().all(|n| n.fqdn.contains('.')));
         assert!(f.nodes.iter().all(|n| n.spot_cloudspace.is_some()));
         assert!(!f.health_repos().is_empty());

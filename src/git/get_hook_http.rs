@@ -94,7 +94,8 @@ pub fn get_hook_execution_error_response(
     }
 
     let body_bytes = serde_json::to_vec(&body).unwrap_or_else(|_| {
-        let tech_esc = serde_json::to_string(&format!("{:#}", err)).unwrap_or_else(|_| "\"\"".to_string());
+        let tech_esc =
+            serde_json::to_string(&format!("{:#}", err)).unwrap_or_else(|_| "\"\"".to_string());
         format!(
             "{{\"ok\":false,\"error\":\"serialization_failed\",\"technicalReport\":{}}}",
             tech_esc
@@ -103,7 +104,10 @@ pub fn get_hook_execution_error_response(
     });
 
     let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json; charset=utf-8"));
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
     if let Ok(b) = HeaderValue::try_from(branch) {
         headers.insert(HEADER_BRANCH, b);
     }
@@ -141,18 +145,9 @@ pub fn get_hook_json_to_response(val: &Value, branch: &str, repo_name: &str) -> 
             let status = hook_status(val);
             let mut headers = HeaderMap::new();
             merge_hook_headers(&mut headers, val);
-            headers.insert(
-                CONTENT_TYPE,
-                HeaderValue::try_from(ct).ok()?,
-            );
-            headers.insert(
-                HEADER_BRANCH,
-                HeaderValue::try_from(branch).ok()?,
-            );
-            headers.insert(
-                HEADER_REPO,
-                HeaderValue::try_from(repo_name).ok()?,
-            );
+            headers.insert(CONTENT_TYPE, HeaderValue::try_from(ct).ok()?);
+            headers.insert(HEADER_BRANCH, HeaderValue::try_from(branch).ok()?);
+            headers.insert(HEADER_REPO, HeaderValue::try_from(repo_name).ok()?);
             let mut res = Response::new(Body::from(bytes));
             *res.status_mut() = status;
             *res.headers_mut() = headers;
@@ -163,18 +158,9 @@ pub fn get_hook_json_to_response(val: &Value, branch: &str, repo_name: &str) -> 
             let body = serde_json::to_vec(val).ok()?;
             let mut headers = HeaderMap::new();
             merge_hook_headers(&mut headers, val);
-            headers.insert(
-                CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            );
-            headers.insert(
-                HEADER_BRANCH,
-                HeaderValue::try_from(branch).ok()?,
-            );
-            headers.insert(
-                HEADER_REPO,
-                HeaderValue::try_from(repo_name).ok()?,
-            );
+            headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+            headers.insert(HEADER_BRANCH, HeaderValue::try_from(branch).ok()?);
+            headers.insert(HEADER_REPO, HeaderValue::try_from(repo_name).ok()?);
             let mut res = Response::new(Body::from(body));
             *res.status_mut() = status;
             *res.headers_mut() = headers;
@@ -273,13 +259,19 @@ mod tests {
         let inner = RuntimeError::Runtime("bad line in hook".into());
         let err = anyhow::Error::new(inner);
         let r = get_hook_execution_error_response("main", "r", &err);
-        let body =
-            serde_json::from_slice::<serde_json::Value>(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap())
-                .unwrap();
+        let body = serde_json::from_slice::<serde_json::Value>(
+            &axum::body::to_bytes(r.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(body["ok"], false);
         assert_eq!(body["error"], "get_hook_execution_failed");
         assert!(body["summaryForReaders"].as_str().unwrap().len() > 20);
-        assert!(body["technicalReport"].as_str().unwrap().contains("bad line in hook"));
+        assert!(body["technicalReport"]
+            .as_str()
+            .unwrap()
+            .contains("bad line in hook"));
         assert_eq!(body["branch"], "main");
         assert_eq!(body["repo"], "r");
         let cs = body.get("cleverScript").expect("cleverScript");
@@ -300,7 +292,10 @@ mod tests {
         });
         let r = get_hook_json_to_response(&val, "main", "rp").unwrap();
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
-        assert_eq!(r.headers().get("cache-control").unwrap(), "public, max-age=60");
+        assert_eq!(
+            r.headers().get("cache-control").unwrap(),
+            "public, max-age=60"
+        );
     }
 
     #[test]

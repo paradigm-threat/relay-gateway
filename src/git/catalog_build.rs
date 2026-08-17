@@ -326,76 +326,76 @@ fn path_tree_doc_for(
         .unwrap_or(path)
         .to_string();
 
-        if ext == ".md" {
-            if let Some(text) = git_show(repo, commit, path) {
-                let (title, kw) = extract_md_title_keywords(&text);
-                if let Some(t) = title {
-                    doc.insert("_title".into(), Value::String(t.clone()));
-                    doc.insert("title".into(), Value::String(t));
-                } else {
-                    doc.insert("title".into(), Value::String(basename));
-                }
-                if !kw.is_empty() {
-                    doc.insert(
-                        "_keywords".into(),
-                        Value::Array(kw.into_iter().map(Value::String).collect()),
-                    );
-                }
-                if path.contains("/.relay/chat/") || path.starts_with(".relay/chat/") {
-                    enrich_chat_comment_doc(&mut doc, &text);
-                }
-            }
-        } else if is_hooks_cs {
-            if let Some(text) = git_show(repo, commit, path) {
-                for line in text.lines().take(40) {
-                    let s = line.trim();
-                    if let Some(rest) = s.strip_prefix("//") {
-                        let t = rest.trim();
-                        let decorative = !t.is_empty()
-                            && t.chars().all(|c| "=-#*_".contains(c))
-                            && t.chars().collect::<std::collections::HashSet<_>>().len() <= 2;
-                        if !t.is_empty() && !decorative {
-                            let title: String = t.chars().take(240).collect();
-                            doc.insert("_title".into(), Value::String(title.clone()));
-                            doc.insert("title".into(), Value::String(title));
-                            break;
-                        }
-                    } else if !s.is_empty() && !s.starts_with("/*") {
-                        break;
-                    }
-                }
-            }
-            if !doc.contains_key("title") {
+    if ext == ".md" {
+        if let Some(text) = git_show(repo, commit, path) {
+            let (title, kw) = extract_md_title_keywords(&text);
+            if let Some(t) = title {
+                doc.insert("_title".into(), Value::String(t.clone()));
+                doc.insert("title".into(), Value::String(t));
+            } else {
                 doc.insert("title".into(), Value::String(basename));
             }
-        } else {
-            doc.insert("title".into(), Value::String(basename));
-        }
-
-        doc.insert(
-            "content_kind".into(),
-            Value::String(path_content_kind(path).to_string()),
-        );
-
-        if ext == ".md" {
-            if let Some(published) = blog_updated_iso(path) {
+            if !kw.is_empty() {
                 doc.insert(
-                    "_originalPublishedAt".into(),
-                    Value::String(published.clone()),
+                    "_keywords".into(),
+                    Value::Array(kw.into_iter().map(Value::String).collect()),
                 );
-                if let Some(meta) = tip_meta {
-                    doc.insert("_updated".into(), Value::String(meta.updated.clone()));
-                    doc.insert("_commit".into(), Value::String(meta.commit.clone()));
-                } else {
-                    doc.insert("_updated".into(), Value::String(published));
-                }
-            } else if let Some(meta) = tip_meta {
-                doc.insert("_updated".into(), Value::String(meta.updated.clone()));
-                doc.insert("_commit".into(), Value::String(meta.commit.clone()));
+            }
+            if path.contains("/.relay/chat/") || path.starts_with(".relay/chat/") {
+                enrich_chat_comment_doc(&mut doc, &text);
             }
         }
+    } else if is_hooks_cs {
+        if let Some(text) = git_show(repo, commit, path) {
+            for line in text.lines().take(40) {
+                let s = line.trim();
+                if let Some(rest) = s.strip_prefix("//") {
+                    let t = rest.trim();
+                    let decorative = !t.is_empty()
+                        && t.chars().all(|c| "=-#*_".contains(c))
+                        && t.chars().collect::<std::collections::HashSet<_>>().len() <= 2;
+                    if !t.is_empty() && !decorative {
+                        let title: String = t.chars().take(240).collect();
+                        doc.insert("_title".into(), Value::String(title.clone()));
+                        doc.insert("title".into(), Value::String(title));
+                        break;
+                    }
+                } else if !s.is_empty() && !s.starts_with("/*") {
+                    break;
+                }
+            }
+        }
+        if !doc.contains_key("title") {
+            doc.insert("title".into(), Value::String(basename));
+        }
+    } else {
+        doc.insert("title".into(), Value::String(basename));
+    }
 
-        Some(Value::Object(doc))
+    doc.insert(
+        "content_kind".into(),
+        Value::String(path_content_kind(path).to_string()),
+    );
+
+    if ext == ".md" {
+        if let Some(published) = blog_updated_iso(path) {
+            doc.insert(
+                "_originalPublishedAt".into(),
+                Value::String(published.clone()),
+            );
+            if let Some(meta) = tip_meta {
+                doc.insert("_updated".into(), Value::String(meta.updated.clone()));
+                doc.insert("_commit".into(), Value::String(meta.commit.clone()));
+            } else {
+                doc.insert("_updated".into(), Value::String(published));
+            }
+        } else if let Some(meta) = tip_meta {
+            doc.insert("_updated".into(), Value::String(meta.updated.clone()));
+            doc.insert("_commit".into(), Value::String(meta.commit.clone()));
+        }
+    }
+
+    Some(Value::Object(doc))
 }
 
 fn strip_frontmatter(content: &str) -> (&str, Option<&str>) {

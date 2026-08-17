@@ -103,7 +103,14 @@ pub fn embed_html_document(
     client_hook_path: &str,
     ssr_body_html: Option<&str>,
 ) -> String {
-    embed_html_document_with_css(repo, branch, rel_path, client_hook_path, ssr_body_html, None)
+    embed_html_document_with_css(
+        repo,
+        branch,
+        rel_path,
+        client_hook_path,
+        ssr_body_html,
+        None,
+    )
 }
 
 /// Like [`embed_html_document`], with optional SSR stylesheet.
@@ -256,7 +263,9 @@ pub fn embed_html_document_with_assets_and_seo_extras(
     let theme_style = match ssr_css {
         Some(css) if !css.trim().is_empty() => {
             // Strip </style> so hostile theme CSS cannot break out of the style element.
-            let safe = css.replace("</style", "<\\/style").replace("</STYLE", "<\\/STYLE");
+            let safe = css
+                .replace("</style", "<\\/style")
+                .replace("</STYLE", "<\\/STYLE");
             format!("\n  <style id=\"relay-ssr-theme\">{}</style>", safe)
         }
         _ => String::new(),
@@ -294,9 +303,7 @@ pub fn embed_html_document_with_assets_and_seo_extras(
     }
     if let Some(canon) = canonical_url.map(str::trim).filter(|s| !s.is_empty()) {
         let escaped = escape_html_attr(canon);
-        seo_tags.push_str(&format!(
-            "\n  <link rel=\"canonical\" href=\"{escaped}\"/>"
-        ));
+        seo_tags.push_str(&format!("\n  <link rel=\"canonical\" href=\"{escaped}\"/>"));
         seo_tags.push_str(&format!(
             "\n  <meta property=\"og:url\" content=\"{escaped}\"/>"
         ));
@@ -430,7 +437,10 @@ pub fn fallback_embed_html_response_with_ssr_and_assets(
             header::CONTENT_TYPE,
             HeaderValue::from_static("text/html; charset=utf-8"),
         );
-        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+        h.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store"),
+        );
         h.insert(header::VARY, HeaderValue::from_static("Accept"));
         if let Ok(v) = HeaderValue::from_str(branch) {
             h.insert(HEADER_BRANCH, v);
@@ -468,7 +478,9 @@ mod tests {
         let b = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         let s = String::from_utf8(b.to_vec()).unwrap();
         assert!(
-            s.contains("<title>x&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt; — Relay</title>"),
+            s.contains(
+                "<title>x&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt; — Relay</title>"
+            ),
             "title must HTML-escape repo slug"
         );
         let needle = r#"id="relay-embed-config">"#;
@@ -505,7 +517,9 @@ mod tests {
             "/hooks/client/get.jsx",
             Some(r#"<div class="ssr">Hi</div>"#),
         );
-        let body = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let s = String::from_utf8(body.to_vec()).unwrap();
         assert!(s.contains(r#"id="root" data-relay-ssr="1""#), "{s}");
         assert!(s.contains(r#"class="ssr">Hi</div>"#), "{s}");
@@ -520,14 +534,13 @@ mod tests {
             "/hooks/client/get.jsx",
             Some(r#"<div>ok</div><script>alert(1)</script><p>tail</p>"#),
         );
-        let body = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let s = String::from_utf8(body.to_vec()).unwrap();
         assert!(s.contains("<div>ok</div>"), "{s}");
         assert!(s.contains("<p>tail</p>"), "{s}");
-        assert!(
-            !s.contains("alert(1)"),
-            "script body must be stripped: {s}"
-        );
+        assert!(!s.contains("alert(1)"), "script body must be stripped: {s}");
     }
 
     #[test]
@@ -539,10 +552,8 @@ mod tests {
     #[test]
     fn inject_portrait_sibling_bootstrap_before_embed_js() {
         let base = embed_html_document("demo", "main", "/", "/hooks/client/get.jsx", None);
-        let html = inject_portrait_sibling_bootstrap(
-            &base,
-            r#"{"governance/war/x-portrait.png":true}"#,
-        );
+        let html =
+            inject_portrait_sibling_bootstrap(&base, r#"{"governance/war/x-portrait.png":true}"#);
         assert!(html.contains("id=\"relay-portrait-siblings\""), "{html}");
         assert!(
             html.contains(r#"{"governance/war/x-portrait.png":true}"#)
@@ -600,7 +611,9 @@ mod tests {
         );
         assert!(html.contains("<title>CleverTree</title>"), "{html}");
         assert!(
-            html.contains(r#"<meta name="description" content="Portfolio &quot;site&quot; &amp; more"/>"#),
+            html.contains(
+                r#"<meta name="description" content="Portfolio &quot;site&quot; &amp; more"/>"#
+            ),
             "{html}"
         );
         assert!(
@@ -635,7 +648,10 @@ mod tests {
                 is_article: true,
             },
         );
-        assert!(html.contains(r#"property="og:type" content="article""#), "{html}");
+        assert!(
+            html.contains(r#"property="og:type" content="article""#),
+            "{html}"
+        );
         assert!(
             html.contains(
                 r#"property="og:image" content="https://paradigmthreat.net/a.png?w=800""#

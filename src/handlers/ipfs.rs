@@ -7,7 +7,10 @@ use axum::{
 };
 use std::collections::HashMap;
 
-use crate::git::ipfs::{asset_error_response, asset_status_response, fetch_cid_bytes, parse_wait_seconds, wants_asset_status_only};
+use crate::git::ipfs::{
+    asset_error_response, asset_status_response, fetch_cid_bytes, parse_wait_seconds,
+    wants_asset_status_only,
+};
 use crate::handlers::helpers;
 use crate::types::AppState;
 

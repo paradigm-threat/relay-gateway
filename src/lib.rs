@@ -23,5 +23,5 @@ pub use handlers::helpers;
 pub use router::build_router;
 pub use types::{
     AppState, GitResolveResult, ServeContext, DEFAULT_BRANCH, DEFAULT_IPFS_CACHE_ROOT,
-    HEADER_BRANCH, HEADER_REPO,
+    HEADER_BRANCH, HEADER_REPO, HEADER_TREE,
 };

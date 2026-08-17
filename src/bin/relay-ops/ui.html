@@ -281,7 +281,7 @@ function paintBrowserShell() {
   const n = nodeCfg(browse.fqdn);
   const repos = (n && n.https_config && n.https_config.repos) || [];
   document.getElementById('browserMeta').textContent =
-    repos.length + ' bare repos on this node · git://' + browse.fqdn + ':' + (lastSnap.git_port || 9418);
+    repos.length + ' bare repos on this node · HTTPS X-Relay-Tree (git:// fallback)';
   document.getElementById('repoList').innerHTML = repos.map(name =>
     `<div class="${browse.repo === name ? 'on' : ''} link" onclick="selectRepo('${esc(name)}')">${esc(name)}</div>`
   ).join('') || '<div class="muted">no repos</div>';

@@ -18,6 +18,8 @@ pub struct OpsConfig {
     pub gateway_checkout: Option<String>,
     pub bind: Option<String>,
     pub probe_interval_secs: Option<u64>,
+    /// Fast retry while any node is down or DNS-empty. Default 10s.
+    pub probe_interval_down_secs: Option<u64>,
     pub auto_drop_dead_fleet_a: Option<bool>,
 }
 
@@ -50,7 +52,8 @@ impl OpsConfig {
         if let Ok(v) = std::env::var("RELAY_SSH_USER") {
             self.ssh_user = Some(v);
         }
-        if let Ok(v) = std::env::var("VERCEL_API_TOKEN").or_else(|_| std::env::var("VERCEL_TOKEN")) {
+        if let Ok(v) = std::env::var("VERCEL_API_TOKEN").or_else(|_| std::env::var("VERCEL_TOKEN"))
+        {
             self.vercel_token = Some(v);
         }
         if let Ok(v) = std::env::var("VERCEL_TEAM_ID") {
@@ -120,6 +123,11 @@ impl OpsConfig {
         self.probe_interval_secs.unwrap_or(300).max(30)
     }
 
+    /// Cheap retry while a node is unreachable (DNS/TCP only until 443 opens).
+    pub fn probe_interval_down(&self) -> u64 {
+        self.probe_interval_down_secs.unwrap_or(10).clamp(3, 60)
+    }
+
     pub fn auto_drop(&self) -> bool {
         self.auto_drop_dead_fleet_a.unwrap_or(true)
     }
@@ -155,10 +163,7 @@ pub fn resolve_secret(value: &str) -> Option<String> {
     if !value.starts_with("op://") {
         return Some(value.to_string());
     }
-    let out = Command::new("op")
-        .args(["read", value])
-        .output()
-        .ok()?;
+    let out = Command::new("op").args(["read", value]).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -230,7 +235,9 @@ mod tests {
 
 fn merge_relay_env_file(cfg: &mut OpsConfig) {
     let candidates = [
-        std::env::var("RELAY_FLEET_ENV_FILE").ok().map(PathBuf::from),
+        std::env::var("RELAY_FLEET_ENV_FILE")
+            .ok()
+            .map(PathBuf::from),
         detect_checkout().map(|p| p.join("relay.env")),
     ];
     for path in candidates.into_iter().flatten() {

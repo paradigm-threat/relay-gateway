@@ -18,6 +18,8 @@ INSTALL="${RELAY_INSTALL_ROOT:-/opt/relay}"
 RELAY_HTTP_BIN="${RELAY_HTTP_BIN:-relay-gateway}"
 HTTP_PORT="${RELAY_HTTP_PORT:-8080}"
 GIT_PORT="${RELAY_GIT_PORT:-9418}"
+# Loopback-only stock git daemon. Public git:// is relay-git-proxy on GIT_PORT.
+GIT_BACKEND_PORT="${RELAY_GIT_DAEMON_PORT:-9419}"
 PIPER_HTTP_PORT="${RELAY_PIPER_HTTP_PORT:-5590}"
 # LibreTranslate: segment HTTP /translate API (optional); venv under RELAY_LIBRETRANSLATE_ROOT.
 LIBRETRANSLATE_PORT="${RELAY_LIBRETRANSLATE_PORT:-5588}"
@@ -32,9 +34,19 @@ PIPER_DEFAULT_VOICE_ID_DEFAULT="${RELAY_FEAT_PIPER_DEFAULT_VOICE:-en_GB-cori-med
 PIPER_DEFAULT_VOICE_IDS="${RELAY_FEAT_PIPER_VOICES:-en_GB-cori-medium en_US-lessac-medium}"
 PIPER_CACHE_TTL_SECONDS="${RELAY_FEAT_PIPER_CACHE_TTL_SECONDS:-86400}"
 PIPER_CACHE_MAX_FILES="${RELAY_FEAT_PIPER_CACHE_MAX_FILES:-1000}"
+KUBO_VERSION="${RELAY_KUBO_VERSION:-v0.32.1}"
+# dist.ipfs.tech sha512 for default Kubo (linux); other versions verified via dist.json.
+KUBO_SHA512_LINUX_AMD64="${RELAY_KUBO_SHA512_LINUX_AMD64:-36b2951de759710ad81f63f3ec3a75c72323be4c6599e737d7f27b437dce02ed0a1662d676137e98f2e88f0b96e41c4b46b2e1667d874f90e3a7ee437912fda4}"
+KUBO_SHA512_LINUX_ARM64="${RELAY_KUBO_SHA512_LINUX_ARM64:-2f7b8589f5a1d715ed853766b0eed206be5bbdc9fed6df9e6b350546336cf9d8395e8f5b167ae05d073ab032ca9bfaa441d022b95b1ebb5bc52413276a22c6c2}"
+IPFS_API_PORT="${RELAY_IPFS_API_PORT:-5001}"
+IPFS_GATEWAY_PORT="${RELAY_IPFS_GATEWAY_PORT:-8081}"
+IPFS_SWARM_PORT="${RELAY_IPFS_SWARM_PORT:-4001}"
+IPFS_PATH_DIR="${RELAY_IPFS_PATH:-$INSTALL/ipfs}"
 
 # Semicolon-separated FQDNs; used when RELAY_MASTER_PEER_LIST is unset (non-interactive) or when the operator accepts the interactive default (Enter).
 DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-dfw1.relaygateway.net;lon1.relaygateway.net;hkg1.relaygateway.net}"
+DEFAULT_RELAY_MASTER_CATALOG_PATH="${DEFAULT_RELAY_MASTER_CATALOG_PATH:-/opt/relay/src/relay-master}"
+DEFAULT_RELAY_MASTER_CATALOG_GIT_URL="${DEFAULT_RELAY_MASTER_CATALOG_GIT_URL:-https://gitlab.com/clevertree/relay-master.git}"
 
 log() { echo "[relay-install] $*" >&2; }
 die() { echo "[relay-install] ERROR: $*" >&2; exit 1; }
@@ -512,6 +524,7 @@ install_binaries() {
   fi
   [[ -n "$gw_src" ]] || die "$RELAY_HTTP_BIN binary not found (place $RELAY_HTTP_BIN or legacy relay-server in $RELAY_BIN_SOURCE, $SCRIPT_DIR, or cwd)"
   [[ -f "$src/relay-hook-handler" ]] || die "relay-hook-handler binary not found beside HTTP binary in $src"
+  [[ -f "$src/relay-git-proxy" ]] || die "relay-git-proxy binary not found beside HTTP binary in $src"
   mkdir -p "$INSTALL/bin" "$INSTALL/hooks" "$INSTALL/data" "$INSTALL/logs" "$INSTALL/www" "$INSTALL/src"
   _copy_bin_if_needed() {
     local s="$1" d="$2"
@@ -522,6 +535,7 @@ install_binaries() {
   }
   _copy_bin_if_needed "$gw_src" "$INSTALL/bin/$RELAY_HTTP_BIN"
   _copy_bin_if_needed "$src/relay-hook-handler" "$INSTALL/bin/relay-hook-handler"
+  _copy_bin_if_needed "$src/relay-git-proxy" "$INSTALL/bin/relay-git-proxy"
   if [[ -d "$src/www" ]]; then
     rm -rf "$INSTALL/www"
     mkdir -p "$INSTALL/www"
@@ -541,7 +555,7 @@ install_binaries() {
   elif [[ -f "$SCRIPT_DIR/relay-startup-catalog-sync.sh" ]]; then
     cp -f "$SCRIPT_DIR/relay-startup-catalog-sync.sh" "$INSTALL/bin/relay-startup-catalog-sync.sh"
   fi
-  chmod +x "$INSTALL/bin/$RELAY_HTTP_BIN" "$INSTALL/bin/relay-hook-handler"
+  chmod +x "$INSTALL/bin/$RELAY_HTTP_BIN" "$INSTALL/bin/relay-hook-handler" "$INSTALL/bin/relay-git-proxy"
   [[ -f "$INSTALL/bin/relay-startup-catalog-sync.sh" ]] && chmod +x "$INSTALL/bin/relay-startup-catalog-sync.sh"
   if [[ -f "$src/relay-reconcile.sh" ]]; then
     _copy_bin_if_needed "$src/relay-reconcile.sh" "$INSTALL/bin/relay-reconcile.sh"
@@ -549,6 +563,12 @@ install_binaries() {
     cp -f "$SCRIPT_DIR/relay-reconcile.sh" "$INSTALL/bin/relay-reconcile.sh"
   fi
   [[ -f "$INSTALL/bin/relay-reconcile.sh" ]] && chmod +x "$INSTALL/bin/relay-reconcile.sh"
+  if [[ -f "$src/relay-ipfs-pin-catalog" ]]; then
+    _copy_bin_if_needed "$src/relay-ipfs-pin-catalog" "$INSTALL/bin/relay-ipfs-pin-catalog"
+  elif [[ -f "$SCRIPT_DIR/relay-ipfs-pin-catalog" ]]; then
+    cp -f "$SCRIPT_DIR/relay-ipfs-pin-catalog" "$INSTALL/bin/relay-ipfs-pin-catalog"
+  fi
+  [[ -f "$INSTALL/bin/relay-ipfs-pin-catalog" ]] && chmod +x "$INSTALL/bin/relay-ipfs-pin-catalog"
   rm -f "$INSTALL/bin/relay-server"
   chown -R relay:relay "$INSTALL"
   lock_relay_env_permissions
@@ -563,6 +583,197 @@ write_gitconfig_hooks() {
   # Belt-and-suspenders: anonymous receive-pack matches --enable=receive-pack on git daemon.
   git config --file /etc/gitconfig daemon.receivepack true 2>/dev/null || \
     printf '\n[daemon]\n\treceivepack = true\n' >>/etc/gitconfig
+  # Partial clone for observer browse / thin clients (trees without  multi-GB blobs).
+  git config --file /etc/gitconfig uploadpack.allowFilter true
+  git config --file /etc/gitconfig uploadpack.allowReachableSHA1InWant true
+}
+
+kubo_linux_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo amd64 ;;
+    aarch64|arm64) echo arm64 ;;
+    *) die "unsupported arch for Kubo: $(uname -m)" ;;
+  esac
+}
+
+kubo_expected_sha512() {
+  local arch="$1"
+  if [[ "$KUBO_VERSION" == "v0.32.1" ]]; then
+    case "$arch" in
+      amd64) echo "$KUBO_SHA512_LINUX_AMD64"; return 0 ;;
+      arm64) echo "$KUBO_SHA512_LINUX_ARM64"; return 0 ;;
+    esac
+  fi
+  local dj expect
+  dj="$(mktemp)"
+  curl -fsSL "https://dist.ipfs.tech/kubo/${KUBO_VERSION}/dist.json" -o "$dj"
+  expect="$(jq -r --arg a "$arch" '.platforms.linux.archs[$a].sha512 // empty' "$dj")"
+  rm -f "$dj"
+  [[ "$expect" =~ ^[0-9a-f]{128}$ ]] || die "no linux/$arch sha512 in Kubo ${KUBO_VERSION} dist.json"
+  echo "$expect"
+}
+
+install_kubo_binary() {
+  local arch tgz url dest expect got
+  arch="$(kubo_linux_arch)"
+  dest="$INSTALL/lib/kubo"
+  mkdir -p "$dest"
+  if [[ -x "$dest/ipfs" ]]; then
+    if "$dest/ipfs" version 2>/dev/null | grep -q "${KUBO_VERSION#v}"; then
+      return 0
+    fi
+  fi
+  tgz="$(mktemp)"
+  url="https://dist.ipfs.tech/kubo/${KUBO_VERSION}/kubo_${KUBO_VERSION}_linux-${arch}.tar.gz"
+  log "Downloading Kubo ${KUBO_VERSION} ($arch)"
+  curl -fsSL "$url" -o "$tgz"
+  expect="$(kubo_expected_sha512 "$arch")"
+  got="$(sha512sum "$tgz" | awk '{print $1}')"
+  if [[ "$got" != "$expect" ]]; then
+    rm -f "$tgz"
+    die "Kubo tarball sha512 mismatch for ${KUBO_VERSION} linux-${arch}"
+  fi
+  tar -xzf "$tgz" -C "$dest" --strip-components=1 kubo/ipfs
+  rm -f "$tgz"
+  chmod +x "$dest/ipfs"
+  chown -R relay:relay "$dest"
+}
+
+configure_kubo_repo() {
+  local ipfs="$INSTALL/lib/kubo/ipfs"
+  mkdir -p "$IPFS_PATH_DIR" "$INSTALL/ipfs-cache"
+  chown -R relay:relay "$IPFS_PATH_DIR" "$INSTALL/ipfs-cache"
+  if [[ ! -f "$IPFS_PATH_DIR/config" ]]; then
+    log "ipfs init $IPFS_PATH_DIR"
+    sudo -u relay env IPFS_PATH="$IPFS_PATH_DIR" "$ipfs" init --profile server >/dev/null
+  fi
+  sudo -u relay env IPFS_PATH="$IPFS_PATH_DIR" "$ipfs" config Addresses.API "/ip4/127.0.0.1/tcp/${IPFS_API_PORT}"
+  sudo -u relay env IPFS_PATH="$IPFS_PATH_DIR" "$ipfs" config Addresses.Gateway "/ip4/127.0.0.1/tcp/${IPFS_GATEWAY_PORT}"
+  sudo -u relay env IPFS_PATH="$IPFS_PATH_DIR" "$ipfs" config --json Addresses.Swarm \
+    "[\"/ip4/0.0.0.0/tcp/${IPFS_SWARM_PORT}\",\"/ip4/0.0.0.0/udp/${IPFS_SWARM_PORT}/quic-v1\"]"
+  sudo -u relay env IPFS_PATH="$IPFS_PATH_DIR" "$ipfs" config --json Gateway.Writable false
+  sudo -u relay env IPFS_PATH="$IPFS_PATH_DIR" "$ipfs" config --json Swarm.RelayService.Enabled false
+  local gw_addr api_addr
+  gw_addr="$(sudo -u relay env IPFS_PATH="$IPFS_PATH_DIR" "$ipfs" config Addresses.Gateway)"
+  api_addr="$(sudo -u relay env IPFS_PATH="$IPFS_PATH_DIR" "$ipfs" config Addresses.API)"
+  if grep -Eq '/tcp/8080([^0-9]|$)' <<<"$gw_addr$api_addr"; then
+    die "Kubo API/gateway still references 8080 (relay-gateway): api=$api_addr gw=$gw_addr"
+  fi
+}
+
+write_ipfs_systemd() {
+  cat >/etc/systemd/system/relay-ipfs.service <<EOF
+[Unit]
+Description=Relay Kubo IPFS daemon (API :${IPFS_API_PORT} loopback, gateway :${IPFS_GATEWAY_PORT} loopback, swarm :${IPFS_SWARM_PORT})
+After=network.target
+
+[Service]
+Type=simple
+User=relay
+Group=relay
+Environment=IPFS_PATH=$IPFS_PATH_DIR
+ExecStart=$INSTALL/lib/kubo/ipfs daemon --migrate=true --routing=dht
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=$IPFS_PATH_DIR
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  cat >/etc/systemd/system/relay-ipfs-pin-catalog.service <<EOF
+[Unit]
+Description=Pin catalog thin-repo IPFS CIDs on this node
+After=relay-ipfs.service
+Requires=relay-ipfs.service
+
+[Service]
+Type=oneshot
+User=relay
+Group=relay
+Environment=IPFS_PATH=$IPFS_PATH_DIR
+Environment=RELAY_REPO_PATH=$INSTALL/data
+Environment=RELAY_IPFS_BIN=$INSTALL/lib/kubo/ipfs
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-$INSTALL/relay.env
+ExecStart=$INSTALL/bin/relay-ipfs-pin-catalog
+Nice=10
+TimeoutStartSec=30min
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=$IPFS_PATH_DIR $INSTALL/data
+EOF
+  cat >/etc/systemd/system/relay-ipfs-pin-catalog.timer <<EOF
+[Unit]
+Description=Periodic catalog IPFS pin (seed)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+}
+
+merge_ipfs_features_json() {
+  [[ -f "$FEATURES_JSON" ]] || return 0
+  local tmp
+  tmp="$(mktemp)"
+  jq --arg path "$IPFS_PATH_DIR" \
+     --arg api "http://127.0.0.1:${IPFS_API_PORT}" \
+     --arg gw "http://127.0.0.1:${IPFS_GATEWAY_PORT}" \
+     --argjson swarm "$IPFS_SWARM_PORT" \
+     --argjson gwp "$IPFS_GATEWAY_PORT" \
+     --argjson apip "$IPFS_API_PORT" \
+     '.features.ipfs_kubo = {
+        enabled: true,
+        expected: true,
+        ipfs_path: $path,
+        binary: "'"$INSTALL"'/lib/kubo/ipfs",
+        service: "relay-ipfs.service",
+        api: $api,
+        gateway: $gw,
+        api_port: $apip,
+        gateway_port: $gwp,
+        swarm_port: $swarm
+      }' "$FEATURES_JSON" >"$tmp" && mv "$tmp" "$FEATURES_JSON"
+  chown relay:relay "$FEATURES_JSON" 2>/dev/null || true
+}
+
+upsert_ipfs_relay_env() {
+  local f="$INSTALL/relay.env"
+  touch "$f"
+  upsert_relay_env_var "$f" RELAY_IPFS_API "http://127.0.0.1:${IPFS_API_PORT}"
+  upsert_relay_env_var "$f" RELAY_IPFS_GATEWAY "http://127.0.0.1:${IPFS_GATEWAY_PORT}"
+  upsert_relay_env_var "$f" RELAY_IPFS_GATEWAY_ALLOW_PRIVATE "1"
+  upsert_relay_env_var "$f" RELAY_IPFS_CACHE_ROOT "$INSTALL/ipfs-cache"
+  lock_relay_env_permissions
+}
+
+# Default on for install/update/repair unless RELAY_INSTALL_IPFS=0.
+ensure_ipfs_kubo() {
+  case "${RELAY_INSTALL_IPFS:-1}" in
+    0|false|FALSE|no|NO) log "Skipping Kubo (RELAY_INSTALL_IPFS=0)"; return 0 ;;
+  esac
+  install_kubo_binary
+  configure_kubo_repo
+  write_ipfs_systemd
+  upsert_ipfs_relay_env
+  merge_ipfs_features_json
+  systemctl enable relay-ipfs.service relay-ipfs-pin-catalog.timer 2>/dev/null || true
+  systemctl restart relay-ipfs.service 2>/dev/null || true
+  systemctl start relay-ipfs-pin-catalog.timer 2>/dev/null || true
+  systemctl start --no-block relay-ipfs-pin-catalog.service 2>/dev/null || true
 }
 
 retire_relay_server_http_unit() {
@@ -582,11 +793,14 @@ retire_relay_server_http_unit() {
 
 write_systemd_core() {
   retire_relay_server_http_unit
+  if [[ "$GIT_BACKEND_PORT" == "$GIT_PORT" ]]; then
+    die "RELAY_GIT_DAEMON_PORT ($GIT_BACKEND_PORT) must differ from RELAY_GIT_PORT ($GIT_PORT)"
+  fi
   cat >/etc/systemd/system/relay-gateway.service <<EOF
 [Unit]
 Description=Relay HTTP gateway
-After=network.target relay-git-daemon.service
-Wants=relay-git-daemon.service
+After=network.target relay-git-daemon.service relay-git-proxy.service relay-ipfs.service
+Wants=relay-git-daemon.service relay-git-proxy.service relay-ipfs.service
 
 [Service]
 Type=simple
@@ -601,6 +815,7 @@ Environment=RELAY_BIND=0.0.0.0:$HTTP_PORT
 Environment=RELAY_FEATURES_STATE_PATH=$FEATURES_JSON
 Environment=RUST_LOG=info
 EnvironmentFile=-$INSTALL/relay.env
+TimeoutStartSec=600
 ExecStartPre=$INSTALL/bin/relay-startup-catalog-sync.sh
 ExecStart=$INSTALL/bin/$RELAY_HTTP_BIN serve
 Restart=always
@@ -612,7 +827,7 @@ EOF
 
   cat >/etc/systemd/system/relay-git-daemon.service <<EOF
 [Unit]
-Description=Relay git daemon
+Description=Relay git daemon (loopback only)
 After=network.target
 
 [Service]
@@ -620,7 +835,32 @@ Type=simple
 User=relay
 Group=relay
 EnvironmentFile=-$INSTALL/relay.env
-ExecStart=/usr/bin/git daemon --reuseaddr --base-path=$INSTALL/data --export-all --informative-errors --enable=receive-pack --port=$GIT_PORT $INSTALL/data
+ExecStart=/usr/bin/git daemon --reuseaddr --listen=127.0.0.1 --base-path=$INSTALL/data --export-all --informative-errors --enable=receive-pack --max-connections=64 --port=$GIT_BACKEND_PORT $INSTALL/data
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  cat >/etc/systemd/system/relay-git-proxy.service <<EOF
+[Unit]
+Description=Relay git:// proxy (first-push provision)
+After=network.target relay-git-daemon.service
+Requires=relay-git-daemon.service
+PartOf=relay-git-daemon.service
+
+[Service]
+Type=simple
+User=relay
+Group=relay
+WorkingDirectory=$INSTALL
+Environment=RELAY_REPO_PATH=$INSTALL/data
+Environment=RELAY_GIT_DAEMON_PORT=$GIT_BACKEND_PORT
+Environment=RELAY_GIT_BACKEND=127.0.0.1:$GIT_BACKEND_PORT
+Environment=RUST_LOG=info
+EnvironmentFile=-$INSTALL/relay.env
+ExecStart=$INSTALL/bin/relay-git-proxy
 Restart=always
 RestartSec=3
 
@@ -629,7 +869,7 @@ WantedBy=multi-user.target
 EOF
   write_reconcile_systemd
   systemctl daemon-reload
-  systemctl enable relay-gateway 2>/dev/null || true
+  systemctl enable relay-gateway relay-git-daemon relay-git-proxy 2>/dev/null || true
 }
 
 ensure_reconcile_seed() {
@@ -1054,11 +1294,32 @@ append_relay_env_peer_list() {
   echo "RELAY_MASTER_PEER_LIST=$peers" >>"$f"
 }
 
-# Default on: lets operators run POST /api/git/ensure-bare/:name then git push git://… without SSH.
+# Default on: first git push (receive-pack) and POST /api/git/ensure-bare/:name may create RELAY_REPO_PATH/<name>.git.
 append_relay_env_git_ensure_bare_default() {
   local f="$INSTALL/relay.env"
   grep -q '^RELAY_GIT_ENSURE_BARE_ENABLED=' "$f" 2>/dev/null && return 0
   echo "RELAY_GIT_ENSURE_BARE_ENABLED=1" >>"$f"
+}
+
+# Catalog worktree + clone URL + trust root (write-if-missing). Never pair catalog path with RELAY_AUTHORIZED_REPOS_PATH.
+append_relay_env_catalog_defaults() {
+  local f="$INSTALL/relay.env"
+  touch "$f"
+  if grep -q '^RELAY_AUTHORIZED_REPOS_PATH=' "$f" 2>/dev/null; then
+    return 0
+  fi
+  if ! grep -q '^RELAY_MASTER_CATALOG_PATH=' "$f" 2>/dev/null; then
+    local path="${RELAY_MASTER_CATALOG_PATH:-$DEFAULT_RELAY_MASTER_CATALOG_PATH}"
+    [[ -n "$path" ]] && echo "RELAY_MASTER_CATALOG_PATH=$path" >>"$f"
+  fi
+  if ! grep -q '^RELAY_MASTER_CATALOG_GIT_URL=' "$f" 2>/dev/null; then
+    local url="${RELAY_MASTER_CATALOG_GIT_URL:-$DEFAULT_RELAY_MASTER_CATALOG_GIT_URL}"
+    [[ -n "$url" ]] && echo "RELAY_MASTER_CATALOG_GIT_URL=$url" >>"$f"
+  fi
+  if ! grep -q '^RELAY_MASTER_TRUST_ROOT=' "$f" 2>/dev/null; then
+    local root="${RELAY_MASTER_TRUST_ROOT:-}"
+    [[ -n "$root" ]] && echo "RELAY_MASTER_TRUST_ROOT=$root" >>"$f"
+  fi
 }
 
 # Set or replace KEY=VALUE in relay.env.
@@ -1100,6 +1361,26 @@ merge_relay_env_mesh_from_env() {
       upsert_relay_env_var "$f" RELAY_MASTER_MESH_SECRET "$mesh_secret"
     fi
   fi
+  if ! grep -q '^RELAY_AUTHORIZED_REPOS_PATH=' "$f" 2>/dev/null; then
+    local catalog_path="${RELAY_MASTER_CATALOG_PATH:-}"
+    local catalog_url="${RELAY_MASTER_CATALOG_GIT_URL:-}"
+    local trust_root="${RELAY_MASTER_TRUST_ROOT:-}"
+    if [[ -n "$catalog_path" ]]; then
+      if [[ "$merge" == "1" ]] || ! grep -q '^RELAY_MASTER_CATALOG_PATH=' "$f" 2>/dev/null; then
+        upsert_relay_env_var "$f" RELAY_MASTER_CATALOG_PATH "$catalog_path"
+      fi
+    fi
+    if [[ -n "$catalog_url" ]]; then
+      if [[ "$merge" == "1" ]] || ! grep -q '^RELAY_MASTER_CATALOG_GIT_URL=' "$f" 2>/dev/null; then
+        upsert_relay_env_var "$f" RELAY_MASTER_CATALOG_GIT_URL "$catalog_url"
+      fi
+    fi
+    if [[ -n "$trust_root" ]]; then
+      if [[ "$merge" == "1" ]] || ! grep -q '^RELAY_MASTER_TRUST_ROOT=' "$f" 2>/dev/null; then
+        upsert_relay_env_var "$f" RELAY_MASTER_TRUST_ROOT "$trust_root"
+      fi
+    fi
+  fi
   lock_relay_env_permissions
 }
 
@@ -1139,10 +1420,12 @@ do_install() {
   append_relay_env_server_id
   append_relay_env_peer_list
   append_relay_env_git_ensure_bare_default
+  append_relay_env_catalog_defaults
   merge_relay_env_mesh_from_env
   lock_relay_env_permissions
-  systemctl enable relay-gateway relay-git-daemon
-  systemctl restart relay-git-daemon relay-gateway
+  ensure_ipfs_kubo
+  systemctl enable relay-gateway relay-git-daemon relay-git-proxy
+  systemctl restart relay-git-daemon relay-git-proxy relay-gateway
   maybe_enable_reconcile_timer
   [[ "$piper_en" == "1" ]] && systemctl restart relay-tts-piper 2>/dev/null || true
   [[ "$lt_en" == "1" ]] && systemctl restart libretranslate 2>/dev/null || true
@@ -1164,15 +1447,19 @@ do_update() {
   [[ -n "$piper_voices" ]] || piper_voices="$piper_default_voice"
   install_binaries
   write_systemd_core
+  write_gitconfig_hooks
   if [[ "$piper_en" == "true" ]]; then
     install_piper_artifacts "$piper_voices" "$piper_default_voice"
   fi
   refresh_features_inventory
+  append_relay_env_catalog_defaults
   merge_relay_env_mesh_from_env
-  systemctl restart relay-git-daemon relay-gateway
+  ensure_ipfs_kubo
+  systemctl restart relay-git-daemon relay-git-proxy relay-gateway
   maybe_enable_reconcile_timer
   systemctl try-restart relay-tts-piper 2>/dev/null || true
   systemctl try-restart libretranslate 2>/dev/null || true
+  maybe_ufw
   log "Binaries updated"
 }
 
@@ -1226,9 +1513,11 @@ do_repair() {
     fi
   fi
   refresh_features_inventory
+  append_relay_env_catalog_defaults
   merge_relay_env_mesh_from_env
   lock_relay_env_permissions
-  systemctl restart relay-git-daemon relay-gateway
+  ensure_ipfs_kubo
+  systemctl restart relay-git-daemon relay-git-proxy relay-gateway
   maybe_enable_reconcile_timer
   maybe_validate_deploy_ssh_key
   maybe_ufw
@@ -1280,6 +1569,7 @@ do_reconfigure_features() {
     systemctl stop libretranslate 2>/dev/null || true
   fi
   refresh_features_inventory
+  ensure_ipfs_kubo
   systemctl restart relay-gateway
   maybe_ufw
   log "Features reconfigured"
@@ -1316,6 +1606,13 @@ maybe_ufw() {
   local lt_u
   lt_u="$(jq -r '.features.libretranslate_api.enabled // false' "$FEATURES_JSON" 2>/dev/null || echo false)"
   [[ "$lt_u" == "true" ]] && ufw allow "$LIBRETRANSLATE_PORT/tcp" 2>/dev/null || true
+  case "${RELAY_INSTALL_IPFS:-1}" in
+    0|false|FALSE|no|NO) ;;
+    *)
+      ufw allow "${IPFS_SWARM_PORT}/tcp" 2>/dev/null || true
+      ufw allow "${IPFS_SWARM_PORT}/udp" 2>/dev/null || true
+      ;;
+  esac
   ufw --force enable 2>/dev/null || true
 }
 
@@ -1343,7 +1640,8 @@ case "${1:-install}" in
     echo "  Deploy SSH policy (optional): RELAY_VALIDATE_DEPLOY_SSH_KEY=1, RELAY_DEPLOY_SSH_USER (default ari), RELAY_DEPLOY_SSH_KEY_FINGERPRINT (substring from ssh-keygen -lf -E sha256) — docs/SECRETS_POLICY.md"
     echo "  Startup catalog sync (optional): RELAY_STARTUP_CATALOG_SYNC=0 to skip ExecStartPre (default 1 when RELAY_MASTER_CATALOG_PATH has relay-catalog.json + scripts/sync-relay-catalog.sh); Slack: RELAY_NOTIFY_SLACK_WEBHOOK_URL"
     echo "  Reconcile (optional): RELAY_RECONCILE_ENABLED=1, RELAY_RECONCILE_ENABLE_TIMER=1 (systemd timer); deploy/relay-gateway.json in relay-master — docs/RELAY_RECONCILE_PLAN.md"
-    echo "  update    — refresh relay-gateway binaries and systemd unit from this directory; rescan feature inventory"
+    echo "  Kubo/IPFS (default on): RELAY_INSTALL_IPFS=0 to skip; RELAY_KUBO_VERSION (default v0.32.1). API 127.0.0.1:5001, gateway 127.0.0.1:8081, swarm 4001/tcp+udp. Status: GET /api/status on the node FQDN."
+    echo "  update    — refresh relay-gateway binaries and systemd unit from this directory; rescan feature inventory; install Kubo if missing"
     echo "  repair    — fix perms, reinstall features from state/features.json (bootstraps minimal state if missing)"
     echo "  reconfigure-features — change Piper/npm/translation (only supported way to add/remove optional features)"
     echo "  refresh-features — rescan Piper models + Argos packs into features.json (after adding voices or translation packages)"

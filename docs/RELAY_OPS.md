@@ -39,7 +39,7 @@ Observer commands must **not** require an SSH key.
 
 ## CLI (fleet + observer)
 
-Global flags (before or with clap long opts): `--gitlab`, `--env-file`, `--only=FQDN`, `--build`, `--interactive`.
+Global flags (before or with clap long opts): `--gitlab`, `--env-file`, `--only=FQDN`, `--build`, `--allow-dirty`, `--interactive`.
 
 | Command | Needs | Notes |
 |---------|--------|--------|
@@ -51,7 +51,7 @@ Global flags (before or with clap long opts): `--gitlab`, `--env-file`, `--only=
 | `serve` | GitLab URL | UI on `127.0.0.1:7780` |
 | `ssh-check` | Admin | Parallel `ssh true` |
 | `drift` | Admin | Catalog HEAD alignment |
-| `update` / `deploy-all` | Admin + checkout | Pack optional `--build`; tarball + restart |
+| `update` / `deploy-all` | Admin + checkout | Pack optional `--build`; tarball + restart. Pack **refuses a dirty/unpushed tree** unless **`--allow-dirty`**. |
 | `repair` | Admin + checkout | Remote `install.sh repair` on an **existing** node |
 | `reclaim` | Admin + checkout | Spot **install-only** via `relay-master-deploy.sh` (`--fqdn` `--yes`) |
 | `features-set` | Admin + checkout | `--piper` `--npm-pkgs` `--translation` … |
@@ -98,7 +98,9 @@ Bind is loopback-only by default.
 
 UI **Repair** = remote `install.sh repair`. UI **Reclaim** = Spot install-only (confirm-gated). `bootstrap-ssh` and destructive `reinstall` stay CLI-only.
 
-Each node card shows the **bare repo count** and SHAs from that host’s **`POST /api/status`** (`schema_version` ≥ 2: local git tips, no git-daemon). Older nodes fall back to `POST /api/config` plus `git ls-remote --heads` with **4 concurrent connections per host** (under git daemon `--max-connections`, default **32**). **Missing** means a catalog name is not on disk. An `ls-remote` timeout is **not** treated as missing. SHA drift still marks `sync`. Tray lines look like `dfw1  up  12 repos` (or `missing` / `drift` when out of sync). **Quit** stops the user service (`systemctl --user stop relay-ops`) or exits a foreground `serve`. **Browse** opens a git:// file browser. Observer; no SSH.
+Each node card shows the **bare repo count** and SHAs from that host’s **`GET`/`POST /api/status`** (`schema_version` ≥ 2: local git tips, no git-daemon; ≥ 3: **IPFS seed** `self.ipfs` / `ipfs_ok`). Operator APIs are the **node FQDN** only (parked Hosts keep `/api/*` as site files). Older nodes fall back to `POST /api/config` plus `git ls-remote --heads` with **4 concurrent connections per host** (under git daemon `--max-connections`, default **64**). **Missing** means a catalog name is not on disk. An `ls-remote` timeout is **not** treated as missing. SHA drift still marks `sync`. Tray lines look like `dfw1  up  12 repos` (or `missing` / `drift` when out of sync). **Quit** stops the user service (`systemctl --user stop relay-ops`) or exits a foreground `serve`. **Browse** lists files over **HTTPS** (`GET https://{repo}.{node}/` with **`X-Relay-Tree: 1`**, blob GET for file bodies). Older nodes fall back to `git://` partial clone (`blob:none`). Observer; no SSH.
+
+Background probes are **300s** while the fleet is up (`probe_interval_secs`). If any node is down or DNS-empty (typical right after login, before the resolver is ready), retry every **10s** (`probe_interval_down_secs`): DNS lookup only when names fail, then TCP 22/443/git, and **HTTPS / git-daemon only after 443 is open**. Empty-DNS retries never leave the laptop.
 
 On Linux, `serve` shows a GNOME AppIndicator using the canonical Relay mark (`media/icon.png`; red dot if any node is down). The menu lists each node (up / DOWN, DNS≠Spot, https/git) plus fleet A. Click opens the UI. `install-service` copies the binary to `~/.local/bin/relay-ops`, enables a user systemd unit, and writes `~/.config/autostart/relay-ops.desktop` so it returns at login.
 
@@ -118,6 +120,10 @@ Windows: install OpenSSH and Git for Windows for SSH/git. Observer HTTPS/DNS/TCP
 Global flags are parsed **before** the subcommand. Safe forms: `./scripts/relay-fleet.sh --build update` and `--build deploy-all` (optional `--only=` before the subcommand). For `update` / `deploy-all` only, a trailing `--build` is also accepted.
 
 If `target/relay-linode-deploy.tgz` already exists and you run `update` / `deploy-all` **without** `--build`, the fleet uploads **whatever is on disk**. After changing gateway Rust, always `--build`, or run `./scripts/pack-linode-deploy.sh` and check the tarball mtime.
+
+**Clean pack (default):** `pack-linode-deploy.sh` refuses dirty or unpushed `relay-gateway` / `relay-runtime` / `relay-client-web` trees. Production path: **commit and push** (or CI `package:linode-tgz`) → **`./scripts/relay-fleet.sh --build deploy-all`**. **`--allow-dirty`** (or `RELAY_PACK_ALLOW_DIRTY=1` on the pack script only) is an explicit override; `deploy-all` does **not** set that env unless the flag is present, and it **unsets** a leftover laptop `RELAY_PACK_ALLOW_DIRTY`. Optional later: fill `relay-master/deploy/relay-gateway.json` and enable `RELAY_RECONCILE_ENABLED` / timer ([`RELAY_RECONCILE_PLAN.md`](./RELAY_RECONCILE_PLAN.md)) — not required for this path.
+
+**First-push provision** is live: `git push git://{node}:9418/{repo}.git` creates the missing bare on **`git-receive-pack`** when **`RELAY_GIT_ENSURE_BARE_ENABLED`** is on and catalog **`publish_origin`** allows this node. HTTP **`POST /api/git/ensure-bare/:repo`** remains for pre-create. Replica skip (`enforce_push_range` on peer-fetch) is the next cut.
 
 Laptop remotes for catalog repos: `./scripts/relay-local-remotes.sh --all` (see `scripts/relay-local-repos.map`).
 

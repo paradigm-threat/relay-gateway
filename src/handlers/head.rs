@@ -11,6 +11,7 @@ use http_body::Body as HttpBody;
 use crate::{git, helpers, AppState, GitResolveResult, HEADER_BRANCH, HEADER_REPO};
 
 use super::file::try_static;
+use super::general::respond_relay_tree_root;
 
 fn body_len<B: HttpBody>(body: &B) -> Option<u64> {
     let hint = body.size_hint();
@@ -55,8 +56,12 @@ fn headify_response(resp: Response, branch: &str, repo: &str) -> Response {
 pub async fn head_root(
     State(state): State<AppState>,
     headers: HeaderMap,
-    _query: Option<Query<HashMap<String, String>>>,
+    query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
+    let qmap = query.as_ref().map(|q| &q.0);
+    if git::wants_relay_tree(&headers) {
+        return headify_response(respond_relay_tree_root(&state, &headers, qmap), "", "");
+    }
     // If index exists, signal 200 without body
     if let Some(resp) = try_static(&state, "index.html").await {
         let head_resp = headify_response(resp, "", "");
@@ -66,14 +71,9 @@ pub async fn head_root(
     }
     if let Some(repo_name) = helpers::default_http_repo_from_apex(&state) {
         let branch = helpers::branch_for_request(&headers, &state, Some(&repo_name));
-        if let GitResolveResult::Respond(resp) = git::git_resolve_and_respond(
-            &state,
-            &headers,
-            &branch,
-            &repo_name,
-            "index.html",
-            None,
-        ) {
+        if let GitResolveResult::Respond(resp) =
+            git::git_resolve_and_respond(&state, &headers, &branch, &repo_name, "index.html", None)
+        {
             let head_resp = headify_response(resp, &branch, &repo_name);
             if head_resp.status() == StatusCode::OK {
                 return head_resp;
@@ -136,14 +136,7 @@ pub async fn head_file(
     }
 
     // Resolve via Git - if found, return headers without body
-    match git::git_resolve_and_respond(
-        &state,
-        &headers,
-        &branch,
-        &repo_name,
-        &decoded,
-        qmap,
-    ) {
+    match git::git_resolve_and_respond(&state, &headers, &branch, &repo_name, &decoded, qmap) {
         GitResolveResult::Respond(resp) => {
             let head_resp = headify_response(resp, &branch, &repo_name);
             if head_resp.status() == StatusCode::OK {

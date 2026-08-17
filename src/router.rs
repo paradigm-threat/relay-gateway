@@ -17,7 +17,8 @@ use crate::{handlers, transpiler, AppState};
 
 /// Build the relay HTTP router (GET/PUT/QUERY/hooks/api).
 pub fn build_router(state: AppState) -> Router {
-    let acme_dir = std::env::var("RELAY_ACME_DIR").unwrap_or_else(|_| "/var/www/certbot".to_string());
+    let acme_dir =
+        std::env::var("RELAY_ACME_DIR").unwrap_or_else(|_| "/var/www/certbot".to_string());
 
     // Open CORS for mesh browsers (Vercel SPA, parked sites, WASM QUERY).
     // Do not enable credentials: Allow-Origin: * is invalid with cookies.
@@ -40,8 +41,22 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/openapi.yaml", get(handlers::get_openapi_yaml))
         .route("/swagger-ui", get(handlers::get_swagger_ui))
-        .route("/api/config", post(handlers::post_api_config))
-        .route("/api/status", post(handlers::post_api_status))
+        .route(
+            "/api/config",
+            get(handlers::api_config)
+                .head(handlers::api_config)
+                .post(handlers::api_config)
+                .put(handlers::api_config)
+                .delete(handlers::api_config),
+        )
+        .route(
+            "/api/status",
+            get(handlers::api_status)
+                .head(handlers::api_status)
+                .post(handlers::api_status)
+                .put(handlers::api_status)
+                .delete(handlers::api_status),
+        )
         .route(
             "/api/mcp/:repo",
             get(handlers::mcp::get_mcp)
@@ -55,10 +70,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/index/warm/:repo", post(handlers::post_index_warm))
         .route("/git-pull", post(handlers::post_git_pull))
         .route("/hooks/peer", post(handlers::post_peer_hook))
-        .route(
-            "/hooks/park-tls",
-            post(crate::park_tls::post_park_tls_hook),
-        )
+        .route("/hooks/park-tls", post(crate::park_tls::post_park_tls_hook))
         .route("/hooks/mesh-event", post(handlers::post_mesh_event))
         .route("/hooks/github/:repo", post(handlers::post_github_hook))
         .route("/transpile", post(transpiler::post_transpile))

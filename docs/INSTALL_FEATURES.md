@@ -1,6 +1,6 @@
 # Install-time server features (`features.json`)
 
-Optional Relay capabilities are chosen when you run **`install.sh`** (or **`reconfigure-features`**), stored under **`${RELAY_INSTALL_ROOT:-/opt/relay}/state/features.json`**, and exposed to clients as **`POST /api/config` → `installed_features.manifest`** plus a short **`installed_features.summary`**.
+Optional Relay capabilities are chosen when you run **`install.sh`** (or **`reconfigure-features`**), stored under **`${RELAY_INSTALL_ROOT:-/opt/relay}/state/features.json`**, and exposed to clients as **`GET`/`POST /api/config` → `installed_features.manifest`** plus a short **`installed_features.summary`**.
 
 Peers and client apps can **`POST /api/config`** on each node to discover what is **enabled** and which **subfeatures** (voices, language pairs, npm packages, etc.) are present on that server.
 
@@ -36,6 +36,21 @@ Recorded under **`features.core`** for discoverability:
 | `ports` | `{ "http", "git_daemon" }` |
 
 These are not toggled off by the installer today; they define the baseline node.
+
+---
+
+## Kubo IPFS (`features.ipfs_kubo`)
+
+Default **on** for **`install`**, **`update`**, and **`repair`** (`RELAY_INSTALL_IPFS=0` to skip). Downloads **Kubo v0.32.1** into **`/opt/relay/lib/kubo/`**, repo at **`/opt/relay/ipfs`**, systemd **`relay-ipfs.service`**.
+
+| Field | Meaning |
+|-------|---------|
+| **`api`** | `http://127.0.0.1:5001` |
+| **`gateway`** | `http://127.0.0.1:8081` (not 8080) |
+| **`swarm_port`** | **4001** (public TCP+UDP) |
+| **`service`** | `relay-ipfs.service` |
+
+**`GET /api/status`** reports **`self.ipfs`** / **`ipfs_ok`**. Pin timer: **`relay-ipfs-pin-catalog.timer`**. That is **IPFS seed** (Kubo pins), not git **`ensure-bare`** seed. See **[`RELAY_IPFS.md`](./RELAY_IPFS.md)**.
 
 ---
 

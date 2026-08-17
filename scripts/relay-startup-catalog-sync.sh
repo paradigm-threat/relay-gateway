@@ -159,6 +159,23 @@ if [[ ! -f "$catalog_json" || ! -f "$sync_script" ]]; then
   exit 0
 fi
 
+# Fast-forward an existing catalog checkout (clone path above already fetched).
+if [[ -d "$catalog/.git" && -n "$catalog_url" ]]; then
+  git -C "$catalog" remote get-url origin >/dev/null 2>&1 || git -C "$catalog" remote add origin "$catalog_url"
+  git -C "$catalog" remote set-url origin "$catalog_url" || true
+  fetch_out="$(git -C "$catalog" fetch origin "$catalog_branch" 2>&1)" || echo "[relay-startup-catalog-sync] WARN: catalog fetch failed: $fetch_out" >&2
+  if git -C "$catalog" merge --ff-only FETCH_HEAD >/dev/null 2>&1; then
+    echo "[relay-startup-catalog-sync] catalog worktree $(git -C "$catalog" rev-parse --short HEAD)" >&2
+  else
+    echo "[relay-startup-catalog-sync] WARN: catalog worktree not fast-forwardable; leaving $(git -C "$catalog" rev-parse --short HEAD)" >&2
+  fi
+fi
+
+# Nodes have no GitLab deploy key; rewrite git@ submodule URLs before sync-relay-catalog.sh clones.
+if [[ -f "$catalog/.gitmodules" ]]; then
+  sed -i 's|url = git@gitlab.com:|url = https://gitlab.com/|' "$catalog/.gitmodules" || true
+fi
+
 list_catalog_repo_names() {
   python3 - "$catalog_json" <<'PY'
 import json, sys
@@ -235,9 +252,11 @@ if ! out="$(bash "$sync_script" 2>&1)"; then
   slack ":warning: *Relay startup sync* — \`${node_label:-unknown}\` — *catalog forge sync failed* (HTTP still starts). Fix catalog/GitLab, then \`systemctl restart relay-gateway\`.\n\`\`\`${out:0:1500}\`\`\`"
   write_startup_sync_state 0 "sync-relay-catalog.sh exited non-zero" "$out" 0 0
   slack ":checkered_flag: *Relay startup sync* — \`${node_label:-unknown}\` — finished (with errors); starting relay-gateway"
+  git -C "$catalog" checkout -q -- .gitmodules 2>/dev/null || true
   exit 0
 fi
 echo "$out" >&2
+git -C "$catalog" checkout -q -- .gitmodules 2>/dev/null || true
 slack ":package: *Relay startup sync* — \`${node_label:-unknown}\` — catalog mirrors updated from forge (relay-catalog.json + relay-master per sync-relay-catalog)"
 
 peer_fetch_other_masters

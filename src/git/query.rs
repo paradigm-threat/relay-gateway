@@ -1,10 +1,10 @@
 use crate::git;
 use crate::git::clever_script_host::CleverScriptServerHost;
 use crate::git::index_policy;
+use crate::git::repo::{read_file_from_repo, read_relay_config};
 use crate::git::search_plugins;
 use crate::git::search_store::{store_for_bare_repo, store_key_for_bare, SearchStore};
 use crate::git::sqlite_index::{self, QueryOrder};
-use crate::git::repo::{read_file_from_repo, read_relay_config};
 use relay_runtime::value::Value as CsValue;
 use serde_json::Value;
 use std::path::Path;
@@ -159,10 +159,7 @@ pub fn execute_query(
     query: Option<Value>,
     collection: &str,
 ) -> anyhow::Result<Vec<Value>> {
-    Ok(
-        execute_query_outcome(repo_root, repo_name, branch, query, collection, None, None)?
-            .results,
-    )
+    Ok(execute_query_outcome(repo_root, repo_name, branch, query, collection, None, None)?.results)
 }
 
 pub fn execute_query_limited(
@@ -174,16 +171,8 @@ pub fn execute_query_limited(
     limit: Option<usize>,
 ) -> anyhow::Result<Vec<Value>> {
     Ok(
-        execute_query_outcome(
-            repo_root,
-            repo_name,
-            branch,
-            query,
-            collection,
-            limit,
-            None,
-        )?
-        .results,
+        execute_query_outcome(repo_root, repo_name, branch, query, collection, limit, None)?
+            .results,
     )
 }
 
@@ -261,7 +250,8 @@ pub fn execute_query_outcome(
             "limit": limit,
             "order": order.as_str(),
         });
-        let host = CleverScriptServerHost::host_handle(repo_full_path.clone(), branch.to_string(), false);
+        let host =
+            CleverScriptServerHost::host_handle(repo_full_path.clone(), branch.to_string(), false);
         let raw = relay_runtime::run_query_script(&source, host, &qctx, None, None)
             .map_err(|e| anyhow::anyhow!("CleverScript QUERY: {}", e))?;
 

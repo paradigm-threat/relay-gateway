@@ -1,5 +1,8 @@
-//! `POST /api/status` — node, per-repo git tips, and configured master-peer reachability.
-//! (**GET** is not used: repo paths could shadow **`/api/*`** on wildcard routes.)
+//! `GET`/`HEAD`/`POST /api/status` — node, per-repo git tips, IPFS seed summary, and
+//! configured master-peer reachability.
+//!
+//! Operator routes are bound to the **node FQDN** (and loopback). Parked domains and
+//! `{repo}.{node}` Hosts keep `/api/*` as site files / GET hooks.
 //!
 //! Per-repo rows are read from **local** bares (libgit2), not `git ls-remote`, so one
 //! public request can list every catalog + on-disk repo without using git-daemon slots.
@@ -7,6 +10,7 @@
 //! - Query **`format=json`** or **`format=html`** overrides **`Accept`** (default JSON when ambiguous).
 //! - Query **`strict=1`**: HTTP **503** if any peer is unreachable (otherwise **200** with `healthy: false`).
 //!   Missing catalog bares set `repos_ok: false` but do **not** change `healthy` / `strict`.
+//!   IPFS daemon-down sets `ipfs_ok: false` and does **not** affect `healthy` / `strict`.
 //! - Env **`RELAY_STATUS_PEER_URL_TEMPLATE`**: default **`https://{host}/api/config`** (probed with **POST**).
 //! - Env **`RELAY_STATUS_PROBE_TIMEOUT_SECS`**: default **3**.
 
@@ -124,7 +128,33 @@ struct StatusSelf {
     /// Provenance from pack-linode-deploy.sh (`deploy-manifest.json`).
     #[serde(skip_serializing_if = "Option::is_none")]
     deploy_manifest: Option<serde_json::Value>,
+    ipfs: IpfsSelfStatus,
 }
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+struct IpfsSelfStatus {
+    enabled: bool,
+    ok: bool,
+    api_configured: bool,
+    api_reachable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    peer_id: Option<String>,
+    gateway: String,
+    cache_root: String,
+    cache_cid_count: usize,
+    in_flight_count: usize,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RepoIpfsStatus {
+    pub thin: bool,
+    pub cid_count: usize,
+    pub cached_count: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cids: Vec<String>,
+}
+
+const MAX_PUBLIC_CIDS: usize = 8;
 
 /// One catalog and/or on-disk repo, from local git (not git-daemon).
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -143,6 +173,9 @@ pub(crate) struct RepoStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub publish_sha: Option<String>,
     pub branch_count: usize,
+    /// Present when the publish/HEAD tip references IPFS pointers or a manifest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipfs: Option<RepoIpfsStatus>,
 }
 
 #[derive(Serialize)]
@@ -151,6 +184,8 @@ struct StatusBody {
     /// `ok` if every configured peer is reachable or skipped as self; `degraded` otherwise.
     status: &'static str,
     healthy: bool,
+    /// False when Kubo is configured but not reachable. Does **not** affect `healthy` / `strict`.
+    ipfs_ok: bool,
     /// False when any **catalog** repo is missing on disk or has no `publish_branch` tip.
     repos_ok: bool,
     generated_at_unix_secs: u64,
@@ -221,7 +256,7 @@ pub(crate) fn collect_repo_status(state: &AppState) -> Vec<RepoStatus> {
             let present = on_disk.contains(&name);
             let catalog_branch = catalog.get(&name).cloned();
 
-            let (head_branch, head_sha, publish_sha, branch_count) = if present {
+            let (head_branch, head_sha, publish_sha, branch_count, ipfs) = if present {
                 if let Some(repo) = git::open_repo_for_state(state, &name) {
                     let branch_count = git::list_branches(&repo).len();
                     let head_branch = match &state.serve_context {
@@ -239,12 +274,13 @@ pub(crate) fn collect_repo_status(state: &AppState) -> Vec<RepoStatus> {
                         .filter(|b| is_safe_branch(b))
                         .or(head_branch.as_deref());
                     let publish_sha = publish_ref.and_then(|b| tip_sha(&repo, b));
-                    (head_branch, head_sha, publish_sha, branch_count)
+                    let ipfs = publish_ref.and_then(|b| repo_ipfs_status(&repo, b));
+                    (head_branch, head_sha, publish_sha, branch_count, ipfs)
                 } else {
-                    (None, None, None, 0)
+                    (None, None, None, 0, None)
                 }
             } else {
-                (None, None, None, 0)
+                (None, None, None, 0, None)
             };
 
             let publish_branch = catalog_branch
@@ -266,9 +302,24 @@ pub(crate) fn collect_repo_status(state: &AppState) -> Vec<RepoStatus> {
                 publish_branch,
                 publish_sha,
                 branch_count,
+                ipfs,
             }
         })
         .collect()
+}
+
+fn repo_ipfs_status(repo: &git2::Repository, branch: &str) -> Option<RepoIpfsStatus> {
+    let cids = git::ipfs::collect_cids_from_repo(repo, branch);
+    if cids.is_empty() {
+        return None;
+    }
+    let cached_count = cids.iter().filter(|c| git::ipfs::cid_is_cached(c)).count();
+    Some(RepoIpfsStatus {
+        thin: true,
+        cid_count: cids.len(),
+        cached_count,
+        cids: cids.into_iter().take(MAX_PUBLIC_CIDS).collect(),
+    })
 }
 
 async fn probe_one_peer(
@@ -392,6 +443,45 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
+async fn collect_ipfs_self() -> IpfsSelfStatus {
+    let api = std::env::var("RELAY_IPFS_API")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty());
+    let enabled = api.is_some();
+    let mut api_reachable = false;
+    let mut peer_id = None;
+    if let Some(ref base) = api {
+        if let Ok(client) = reqwest::Client::builder()
+            .timeout(Duration::from_secs(1))
+            .build()
+        {
+            let url = format!("{base}/api/v0/id");
+            if let Ok(resp) = client.post(&url).send().await {
+                api_reachable = resp.status().is_success();
+                if let Ok(j) = resp.json::<serde_json::Value>().await {
+                    peer_id = j
+                        .get("ID")
+                        .or_else(|| j.get("id"))
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                }
+            }
+        }
+    }
+    IpfsSelfStatus {
+        enabled,
+        ok: !enabled || api_reachable,
+        api_configured: enabled,
+        api_reachable,
+        peer_id,
+        gateway: git::ipfs::gateway_base_from_env(),
+        cache_root: git::ipfs::cache_root_from_env().display().to_string(),
+        cache_cid_count: git::ipfs::cache_cid_count(),
+        in_flight_count: git::ipfs::in_flight_count(),
+    }
+}
+
 fn read_deploy_manifest() -> Option<serde_json::Value> {
     let root = std::env::var("RELAY_INSTALL_ROOT").unwrap_or_else(|_| "/opt/relay".into());
     let path = std::path::Path::new(&root).join("state/deploy-manifest.json");
@@ -452,7 +542,7 @@ fn render_html(body: &StatusBody) -> String {
             "bad"
         };
         repo_rows.push_str(&format!(
-            r#"<tr><td>{}</td><td class="{}">{}</td><td>{}</td><td>{}</td><td>{}</td><td><code>{}</code></td><td>{}</td><td><code>{}</code></td></tr>"#,
+            r#"<tr><td>{}</td><td class="{}">{}</td><td>{}</td><td>{}</td><td>{}</td><td><code>{}</code></td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>"#,
             html_escape(&r.name),
             cls,
             st,
@@ -462,10 +552,36 @@ fn render_html(body: &StatusBody) -> String {
             html_escape(&short_sha(r.publish_sha.as_deref())),
             r.branch_count,
             html_escape(&short_sha(r.head_sha.as_deref())),
+            r.ipfs
+                .as_ref()
+                .map(|i| {
+                    let links: Vec<String> = i
+                        .cids
+                        .iter()
+                        .map(|c| {
+                            let short = if c.len() > 12 { &c[..12] } else { c.as_str() };
+                            format!(
+                                r#"<a href="/ipfs/{}?relayAssetStatus=1"><code>{}</code></a>"#,
+                                html_escape(c),
+                                html_escape(short)
+                            )
+                        })
+                        .collect();
+                    let extra = if links.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {}", links.join(" "))
+                    };
+                    format!(
+                        "IPFS seed {}/{} cached{}",
+                        i.cached_count, i.cid_count, extra
+                    )
+                })
+                .unwrap_or_else(|| "—".into()),
         ));
     }
     if repo_rows.is_empty() {
-        repo_rows.push_str(r#"<tr><td colspan="8">No catalog or on-disk repos</td></tr>"#);
+        repo_rows.push_str(r#"<tr><td colspan="9">No catalog or on-disk repos</td></tr>"#);
     }
 
     let mut peer_rows = String::new();
@@ -500,6 +616,15 @@ fn render_html(body: &StatusBody) -> String {
         ));
     }
 
+    let ipfs_label = if body.ipfs_ok { "OK" } else { "DOWN" };
+    let ipfs_class = if body.ipfs_ok { "ok" } else { "warn" };
+    let ipfs = &s.ipfs;
+    let ipfs_cids: String = ipfs
+        .peer_id
+        .as_deref()
+        .map(|p| html_escape(p))
+        .unwrap_or_else(|| "—".into());
+
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -521,8 +646,8 @@ fn render_html(body: &StatusBody) -> String {
   </style>
 </head>
 <body>
-  <h1>Relay status — <span class="{}">{}</span> · repos <span class="{}">{}</span></h1>
-  <p class="meta">generated_at_unix_secs={} · schema_version={} · <code>POST /api/status</code> (add <code>?format=json</code> for JSON)</p>
+  <h1>Relay status — <span class="{}">{}</span> · repos <span class="{}">{}</span> · IPFS seed <span class="{}">{}</span></h1>
+  <p class="meta">generated_at_unix_secs={} · schema_version={} · <code>GET /api/status</code> on this node FQDN (add <code>?format=json</code> for JSON). Parked Hosts serve site files at this path.</p>
   <h2>This node</h2>
   <table>
     <tr><th>gateway_version</th><td>{}</td></tr>
@@ -534,9 +659,21 @@ fn render_html(body: &StatusBody) -> String {
     <tr><th>repo_count</th><td>{}</td></tr>
     <tr><th>git_ensure_bare_enabled</th><td>{}</td></tr>
   </table>
+  <h2>IPFS seed (Kubo + disk cache)</h2>
+  <p class="meta">Git-ops <code>ensure-bare</code> seed is unrelated. This is CID availability on this node.</p>
+  <table>
+    <tr><th>ok</th><td class="{}">{}</td></tr>
+    <tr><th>enabled</th><td>{}</td></tr>
+    <tr><th>api_reachable</th><td>{}</td></tr>
+    <tr><th>peer_id</th><td><code>{}</code></td></tr>
+    <tr><th>gateway</th><td><code>{}</code></td></tr>
+    <tr><th>cache_root</th><td><code>{}</code></td></tr>
+    <tr><th>cache_cid_count</th><td>{}</td></tr>
+    <tr><th>in_flight_count</th><td>{}</td></tr>
+  </table>
   <h2>Repos (local git, not git-daemon)</h2>
   <table>
-    <tr><th>Repo</th><th>Status</th><th>Catalog</th><th>On disk</th><th>Publish</th><th>SHA</th><th>Branches</th><th>HEAD</th></tr>
+    <tr><th>Repo</th><th>Status</th><th>Catalog</th><th>On disk</th><th>Publish</th><th>SHA</th><th>Branches</th><th>HEAD</th><th>IPFS seed</th></tr>
     {}
   </table>
   <h2>Peers (from RELAY_MASTER_PEER_LIST)</h2>
@@ -552,6 +689,8 @@ fn render_html(body: &StatusBody) -> String {
         overall,
         repos_class,
         repos_label,
+        ipfs_class,
+        ipfs_label,
         body.generated_at_unix_secs,
         body.schema_version,
         html_escape(s.gateway_version),
@@ -562,13 +701,59 @@ fn render_html(body: &StatusBody) -> String {
         s.tls_enabled,
         s.repo_count,
         s.git_ensure_bare_enabled,
+        ipfs_class,
+        if ipfs.ok { "OK" } else { "DOWN" },
+        ipfs.enabled,
+        ipfs.api_reachable,
+        ipfs_cids,
+        html_escape(&ipfs.gateway),
+        html_escape(&ipfs.cache_root),
+        ipfs.cache_cid_count,
+        ipfs.in_flight_count,
         repo_rows,
         peer_rows,
         html_escape(&json_pretty),
     )
 }
 
-/// POST /api/status
+/// GET/HEAD/POST `/api/status` on the node FQDN (or loopback). Other Hosts: site files or 404.
+pub async fn api_status(
+    State(state): State<AppState>,
+    method: axum::http::Method,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Some(resp) = super::node_api::if_not_node_ops(
+        state.clone(),
+        method.clone(),
+        headers.clone(),
+        "api/status".into(),
+        Some(Query(query.clone())),
+        body,
+    )
+    .await
+    {
+        return resp;
+    }
+    if method == axum::http::Method::PUT || method == axum::http::Method::DELETE {
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            [(header::ALLOW, "GET, HEAD, POST")],
+            "Use GET, HEAD, or POST for /api/status on the node Host",
+        )
+            .into_response();
+    }
+    let resp = post_api_status(State(state), headers, Query(query))
+        .await
+        .into_response();
+    if method == axum::http::Method::HEAD {
+        return super::node_api::empty_head(resp);
+    }
+    resp
+}
+
+/// POST /api/status (also used as the inner body for GET/HEAD on the node Host).
 pub async fn post_api_status(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -612,11 +797,14 @@ pub async fn post_api_status(
 
     let healthy = peers.iter().all(|p| p.reachable);
     let status = if healthy { "ok" } else { "degraded" };
+    let ipfs_self = collect_ipfs_self().await;
+    let ipfs_ok = ipfs_self.ok;
 
     let body = StatusBody {
-        schema_version: 2,
+        schema_version: 3,
         status,
         healthy,
+        ipfs_ok,
         repos_ok,
         generated_at_unix_secs: now_unix_secs(),
         self_: StatusSelf {
@@ -635,6 +823,7 @@ pub async fn post_api_status(
                 .map(|m| summarize_features(m)),
             startup_catalog_sync: read_startup_catalog_sync_status(&state.repo_path),
             deploy_manifest: read_deploy_manifest(),
+            ipfs: ipfs_self,
         },
         peers,
         repos: repo_rows,
@@ -658,10 +847,8 @@ pub async fn post_api_status(
     };
     *resp.status_mut() = code;
     resp.headers_mut().insert(overall_name, overall_value);
-    resp.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-store"),
-    );
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     resp
 }
 
@@ -792,9 +979,10 @@ mod tests {
         assert!(!rows.iter().filter(|r| r.in_catalog).all(|r| r.ok));
 
         let html = render_html(&StatusBody {
-            schema_version: 2,
+            schema_version: 3,
             status: "ok",
             healthy: true,
+            ipfs_ok: false,
             repos_ok: false,
             generated_at_unix_secs: 0,
             self_: StatusSelf {
@@ -810,6 +998,17 @@ mod tests {
                 installed_features_summary: None,
                 startup_catalog_sync: None,
                 deploy_manifest: None,
+                ipfs: IpfsSelfStatus {
+                    enabled: true,
+                    ok: false,
+                    api_configured: true,
+                    api_reachable: false,
+                    peer_id: None,
+                    gateway: "http://127.0.0.1:8081".into(),
+                    cache_root: "/tmp/ipfs-cache".into(),
+                    cache_cid_count: 0,
+                    in_flight_count: 0,
+                },
             },
             peers: vec![],
             repos: rows,
@@ -817,6 +1016,94 @@ mod tests {
         assert!(html.contains("present"));
         assert!(html.contains("missing"));
         assert!(html.contains(">extra<"));
+        assert!(html.contains("IPFS seed"));
+        assert!(html.contains("Relay status —"));
+        assert!(!html.contains("DEGRADED"));
+        assert!(html.contains(">OK</span>"));
+    }
+
+    #[test]
+    fn collect_repo_status_includes_ipfs_cids_from_manifest() {
+        use crate::git::ipfs::{format_pointer_stub, IpfsPointer};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("thin.git");
+        let repo = git2::Repository::init_bare(&path).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        let cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi";
+        let stub = format_pointer_stub(&IpfsPointer {
+            cid: cid.into(),
+            content_type: Some("image/png".into()),
+            sha256: None,
+        });
+        let manifest = serde_json::json!({
+            "schema": "relay.assets-manifest.v1",
+            "assets": [{ "path": "cover.png", "ipfs": cid }]
+        })
+        .to_string();
+        let blob_man = repo.blob(manifest.as_bytes()).unwrap();
+        let blob_stub = repo.blob(stub.as_bytes()).unwrap();
+        let mut assets_tb = repo.treebuilder(None).unwrap();
+        assets_tb
+            .insert("hero.png.ipfs", blob_stub, 0o100644)
+            .unwrap();
+        let assets_id = assets_tb.write().unwrap();
+        let mut relay_tb = repo.treebuilder(None).unwrap();
+        relay_tb.insert("assets", assets_id, 0o040000).unwrap();
+        let relay_id = relay_tb.write().unwrap();
+        let mut root = repo.treebuilder(None).unwrap();
+        root.insert(".relay", relay_id, 0o040000).unwrap();
+        root.insert("assets.manifest.json", blob_man, 0o100644)
+            .unwrap();
+        let tree_id = root.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "thin", &tree, &[])
+            .unwrap();
+        repo.set_head("refs/heads/main").unwrap();
+
+        let rows = collect_repo_status(&status_state(dir.path().to_path_buf()));
+        let thin = rows.iter().find(|r| r.name == "thin").unwrap();
+        let ipfs = thin.ipfs.as_ref().expect("ipfs summary");
+        assert!(ipfs.thin);
+        assert_eq!(ipfs.cid_count, 1);
+        assert!(ipfs.cids.iter().any(|c| c == cid));
+
+        let html = render_html(&StatusBody {
+            schema_version: 3,
+            status: "ok",
+            healthy: true,
+            ipfs_ok: true,
+            repos_ok: true,
+            generated_at_unix_secs: 0,
+            self_: StatusSelf {
+                gateway_version: "0",
+                node_fqdn: None,
+                relay_server_id: None,
+                mesh_role: "master",
+                mesh_http_publish: false,
+                tls_enabled: false,
+                repo_count: 1,
+                master_peers_configured: vec![],
+                git_ensure_bare_enabled: false,
+                installed_features_summary: None,
+                startup_catalog_sync: None,
+                deploy_manifest: None,
+                ipfs: IpfsSelfStatus {
+                    enabled: true,
+                    ok: true,
+                    api_configured: true,
+                    api_reachable: true,
+                    peer_id: None,
+                    gateway: "http://127.0.0.1:8081".into(),
+                    cache_root: "/tmp/ipfs-cache".into(),
+                    cache_cid_count: 0,
+                    in_flight_count: 0,
+                },
+            },
+            peers: vec![],
+            repos: rows,
+        });
+        assert!(html.contains(&format!("/ipfs/{cid}?relayAssetStatus=1")));
     }
 
     #[test]

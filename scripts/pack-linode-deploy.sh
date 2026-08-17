@@ -49,11 +49,11 @@ BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 npm --prefix "$CLIENT_WEB" run build
 test -f "$CLIENT_WEB/dist/assets/embed.js"
 test -f "$CLIENT_WEB/dist/wasm/relay_runtime_pkg/relay_runtime_bg.wasm"
-cargo build --release --bin relay-gateway --bin relay-hook-handler
+cargo build --release --bin relay-gateway --bin relay-hook-handler --bin relay-git-proxy
 DIST="$ROOT/target/linode-deploy"
 rm -rf "$DIST"
 mkdir -p "$DIST"
-cp target/release/relay-gateway target/release/relay-hook-handler "$DIST/"
+cp target/release/relay-gateway target/release/relay-hook-handler target/release/relay-git-proxy "$DIST/"
 cp "$ROOT/scripts/relay-install.sh" "$DIST/install.sh"
 cp "$ROOT/scripts/piper-tts-http.py" "$DIST/piper-tts-http.py"
 cp "$ROOT/scripts/relay-probe-features.py" "$DIST/relay-probe-features.py"
@@ -63,10 +63,12 @@ cp "$ROOT/scripts/relay-reconcile.sh" "$DIST/relay-reconcile.sh"
 cp "$ROOT/scripts/install-caddy-tls.sh" "$DIST/install-caddy-tls.sh"
 cp "$ROOT/scripts/caddy-ask.py" "$DIST/caddy-ask.py"
 cp -a "$CLIENT_WEB/dist" "$DIST/www"
-chmod +x "$DIST/install.sh" "$DIST/relay-bootstrap.sh" "$DIST/relay-startup-catalog-sync.sh" "$DIST/relay-reconcile.sh" "$DIST/install-caddy-tls.sh" "$DIST/relay-probe-features.py"
+cp "$ROOT/scripts/relay-ipfs-pin-catalog" "$DIST/relay-ipfs-pin-catalog"
+chmod +x "$DIST/install.sh" "$DIST/relay-bootstrap.sh" "$DIST/relay-startup-catalog-sync.sh" "$DIST/relay-reconcile.sh" "$DIST/install-caddy-tls.sh" "$DIST/relay-probe-features.py" "$DIST/relay-ipfs-pin-catalog"
 
 GW_HASH="$(sha256sum "$DIST/relay-gateway" | awk '{print $1}')"
 HOOK_HASH="$(sha256sum "$DIST/relay-hook-handler" | awk '{print $1}')"
+PROXY_HASH="$(sha256sum "$DIST/relay-git-proxy" | awk '{print $1}')"
 cat >"$DIST/deploy-manifest.json" <<EOF
 {
   "schema": "relay.deploy-manifest.v1",
@@ -79,7 +81,8 @@ cat >"$DIST/deploy-manifest.json" <<EOF
   },
   "artifacts": {
     "relay_gateway_sha256": "$GW_HASH",
-    "relay_hook_handler_sha256": "$HOOK_HASH"
+    "relay_hook_handler_sha256": "$HOOK_HASH",
+    "relay_git_proxy_sha256": "$PROXY_HASH"
   }
 }
 EOF

@@ -7,7 +7,10 @@ use tracing_appender::rolling;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use relay_server::{
-    build_router, cli::Cli, config::{self, Config}, notify,
+    build_router,
+    cli::Cli,
+    config::{self, Config},
+    notify,
 };
 
 #[tokio::main]
@@ -81,10 +84,7 @@ async fn main() -> Result<()> {
     let http_task = tokio::spawn(async move {
         info!(%http_addr, "HTTP listening");
         let listener = TcpListener::bind(&http_addr).await.expect("bind http");
-        notify::notify_server_started(
-            started_node.as_deref(),
-            started_sid.as_deref(),
-        );
+        notify::notify_server_started(started_node.as_deref(), started_sid.as_deref());
         if let Err(e) = axum::serve(listener, app_http.into_make_service()).await {
             error!(?e, "HTTP server error");
         }

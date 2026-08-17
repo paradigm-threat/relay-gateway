@@ -1,8 +1,8 @@
 //! Rust-side `meta.yaml` / `meta.yml` indexing into `index.db.json` (replaces Node `index.mjs` upsert path).
 //! Also ingests catalog `index.json` / timeline `data/events.json` into SQLite for the default search plugin.
 
-use crate::git::hooks::HookContext;
 use crate::git::branch_index_paths;
+use crate::git::hooks::HookContext;
 use crate::git::search_store::{store_for_bare_repo, store_key_for_bare, SearchStore, StoreKey};
 use crate::git::sqlite_index;
 use serde_json::{json, Value};
@@ -122,15 +122,9 @@ pub fn sync_meta_yaml_index(ctx: &HookContext) -> anyhow::Result<()> {
                 serde_yaml::from_str(&text).map_err(|e| anyhow::anyhow!("yaml {}: {}", path, e))?;
             let mut doc = serde_json::to_value(&yaml_val)?;
             if let Value::Object(ref mut m) = doc {
-                m.insert(
-                    "_branch".to_string(),
-                    Value::String(ctx.branch.clone()),
-                );
+                m.insert("_branch".to_string(), Value::String(ctx.branch.clone()));
                 m.insert("_meta_dir".to_string(), Value::String(meta_dir.to_string()));
-                m.insert(
-                    "_updated_at".to_string(),
-                    Value::String(chrono_now_iso()),
-                );
+                m.insert("_updated_at".to_string(), Value::String(chrono_now_iso()));
             }
             arr.push(doc);
         }
@@ -177,7 +171,9 @@ fn apply_collection_docs(
         return Ok(());
     }
     match mode {
-        IngestMode::Merge => store.merge_collection(key, collection, docs, id_f, fts_f, Some(commit))?,
+        IngestMode::Merge => {
+            store.merge_collection(key, collection, docs, id_f, fts_f, Some(commit))?
+        }
         IngestMode::Replace => {
             store.replace_collection(key, collection, docs, id_f, fts_f, Some(commit))?
         }
@@ -237,7 +233,14 @@ pub fn ingest_catalog_json_indexes(
                             .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
                         let docs = sqlite_index::flatten_path_index(&v);
                         apply_collection_docs(
-                            store, key, coll_name, &docs, &ctx.new_commit, *mode, id_f, fts_f,
+                            store,
+                            key,
+                            coll_name,
+                            &docs,
+                            &ctx.new_commit,
+                            *mode,
+                            id_f,
+                            fts_f,
                         )?;
                         any = true;
                     }
@@ -248,7 +251,14 @@ pub fn ingest_catalog_json_indexes(
                             .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
                         let docs = flatten_timeline_events(&v);
                         apply_collection_docs(
-                            store, key, coll_name, &docs, &ctx.new_commit, *mode, id_f, fts_f,
+                            store,
+                            key,
+                            coll_name,
+                            &docs,
+                            &ctx.new_commit,
+                            *mode,
+                            id_f,
+                            fts_f,
                         )?;
                         any = true;
                     }
@@ -289,7 +299,14 @@ pub fn ingest_catalog_json_indexes(
                         )
                         .map_err(|e| anyhow::anyhow!("path_tree: {e}"))?;
                         apply_collection_docs(
-                            store, key, coll_name, &docs, &ctx.new_commit, *mode, id_f, fts_f,
+                            store,
+                            key,
+                            coll_name,
+                            &docs,
+                            &ctx.new_commit,
+                            *mode,
+                            id_f,
+                            fts_f,
                         )?;
                         any = true;
                     }
@@ -298,7 +315,14 @@ pub fn ingest_catalog_json_indexes(
                     let docs = build_content_events_docs(&ctx.repo_path, &ctx.new_commit)
                         .map_err(|e| anyhow::anyhow!("content_events: {e}"))?;
                     apply_collection_docs(
-                        store, key, coll_name, &docs, &ctx.new_commit, *mode, id_f, fts_f,
+                        store,
+                        key,
+                        coll_name,
+                        &docs,
+                        &ctx.new_commit,
+                        *mode,
+                        id_f,
+                        fts_f,
                     )?;
                     any = true;
                 }
@@ -308,8 +332,8 @@ pub fn ingest_catalog_json_indexes(
 
     if !any {
         if let Some(bytes) = git_show(&ctx.repo_path, &ctx.new_commit, "index.json") {
-            let v: Value = serde_json::from_slice(&bytes)
-                .map_err(|e| anyhow::anyhow!("index.json: {}", e))?;
+            let v: Value =
+                serde_json::from_slice(&bytes).map_err(|e| anyhow::anyhow!("index.json: {}", e))?;
             let docs = sqlite_index::flatten_path_index(&v);
             if !docs.is_empty() {
                 store.replace_collection(key, "index", &docs, None, None, Some(&ctx.new_commit))?;
@@ -320,7 +344,14 @@ pub fn ingest_catalog_json_indexes(
                 .map_err(|e| anyhow::anyhow!("data/events.json: {}", e))?;
             let docs = flatten_timeline_events(&v);
             if !docs.is_empty() {
-                store.replace_collection(key, "events", &docs, None, None, Some(&ctx.new_commit))?;
+                store.replace_collection(
+                    key,
+                    "events",
+                    &docs,
+                    None,
+                    None,
+                    Some(&ctx.new_commit),
+                )?;
             }
         }
     }
@@ -418,7 +449,10 @@ mod tests {
         assert!(db_path.exists());
         let db: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&db_path).unwrap()).unwrap();
-        assert_eq!(db["metadata"]["indexed_head"].as_str(), Some(commit.as_str()));
+        assert_eq!(
+            db["metadata"]["indexed_head"].as_str(),
+            Some(commit.as_str())
+        );
         let arr = db["collections"]["index"].as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["title"], "Indexed Title");
@@ -506,7 +540,8 @@ mod tests {
         let repo_path = dir.path().join("r.git");
         let repo = Repository::init_bare(&repo_path).unwrap();
         let sig = Signature::now("t", "t@t").unwrap();
-        let index_json = br#"{"blog":{"post.md":{"_title":"Portal Research","_keywords":["portal","july"]}}}"#;
+        let index_json =
+            br#"{"blog":{"post.md":{"_title":"Portal Research","_keywords":["portal","july"]}}}"#;
         let index_oid = repo.blob(index_json).unwrap();
         let mut tb = repo.treebuilder(None).unwrap();
         tb.insert("index.json", index_oid, 0o100644).unwrap();

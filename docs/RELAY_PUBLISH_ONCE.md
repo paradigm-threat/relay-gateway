@@ -1,6 +1,6 @@
 # Publish-once, on-commit index, replica skip (plan)
 
-**Status:** design / not implemented (except catalog field `publish_origin`, which gateways parse and ignore until the fence lands).  
+**Status:** client write fence is implemented (`enforce_publish_origin_fence` on `pre-receive` and HTTP PUT/DELETE). Replica skip (`enforce_push_range` on peer-fetch) is **not**. Gateways parse catalog `publish_origin` and reject client writes on non-publishers when the field is set. Empty/omitted = no fence (compat).  
 **Settled product model:** **update the SearchStore on commit**, not on QUERY. QUERY / MCP are **read-only**. If `docs_indexed_head` lags the git tip, they return rows with **`indexFresh: false`** — they never JIT-rebuild.
 
 **This fleet:** `publish_branch` is **`main`**. `publish_origin` is **`dfw1.relaygateway.net`** (a hostname, not a git branch). Authors `git push` `main` to dfw1; lon1/hkg1 fast-forward `main`. Do not add a second publish ref.
@@ -259,6 +259,16 @@ If non-publishers also reject peer-fetch, the mesh cannot replicate. “Takes a 
 
 **All client refs vs `publish_branch` only:** rejecting **every** `receive-pack` on non-publishers is the simpler model and matches “push the stable git URL.” Draft-anywhere is then off; `dev` also goes to the publisher hostname. Prefer that unless draft-anywhere is a product requirement.
 
+### Implemented: client write fence
+
+`enforce_publish_origin_fence` in [`branch_policy.rs`](../src/git/branch_policy.rs) compares catalog `publish_origin` to **`RELAY_PUBLIC_HOSTNAME`**. Called from [`relay-hook-handler`](../src/bin/relay-hook-handler.rs) **pre-receive** (before branch rules) and from HTTP PUT/DELETE. Peer-fetch (`POST /hooks/peer`) is **not** fenced.
+
+Reject text names the catalog `publish_origin` FQDN so authors push `git://dfw1.relaygateway.net:9418/{repo}.git` (or a later per-repo git CNAME), **not** `fleet.relaygateway.net`.
+
+**`git.autoPush.originList` to other masters is incompatible.** Auto-push is client `receive-pack` on the destination, so a replica with a `publish_origin` fence **rejects** it. Keep replica replication on **tip-notify + fetch** (`POST /hooks/peer`). Do not list other masters in `autoPush.originList` for catalog-fenced repos.
+
+Git write DNS (`git.<repo>.relaygateway.net` CNAME → origin) is **not** required for the fence; see [`RELAY_NETWORK_DNS.md`](./RELAY_NETWORK_DNS.md).
+
 ### Subdomains: client convenience, not the fence
 
 [`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md): **`git://` has no HTTP redirect.** A stable name is DNS/L4 only.
@@ -433,17 +443,19 @@ Multi-remote to **`dev`** is the same story: each direct push is a full check. T
 - Peer-fetch: SHA-first skip if already at `new_sha`; index already async.
 - QUERY envelope: `indexFresh`, `indexedHead`, `status`.
 
-The gap is **hop 2+ still full-range policy**, and **origin ACK still waits on ingest**.
+The remaining gaps are **hop 2+ still full-range policy** and **origin ACK still waits on ingest**. **First-push provision** is live (`relay-git-proxy` on **9418**, loopback `git daemon` on **9419**).
 
 ---
 
 ## Implementation notes (when prioritized)
 
-Not done in this change. Suggested order:
+Client write fence is done. Suggested order **after** that:
 
+0. **First-push provision** — done. `relay-git-proxy` parses `git://` receive-pack, calls the same logic as `ensure-bare` (plus `publish_origin`), then hands off to loopback `git daemon`. HTTP `POST /api/git/ensure-bare/:repo` remains for pre-create.
 1. **A** — `post-receive` spawn index; docs/code agreement; HTTP PUT should call the same on-commit path if QUERY on that node must be fresh after PUT.
 2. **B** — `peer_hook` cheap tip verify for catalog-signed `publish_branch`; keep full `enforce_push_range` for draft branches and for unsigned/`dev`.
 3. **C** only if product wants a merge-bot **on the Relay `publish_origin`**; no GitLab writer.
 4. **D** as profiling shows (`content_events`, catalog-apply `ZERO_OID`).
+5. mTLS / realtime subscriptions.
 
 Tests to add then: replica accepts a catalog-signed publish tip without walking ancestors; replica QUERY `indexFresh` flips true after background warm; origin push ACK time does not include ingest when A is on; rejected unsigned publish tip still rolls back; **direct** `git push` of the same SHA to a second remote still runs full `pre-receive` (path-based trust); peer-fetch of that SHA is SHA-skip or cheap tip verify only.

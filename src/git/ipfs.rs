@@ -141,11 +141,7 @@ pub struct AssetResolveError {
 }
 
 impl AssetResolveError {
-    pub fn new(
-        code: AssetErrorCode,
-        message: impl Into<String>,
-        cid: Option<String>,
-    ) -> Self {
+    pub fn new(code: AssetErrorCode, message: impl Into<String>, cid: Option<String>) -> Self {
         let retry_after_secs = if code.retryable() { Some(5) } else { None };
         Self {
             code,
@@ -212,8 +208,8 @@ fn validated_gateway_base() -> Result<String, AssetResolveError> {
         message,
         cid: None,
         retry_after_secs: None,
-            seed: None,
-        })?;
+        seed: None,
+    })?;
     Ok(base)
 }
 
@@ -238,13 +234,16 @@ pub fn parse_wait_seconds(query: &HashMap<String, String>, headers: &HeaderMap) 
         .get("wait")
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(0);
-    let from_pref = headers.get("prefer").and_then(|h| h.to_str().ok()).and_then(|s| {
-        s.split(',').find_map(|part| {
-            let part = part.trim();
-            part.strip_prefix("wait=")
-                .and_then(|v| v.trim().parse::<u64>().ok())
-        })
-    });
+    let from_pref = headers
+        .get("prefer")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| {
+            s.split(',').find_map(|part| {
+                let part = part.trim();
+                part.strip_prefix("wait=")
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+            })
+        });
     from_q.max(from_pref.unwrap_or(0)).min(wait_max_from_env())
 }
 
@@ -340,6 +339,91 @@ fn in_flight_seed(cid: &str) -> Option<SeedStatus> {
     })
 }
 
+pub fn in_flight_count() -> usize {
+    in_flight_map().lock().map(|m| m.len()).unwrap_or(0)
+}
+
+pub fn ipfs_api_configured() -> bool {
+    api_base_from_env().is_some()
+}
+
+pub fn cid_is_cached(cid: &str) -> bool {
+    cid_data_path(&cache_root_from_env(), cid).is_file()
+}
+
+pub fn cache_cid_count() -> usize {
+    let root = cache_root_from_env();
+    let Ok(rd) = fs::read_dir(&root) else {
+        return 0;
+    };
+    rd.filter_map(|e| e.ok())
+        .filter(|e| e.path().join("data").is_file())
+        .count()
+}
+
+/// CIDs referenced by `assets.manifest.json` and `.relay/assets/**/*.ipfs` on `branch`.
+pub fn collect_cids_from_repo(repo: &git2::Repository, branch: &str) -> Vec<String> {
+    let mut set = std::collections::BTreeSet::new();
+    let Ok(r) = repo.find_reference(&format!("refs/heads/{branch}")) else {
+        return Vec::new();
+    };
+    let Ok(commit) = r.peel_to_commit() else {
+        return Vec::new();
+    };
+    let Ok(tree) = commit.tree() else {
+        return Vec::new();
+    };
+    if let Ok(entry) = tree.get_path(std::path::Path::new(MANIFEST_PATH)) {
+        if let Ok(blob) = repo.find_blob(entry.id()) {
+            if let Ok(m) = parse_manifest_bytes(blob.content()) {
+                for a in m.assets {
+                    if is_plausible_cid(&a.ipfs) {
+                        set.insert(a.ipfs);
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(entry) = tree.get_path(std::path::Path::new(DEFAULT_ASSETS_DIR)) {
+        if let Ok(obj) = entry.to_object(repo) {
+            if let Ok(t) = obj.peel_to_tree() {
+                walk_ipfs_stubs(repo, &t, &mut set);
+            }
+        }
+    }
+    set.into_iter().collect()
+}
+
+fn walk_ipfs_stubs(
+    repo: &git2::Repository,
+    tree: &git2::Tree,
+    set: &mut std::collections::BTreeSet<String>,
+) {
+    for entry in tree.iter() {
+        match entry.kind() {
+            Some(git2::ObjectType::Tree) => {
+                if let Ok(obj) = entry.to_object(repo) {
+                    if let Ok(t) = obj.peel_to_tree() {
+                        walk_ipfs_stubs(repo, &t, set);
+                    }
+                }
+            }
+            Some(git2::ObjectType::Blob) => {
+                let name = entry.name().unwrap_or("");
+                if !name.ends_with(DEFAULT_IPFS_SUFFIX) {
+                    continue;
+                }
+                if let Ok(blob) = repo.find_blob(entry.id()) {
+                    if let Some(p) = parse_pointer_bytes(blob.content()) {
+                        set.insert(p.cid);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn probe_kubo_local_block(cid: &str) -> Option<bool> {
     let api = api_base_from_env()?;
     let client = Client::builder()
@@ -430,9 +514,7 @@ pub fn probe_seed_status(cid: &str) -> SeedStatus {
         bytes_total: None,
         providers: None,
         local_block: None,
-        hint: Some(
-            "not in relay disk cache; set RELAY_IPFS_API for provider/local probes".into(),
-        ),
+        hint: Some("not in relay disk cache; set RELAY_IPFS_API for provider/local probes".into()),
     }
 }
 
@@ -450,12 +532,7 @@ pub fn asset_status_body(
             e.code.retryable(),
             e.retry_after_secs,
         ),
-        None => (
-            "ok",
-            "asset available",
-            false,
-            None,
-        ),
+        None => ("ok", "asset available", false, None),
     };
     let mut body = serde_json::json!({
         "schema": "relay.asset-status.v1",
@@ -512,13 +589,9 @@ fn gateway_host_allowlist() -> Option<Vec<String>> {
 fn ip_is_restricted(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
-            v4.is_private()
-                || v4.is_loopback()
-                || v4.octets()[0] == 169 && v4.octets()[1] == 254
+            v4.is_private() || v4.is_loopback() || v4.octets()[0] == 169 && v4.octets()[1] == 254
         }
-        std::net::IpAddr::V6(v6) => {
-            v6.is_loopback() || (v6.segments()[0] & 0xffc0) == 0xfe80
-        }
+        std::net::IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xffc0) == 0xfe80,
     }
 }
 
@@ -562,7 +635,9 @@ pub fn validate_gateway_base(base: &str) -> Result<(), String> {
     }
     if let Some(allowlist) = gateway_host_allowlist() {
         if !host_allowed_by_allowlist(host, &allowlist) {
-            return Err(format!("gateway host {host:?} is not in RELAY_IPFS_GATEWAY_ALLOWLIST"));
+            return Err(format!(
+                "gateway host {host:?} is not in RELAY_IPFS_GATEWAY_ALLOWLIST"
+            ));
         }
     }
     if !allow_private_gateway_hosts() && host_is_private_or_local(host) {
@@ -686,9 +761,7 @@ impl Default for IpfsResolveOptions {
 
 pub fn is_asset_like_path(rel: &str) -> bool {
     let lower = rel.to_ascii_lowercase();
-    ASSET_EXTENSIONS
-        .iter()
-        .any(|ext| lower.ends_with(ext))
+    ASSET_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
 }
 
 pub fn central_dir_stub_path(opts: &IpfsResolveOptions, rel: &str) -> String {
@@ -879,22 +952,26 @@ pub fn fetch_cid_bytes(
     }
 
     if let Ok(Some((bytes, ct))) = read_cached_bytes(cid) {
-        return Ok((bytes, ct.or_else(|| content_type_hint.map(|s| s.to_string()))));
+        return Ok((
+            bytes,
+            ct.or_else(|| content_type_hint.map(|s| s.to_string())),
+        ));
     }
 
     let lock = fetch_lock_for(cid);
-    let _guard = lock
-        .lock()
-        .map_err(|_| AssetResolveError {
-            code: AssetErrorCode::Internal,
-            message: "fetch lock poisoned".into(),
-            cid: Some(cid.to_string()),
-            retry_after_secs: None,
-            seed: None,
-        })?;
+    let _guard = lock.lock().map_err(|_| AssetResolveError {
+        code: AssetErrorCode::Internal,
+        message: "fetch lock poisoned".into(),
+        cid: Some(cid.to_string()),
+        retry_after_secs: None,
+        seed: None,
+    })?;
 
     if let Ok(Some((bytes, ct))) = read_cached_bytes(cid) {
-        return Ok((bytes, ct.or_else(|| content_type_hint.map(|s| s.to_string()))));
+        return Ok((
+            bytes,
+            ct.or_else(|| content_type_hint.map(|s| s.to_string())),
+        ));
     }
 
     if wait_secs == 0 {
@@ -914,12 +991,19 @@ pub fn fetch_cid_bytes(
                 seed: Some(seed),
             });
         }
-        match do_fetch(cid, content_type_hint, remaining.min(fetch_timeout_from_env())) {
+        match do_fetch(
+            cid,
+            content_type_hint,
+            remaining.min(fetch_timeout_from_env()),
+        ) {
             Ok(v) => return Ok(v),
             Err(e) if e.code.retryable() => {
                 std::thread::sleep(Duration::from_millis(400));
                 if let Ok(Some((bytes, ct))) = read_cached_bytes(cid) {
-                    return Ok((bytes, ct.or_else(|| content_type_hint.map(|s| s.to_string()))));
+                    return Ok((
+                        bytes,
+                        ct.or_else(|| content_type_hint.map(|s| s.to_string())),
+                    ));
                 }
             }
             Err(e) => return Err(e),
@@ -933,7 +1017,10 @@ fn do_fetch(
     timeout: Duration,
 ) -> Result<(Vec<u8>, Option<String>), AssetResolveError> {
     if let Ok(Some((bytes, ct))) = read_cached_bytes(cid) {
-        return Ok((bytes, ct.or_else(|| content_type_hint.map(|s| s.to_string()))));
+        return Ok((
+            bytes,
+            ct.or_else(|| content_type_hint.map(|s| s.to_string())),
+        ));
     }
 
     let client = Client::builder()
@@ -1020,7 +1107,9 @@ fn do_fetch(
         if len > max {
             return Err(AssetResolveError {
                 code: AssetErrorCode::IpfsGatewayError,
-                message: format!("gateway Content-Length {len} exceeds RELAY_IPFS_MAX_FETCH_BYTES ({max})"),
+                message: format!(
+                    "gateway Content-Length {len} exceeds RELAY_IPFS_MAX_FETCH_BYTES ({max})"
+                ),
                 cid: Some(cid.to_string()),
                 retry_after_secs: None,
                 seed: None,
@@ -1051,9 +1140,7 @@ fn do_fetch(
             if buf.len() + n > max {
                 return Err(AssetResolveError {
                     code: AssetErrorCode::IpfsGatewayError,
-                    message: format!(
-                        "gateway body exceeds RELAY_IPFS_MAX_FETCH_BYTES ({max})"
-                    ),
+                    message: format!("gateway body exceeds RELAY_IPFS_MAX_FETCH_BYTES ({max})"),
                     cid: Some(cid.to_string()),
                     retry_after_secs: None,
                     seed: None,
@@ -1121,12 +1208,7 @@ pub fn asset_error_response(
 }
 
 /// Status-only probe (no long wait): cached → 200; else pending/unavailable JSON.
-pub fn asset_status_response(
-    cid: &str,
-    branch: &str,
-    repo: &str,
-    rel_path: &str,
-) -> Response {
+pub fn asset_status_response(cid: &str, branch: &str, repo: &str, rel_path: &str) -> Response {
     if read_cached_bytes(cid).ok().flatten().is_some() {
         let seed = SeedStatus::cached();
         let body = asset_status_body(None, Some(cid), rel_path, &seed);
@@ -1146,10 +1228,7 @@ pub fn asset_status_response(
             "X-Relay-Asset-Seed-State",
             "cached".parse().expect("seed state"),
         );
-        h.insert(
-            "X-Relay-Asset-Progress",
-            "100".parse().expect("progress"),
-        );
+        h.insert("X-Relay-Asset-Progress", "100".parse().expect("progress"));
         return res;
     }
     let seed = probe_seed_status(cid);
@@ -1185,11 +1264,7 @@ pub fn resolve_pointer_blob(
     pointer: &IpfsPointer,
     wait_secs: u64,
 ) -> Result<(Vec<u8>, String), AssetResolveError> {
-    let (bytes, ct) = fetch_cid_bytes(
-        &pointer.cid,
-        pointer.content_type.as_deref(),
-        wait_secs,
-    )?;
+    let (bytes, ct) = fetch_cid_bytes(&pointer.cid, pointer.content_type.as_deref(), wait_secs)?;
     let content_type = ct
         .or_else(|| pointer.content_type.clone())
         .unwrap_or_else(|| "application/octet-stream".to_string());
@@ -1215,7 +1290,9 @@ mod tests {
 
     #[test]
     fn binary_detection() {
-        assert!(!is_likely_binary_content(b"relay-ipfs-v1\nbafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi\n"));
+        assert!(!is_likely_binary_content(
+            b"relay-ipfs-v1\nbafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi\n"
+        ));
         assert!(is_likely_binary_content(&[0xFF, 0xD8, 0xFF]));
     }
 
@@ -1232,7 +1309,9 @@ mod tests {
     fn resolve_sources_central_before_inline() {
         let cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi";
         let central_stub = format!("{POINTER_MAGIC}\n{cid}\nimage/png\n");
-        let inline_stub = format!("{POINTER_MAGIC}\nbafkreidifferentcidxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nimage/png\n");
+        let inline_stub = format!(
+            "{POINTER_MAGIC}\nbafkreidifferentcidxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nimage/png\n"
+        );
         let mut opts = IpfsResolveOptions::default();
         opts.sources = vec![IpfsResolveSource::CentralDir, IpfsResolveSource::Inline];
         let central_path = central_dir_stub_path(&opts, "a.png");
@@ -1273,7 +1352,9 @@ mod tests {
 
     #[test]
     fn cid_rejects_path_traversal() {
-        assert!(!is_plausible_cid("bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi/../etc"));
+        assert!(!is_plausible_cid(
+            "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi/../etc"
+        ));
         assert!(!is_plausible_cid("../Qmfoo"));
     }
 
@@ -1321,5 +1402,44 @@ mod tests {
     fn pending_status_is_too_early() {
         assert_eq!(AssetErrorCode::IpfsPending.status(), StatusCode::TOO_EARLY);
         assert!(AssetErrorCode::IpfsPending.retryable());
+    }
+
+    #[test]
+    fn collect_cids_from_manifest_and_pointer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("thin.git");
+        let repo = git2::Repository::init_bare(&path).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        let cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi";
+        let stub = format_pointer_stub(&IpfsPointer {
+            cid: cid.into(),
+            content_type: Some("image/png".into()),
+            sha256: None,
+        });
+        let manifest = serde_json::json!({
+            "schema": "relay.assets-manifest.v1",
+            "assets": [{ "path": "cover.png", "ipfs": cid }]
+        })
+        .to_string();
+        let blob_stub = repo.blob(stub.as_bytes()).unwrap();
+        let blob_man = repo.blob(manifest.as_bytes()).unwrap();
+        let mut assets_tb = repo.treebuilder(None).unwrap();
+        assets_tb
+            .insert("hero.png.ipfs", blob_stub, 0o100644)
+            .unwrap();
+        let assets_id = assets_tb.write().unwrap();
+        let mut relay_tb = repo.treebuilder(None).unwrap();
+        relay_tb.insert("assets", assets_id, 0o040000).unwrap();
+        let relay_id = relay_tb.write().unwrap();
+        let mut root = repo.treebuilder(None).unwrap();
+        root.insert(".relay", relay_id, 0o040000).unwrap();
+        root.insert("assets.manifest.json", blob_man, 0o100644)
+            .unwrap();
+        let tree_id = root.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "thin", &tree, &[])
+            .unwrap();
+        let cids = collect_cids_from_repo(&repo, "main");
+        assert_eq!(cids, vec![cid.to_string()]);
     }
 }

@@ -33,7 +33,7 @@ cleanup() {
   fi
   sudo -u relay rm -rf "$STAGING"
   if [[ "$DAEMON_STOPPED" -eq 1 ]]; then
-    sudo systemctl start relay-git-daemon 2>/dev/null || true
+    sudo systemctl start relay-git-daemon relay-git-proxy 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
@@ -81,9 +81,9 @@ sudo -u relay git --git-dir="$STAGING" merge-base --is-ancestor \
 sudo -u relay git --git-dir="$STAGING" symbolic-ref HEAD "refs/heads/${BRANCH}"
 sudo -u relay git --git-dir="$STAGING" config receive.denyNonFastForwards true
 
-# Keep the healthy mirror online until its replacement is ready. The daemon is
-# stopped only for the same-filesystem rename window.
-sudo systemctl stop relay-git-daemon
+# Keep the healthy mirror online until its replacement is ready. Git is
+# stopped only for the same-filesystem rename window (daemon + public proxy).
+sudo systemctl stop relay-git-proxy relay-git-daemon
 DAEMON_STOPPED=1
 if sudo test -d "$DEST"; then
   sudo -u relay mv "$DEST" "$BACKUP"
@@ -92,13 +92,13 @@ if ! sudo -u relay mv "$STAGING" "$DEST"; then
   if sudo test -d "$BACKUP"; then
     sudo -u relay mv "$BACKUP" "$DEST"
   fi
-  sudo systemctl start relay-git-daemon
+  sudo systemctl start relay-git-daemon relay-git-proxy
   DAEMON_STOPPED=0
   echo "failed to install replacement; previous mirror restored" >&2
   exit 1
 fi
 
 sudo -u relay rm -rf "$BACKUP"
-sudo systemctl restart relay-gateway relay-git-daemon
+sudo systemctl restart relay-gateway relay-git-daemon relay-git-proxy
 DAEMON_STOPPED=0
 trap - EXIT

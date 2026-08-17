@@ -46,7 +46,10 @@ fn hook_return_ok(v: &CsValue) -> bool {
 }
 
 fn put_requires_precommit_hook() -> bool {
-    std::env::var("RELAY_PUT_REQUIRES_PRECOMMIT").ok().as_deref() == Some("1")
+    std::env::var("RELAY_PUT_REQUIRES_PRECOMMIT")
+        .ok()
+        .as_deref()
+        == Some("1")
         || std::env::var("RELAY_DESKTOP_MODE").ok().as_deref() == Some("1")
 }
 
@@ -124,7 +127,8 @@ pub fn execute_repo_hook(ctx: &HookContext, hook_name: &str) -> anyhow::Result<b
         "is_verified": ctx.is_verified
     });
 
-    let host = CleverScriptServerHost::host_handle(ctx.repo_path.clone(), ctx.branch.clone(), false);
+    let host =
+        CleverScriptServerHost::host_handle(ctx.repo_path.clone(), ctx.branch.clone(), false);
     let raw = relay_runtime::run_query_script(&source, host, &context_json, None, None)
         .map_err(|e| anyhow::anyhow!("CleverScript hook {}: {}", hook_name, e))?;
 
@@ -138,7 +142,10 @@ mod tests {
     use std::collections::HashMap;
     use tempfile::tempdir;
 
-    fn commit_hook_repo(hook_cs: &str, relay_yaml: &str) -> (tempfile::TempDir, PathBuf, HookContext) {
+    fn commit_hook_repo(
+        hook_cs: &str,
+        relay_yaml: &str,
+    ) -> (tempfile::TempDir, PathBuf, HookContext) {
         let dir = tempdir().unwrap();
         let repo_path = dir.path().join("r.git");
         let repo = Repository::init_bare(&repo_path).unwrap();
@@ -281,16 +288,17 @@ server:
             let mut tb_hooks = repo.treebuilder(None).unwrap();
             tb_hooks.insert("server", srv_tid, 0o040000).unwrap();
             let hooks_tid = tb_hooks.write().unwrap();
-            let cfg_oid = repo.blob(
-                r#"
+            let cfg_oid = repo
+                .blob(
+                    r#"
 server:
   hooks:
     pre-commit:
       path: hooks/server/pre-commit.cs
 "#
-                .as_bytes(),
-            )
-            .unwrap();
+                    .as_bytes(),
+                )
+                .unwrap();
             let mut tb = repo.treebuilder(None).unwrap();
             tb.insert(".relay.yaml", cfg_oid, 0o100644).unwrap();
             tb.insert("hooks", hooks_tid, 0o040000).unwrap();
@@ -304,7 +312,14 @@ server:
 
         let tree_b = repo.find_tree(tree_with_hook(&repo, hook_fail)).unwrap();
         let commit_b = repo
-            .commit(Some("HEAD"), &sig, &sig, "b", &tree_b, &[&repo.find_commit(commit_a).unwrap()])
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "b",
+                &tree_b,
+                &[&repo.find_commit(commit_a).unwrap()],
+            )
             .unwrap();
 
         // Branch tip still at A; candidate PUT commit is B with failing hook.

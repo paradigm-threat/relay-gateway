@@ -58,14 +58,20 @@ impl Vercel {
         let (name, domain) = split_fqdn(fqdn)?;
         let list = self.list_records(&domain, "A").await?;
         let mut log = Vec::new();
-        for rec in list.iter().filter(|r| r.name.as_deref() == Some(name) && r.rtype.as_deref() == Some("A")) {
+        for rec in list
+            .iter()
+            .filter(|r| r.name.as_deref() == Some(name) && r.rtype.as_deref() == Some("A"))
+        {
             if rec.value.as_deref() == Some(ip) {
                 log.push(format!("{fqdn} already -> {ip}"));
                 return Ok(log.join("\n"));
             }
             if let Some(id) = rec.id() {
                 self.delete_record(&domain, id).await?;
-                log.push(format!("deleted stale {fqdn} A {}", rec.value.as_deref().unwrap_or("?")));
+                log.push(format!(
+                    "deleted stale {fqdn} A {}",
+                    rec.value.as_deref().unwrap_or("?")
+                ));
             }
         }
         self.create_record(&domain, name, ip, "A").await?;
@@ -93,10 +99,7 @@ impl Vercel {
                 }
             }
         }
-        let current_vals: Vec<String> = current
-            .iter()
-            .filter_map(|r| r.value.clone())
-            .collect();
+        let current_vals: Vec<String> = current.iter().filter_map(|r| r.value.clone()).collect();
         for ip in desired {
             if !current_vals.iter().any(|c| c == ip) {
                 self.create_record(&domain, name, ip, "A").await?;
@@ -145,7 +148,13 @@ impl Vercel {
         Ok(())
     }
 
-    async fn create_record(&self, domain: &str, name: &str, value: &str, rtype: &str) -> Result<()> {
+    async fn create_record(
+        &self,
+        domain: &str,
+        name: &str,
+        value: &str,
+        rtype: &str,
+    ) -> Result<()> {
         let url = format!(
             "https://api.vercel.com/v4/domains/{domain}/records{}",
             self.team_q()

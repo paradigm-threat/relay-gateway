@@ -92,8 +92,8 @@ pub fn run_plugin_ordered(
             if json_path.exists() {
                 index_store::sync_json_to_redb(&json_path, &redb_path)?;
             }
-            let mut results =
-                index_store::read_collection(&redb_path, collection)?.unwrap_or(Value::Array(vec![]));
+            let mut results = index_store::read_collection(&redb_path, collection)?
+                .unwrap_or(Value::Array(vec![]));
             let arr = results
                 .as_array_mut()
                 .ok_or_else(|| anyhow::anyhow!("collection {} is not an array", collection))?;

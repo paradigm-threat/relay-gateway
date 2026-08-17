@@ -154,7 +154,10 @@ const RELAY_ICON_PNG: &[u8] = include_bytes!("../../../media/icon.png");
 const TRAY_SIZES: [u32; 2] = [32, 48];
 
 pub fn pixmaps(attention: bool) -> Vec<Icon> {
-    TRAY_SIZES.iter().map(|&n| pixmap_size(n, attention)).collect()
+    TRAY_SIZES
+        .iter()
+        .map(|&n| pixmap_size(n, attention))
+        .collect()
 }
 
 /// 32×32 ARGB32 Relay icon. `attention` draws the red status dot.
@@ -249,10 +252,7 @@ fn ensure_tray_icon_files() -> (String, String) {
     let attention = dir.join("tray-attention.png");
     let _ = scaled_icon(64, false).save(&normal);
     let _ = scaled_icon(64, true).save(&attention);
-    (
-        path_if_file(&normal),
-        path_if_file(&attention),
-    )
+    (path_if_file(&normal), path_if_file(&attention))
 }
 
 fn path_if_file(path: &Path) -> String {
@@ -374,13 +374,7 @@ pub fn menu_lines(
         });
         lines.push({
             let mut line = node_line(
-                &n.fqdn,
-                n.healthy,
-                spot_ip,
-                &n.dns,
-                n.tcp443,
-                https_ok,
-                n.tcp_git,
+                &n.fqdn, n.healthy, spot_ip, &n.dns, n.tcp443, https_ok, n.tcp_git,
             );
             if let Some(c) = &n.https_config {
                 let nrepos = if !c.repos.is_empty() {
@@ -417,9 +411,7 @@ pub fn menu_lines(
     lines
 }
 
-pub fn spawn_with_updates(
-    ui_url: String,
-) -> tokio::sync::mpsc::UnboundedSender<TrayView> {
+pub fn spawn_with_updates(ui_url: String) -> tokio::sync::mpsc::UnboundedSender<TrayView> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TrayView>();
     tokio::spawn(async move {
         let Some(handle) = spawn(&ui_url).await else {
@@ -489,7 +481,10 @@ mod tests {
                 }
             }
         }
-        assert!(teal > 20, "expected cyan/teal Relay icon pixels, got {teal}");
+        assert!(
+            teal > 20,
+            "expected cyan/teal Relay icon pixels, got {teal}"
+        );
         assert!(
             opaque > 100,
             "cropped logo should fill the tray tile, opaque={opaque}"

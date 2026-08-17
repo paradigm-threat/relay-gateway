@@ -46,10 +46,7 @@ impl GitlabProject {
     }
 
     pub fn raw_url(&self, file: &str, git_ref: &str) -> String {
-        format!(
-            "{}/{}/-/raw/{}/{}",
-            self.web_base, self.path, git_ref, file
-        )
+        format!("{}/{}/-/raw/{}/{}", self.web_base, self.path, git_ref, file)
     }
 }
 
@@ -151,10 +148,7 @@ async fn fetch_file(
     if resp.status().is_success() {
         return Ok(resp.text().await?);
     }
-    Err(anyhow!(
-        "{file}: raw {status}, api {}",
-        resp.status()
-    ))
+    Err(anyhow!("{file}: raw {status}, api {}", resp.status()))
 }
 
 fn cache_key(gitlab_url: &str) -> String {
@@ -200,7 +194,9 @@ mod tests {
     fn parse_https_project() {
         let p = GitlabProject::parse("https://gitlab.com/clevertree/relay-gateway.git").unwrap();
         assert_eq!(p.path, "clevertree/relay-gateway");
-        assert!(p.raw_url("ops/fleet.json", "main").contains("/-/raw/main/ops/fleet.json"));
+        assert!(p
+            .raw_url("ops/fleet.json", "main")
+            .contains("/-/raw/main/ops/fleet.json"));
     }
 
     #[test]

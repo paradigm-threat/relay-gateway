@@ -1,19 +1,19 @@
 ---
-description: Production Linode relay masters — SSH/autossh, standard deploy, debugging (relay-gateway)
+description: Production Spot relay masters — SSH/autossh, standard deploy, debugging (relay-gateway)
 alwaysApply: true
 ---
 
 # Relay production ops (SSH, autossh, deploy, debug)
 
-Use this when the user asks to deploy, restart, inspect logs, or debug **relay-gateway** on production masters (**atlanta2** Linode, **dfw1** Rackspace Spot VM). Paths below are relative to this crate root (**`relay-gateway/`**).
+Use this when the user asks to deploy, restart, inspect logs, or debug **relay-gateway** on production masters (**dfw1**, **lon1**, **hkg1** Rackspace Spot VMs). Paths below are relative to this crate root (**`relay-gateway/`**).
 
 **Provision / first install:** **[`docs/RELAY_INFRA_OPS.md`](../docs/RELAY_INFRA_OPS.md)** + **`./scripts/relay-master-deploy.sh`**. **Ongoing updates:** **`./scripts/relay-fleet.sh`** (see **[`docs/RELAY_OPS.md`](../docs/RELAY_OPS.md)**).
 
 ## Identity and access
 
-- **User:** `ari` (sudo on hosts), unless the user says otherwise.
+- **User:** `ubuntu` (sudo on Spot hosts; see **`ops/fleet.json`** `sshUser`), unless the user says otherwise.
 - **Key:** `~/.ssh/id_ed25519_relay_gateway` with **`-o IdentitiesOnly=yes`** when not using a `Host` block that sets `IdentityFile`.
-- **`~/.ssh/config`:** Prefer existing `Host` entries (e.g. **atlanta3.relaygateway.net**). For **atlanta2**, use `ari@atlanta2.relaygateway.net` with the key above, or add a matching `Host` block for parity.
+- **`~/.ssh/config`:** Prefer existing `Host` entries (e.g. **dfw1.relaygateway.net**).
 - **Batch / agent runs:** Use **`ssh -o BatchMode=yes`** so failures are immediate (no hang on password).
 
 ## autossh vs plain ssh
@@ -24,7 +24,7 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
   - **Local forward** (hit the node’s relay HTTP as if it were local):
 
     ```bash
-    autossh -M 0 -N -L 18080:127.0.0.1:8080 -i ~/.ssh/id_ed25519_relay_gateway -o IdentitiesOnly=yes ari@atlanta3.relaygateway.net
+    autossh -M 0 -N -L 18080:127.0.0.1:8080 -i ~/.ssh/id_ed25519_relay_gateway -o IdentitiesOnly=yes ubuntu@dfw1.relaygateway.net
     ```
 
     Then: `curl -sS -X POST http://127.0.0.1:18080/api/config | head -c 400`
@@ -34,7 +34,7 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
 
 ## Standard binary deploy (trusted build → masters)
 
-**Preferred:** from **`relay-gateway/`**, **`./scripts/relay-fleet.sh --build deploy-all`** (or **`--only=NODE --build update`**) — see **`docs/RELAY_OPS.md`** (includes **stale-tarball** and **`--build` flag-order** pitfalls). **`deploy-all --build`** also works for **`deploy-all`** / **`update`** only. Low-level steps below match what **`relay-fleet`** / **`relay-linode-redeploy-seed.sh`** run.
+**Preferred:** from **`relay-gateway/`**, **`./scripts/relay-fleet.sh --build deploy-all`** (or **`--only=NODE --build update`**) — see **`docs/RELAY_OPS.md`** (includes **stale-tarball**, **`--build` flag-order**, and **dirty-tree** pitfalls). Pack **refuses a dirty/unpushed tree** unless **`--allow-dirty`**. **`deploy-all --build`** also works for **`deploy-all`** / **`update`** only. Low-level steps below match what **`relay-fleet`** / **`relay-linode-redeploy-seed.sh`** run.
 
 1. **Build tarball (local):**
 
@@ -42,15 +42,15 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
    ./scripts/pack-linode-deploy.sh
    ```
 
-   Produces **`target/relay-linode-deploy.tgz`**.
+   Produces **`target/relay-linode-deploy.tgz`**. Requires a **clean, pushed** tree unless **`RELAY_PACK_ALLOW_DIRTY=1`**.
 
 2. **Push + update on a host** (non-root sudo user; matches **`docs/DEPLOY_LINODE.md`** hardened pattern):
 
    ```bash
    TGZ=target/relay-linode-deploy.tgz
-   HOST=atlanta3.relaygateway.net   # or atlanta2.relaygateway.net
-   scp -i ~/.ssh/id_ed25519_relay_gateway -o IdentitiesOnly=yes -o BatchMode=yes "$TGZ" "ari@${HOST}:/tmp/relay-linode-deploy.tgz"
-   ssh -i ~/.ssh/id_ed25519_relay_gateway -o IdentitiesOnly=yes -o BatchMode=yes "ari@${HOST}" 'sudo bash -s' <<'REMOTE'
+   HOST=dfw1.relaygateway.net   # or lon1 / hkg1
+   scp -i ~/.ssh/id_ed25519_relay_gateway -o IdentitiesOnly=yes -o BatchMode=yes "$TGZ" "ubuntu@${HOST}:/tmp/relay-linode-deploy.tgz"
+   ssh -i ~/.ssh/id_ed25519_relay_gateway -o IdentitiesOnly=yes -o BatchMode=yes "ubuntu@${HOST}" 'sudo bash -s' <<'REMOTE'
    set -euo pipefail
    install -d -m 700 /root
    cp -f /tmp/relay-linode-deploy.tgz /root/relay-linode-deploy.tgz
@@ -62,19 +62,19 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
    REMOTE
    ```
 
-3. **All production masters (no seed):** **`./scripts/relay-fleet.sh --build deploy-all`** (or **`./scripts/deploy-all-masters.sh`**, which wraps fleet with **`--build`**). Tarball + `install.sh update` on **atlanta2**, **atlanta3**, and **jp-osa**, restart **`relay-gateway`** / **`relay-git-daemon`**. **SSH and deploy scripts should use the hostname** (**`jp-osa.relaygateway.net`**, etc.), not a literal IPv4 from old notes. If apex DNS is still wrong, set **`RELAY_JP_OSA_SSH_HOST`** to the **current** public IPv4 from the Linode (or other) dashboard until DNS is fixed—do not copy IPs from documentation.
+3. **All production masters (no seed):** **`./scripts/relay-fleet.sh --build deploy-all`** (or **`./scripts/deploy-all-masters.sh`**, which wraps fleet with **`--build`**). Tarball + `install.sh update` on **dfw1**, **lon1**, and **hkg1**, restart **`relay-gateway`** / **`relay-git-daemon`** / **`relay-git-proxy`**. **SSH and deploy scripts should use the hostname** (**`dfw1.relaygateway.net`**, etc.), not a literal IPv4 from old notes.
 
    ```bash
    ./scripts/relay-fleet.sh --build deploy-all
+   # dirty/unpushed local tree (explicit): ./scripts/relay-fleet.sh --allow-dirty --build deploy-all
    # or: ./scripts/deploy-all-masters.sh
-   # or (temporary JP SSH target): RELAY_JP_OSA_SSH_HOST=<ipv4-from-dashboard> ./scripts/deploy-all-masters.sh
    ```
 
 4. **Optional script** (upload + `install.sh update` + **POST** health check; **also** runs **`POST /api/git/ensure-bare/$RELAY_SEED_REPO`** unless skipped — avoid on production if that side effect is unwanted):
 
    ```bash
-   RELAY_REDEPLOY_SKIP_SEED=1 ./scripts/relay-linode-redeploy-seed.sh atlanta3.relaygateway.net   # binary only
-   ./scripts/relay-linode-redeploy-seed.sh atlanta3.relaygateway.net   # includes ensure-bare
+   RELAY_REDEPLOY_SKIP_SEED=1 ./scripts/relay-linode-redeploy-seed.sh dfw1.relaygateway.net   # binary only
+   ./scripts/relay-linode-redeploy-seed.sh dfw1.relaygateway.net   # includes ensure-bare
    ```
 
    Override **`RELAY_SSH_USER`**, **`RELAY_SSH_IDENTITY`**, **`RELAY_SEED_REPO`** as needed.
@@ -89,19 +89,19 @@ See **`docs/RELAY_OPS.md`**.
 
 ## HTTP API checks (normative)
 
-- **`/api/config`** and **`/api/status`** are **POST only** (GET can collide with repo file routes). Example:
+- **`/api/config`** and **`/api/status`** on the **node FQDN** (and loopback) accept **GET/HEAD/POST**. On **parked** / **`{repo}.{node}`** Hosts they are site files — use **POST** or the node apex. Example:
 
-  `curl -sS -X POST "https://atlanta3.relaygateway.net/api/status"`
+  `curl -sS -X POST "https://dfw1.relaygateway.net/api/status"`
 
 - On the box: **`curl -sS -X POST http://127.0.0.1:8080/api/config`**
 
 ## `relay.env`
 
-- On hosts, **`install.sh`** sets **`/opt/relay/relay.env`** to **`root:root`** **`chmod 600`** (not writable by user **`relay`**). **`relay-gateway`** still receives vars via systemd **`EnvironmentFile`**. Edit with **`sudo`** or **`install.sh update` / `repair`**.
+- On hosts, **`install.sh`** sets **`/opt/relay/relay.env`** to **`root:root`** **`chmod 600`** (not writable by user **`relay`**). **`relay-gateway`** still receives vars via systemd **`EnvironmentFile`**. Edit with **`sudo`** or **`install.sh update` / `repair`**. Do **not** set both **`RELAY_MASTER_CATALOG_PATH`** and **`RELAY_AUTHORIZED_REPOS_PATH`**.
 
 ## Debugging checklist
 
-- **Who owns :8080?** `sudo ss -tlnp | grep 8080` — expect **`relay-gateway`**, not legacy **`relay-server`**.
+- **Who owns :9418?** `sudo ss -tlnp | grep 9418` — expect **`relay-git-proxy`**. Stock **`git daemon`** should be **127.0.0.1:9419** (`relay-git-daemon`).
 - **Legacy orphan:** If **`/opt/relay/bin/relay-server serve`** still runs after an update, **`relay-gateway` cannot bind** and will flap. Fix:
 
   ```bash
@@ -112,7 +112,7 @@ See **`docs/RELAY_OPS.md`**.
 
   **`install.sh`** (current tree) should **`pkill`** stale **`relay-server`** during unit retirement; if an old installer ran, do the above once.
 - **Logs:** `journalctl -u relay-gateway -n 80 --no-pager` (may need `adm`/`sudo`).
-- **Git:** **`relay-git-daemon.service`** — restart if hook/binary issues after deploy: `sudo systemctl restart relay-git-daemon`.
+- **Git:** **`relay-git-proxy.service`** (public **9418**) + **`relay-git-daemon.service`** (loopback **9419**). Restart both after hook/binary issues: `sudo systemctl restart relay-git-daemon relay-git-proxy`.
 
 ## Docs
 
@@ -120,4 +120,4 @@ See **`docs/RELAY_OPS.md`**.
 - **`docs/DEPLOY_SELF_HOSTED.md`** — hosting the tarball, `RELAY_DEPLOY_TGZ_URL`, etc.
 - **`docs/OPERATOR_BARE_REPO_RESET.md`** — recloning bare mirrors, catalog sync / DNS failures, `ensure-bare` notes.
 
-When the user asks to “deploy both masters” or “debug atlanta2”, **run the commands** in the integrated terminal (do not only describe them), unless they explicitly forbid remote access.
+When the user asks to “deploy the fleet” or “debug dfw1”, **run the commands** in the integrated terminal (do not only describe them), unless they explicitly forbid remote access.

@@ -30,9 +30,9 @@ impl Inventory {
         let id_path = cfg.identity_path();
         let identity_file = id_path.as_ref().map(|p| p.is_file()).unwrap_or(false);
         let admin_ready = ssh_binary && (ssh_agent || identity_file);
-        let checkout = cfg.checkout_path().filter(|p| {
-            p.join("scripts/relay-master-deploy.sh").is_file()
-        });
+        let checkout = cfg
+            .checkout_path()
+            .filter(|p| p.join("scripts/relay-master-deploy.sh").is_file());
         Inventory {
             ssh_binary,
             ssh_path,
@@ -40,10 +40,26 @@ impl Inventory {
             identity_file,
             identity_path: id_path.map(|p| p.display().to_string()),
             admin_ready,
-            vercel_token: cfg.vercel_token.as_deref().filter(|s| !s.is_empty()).is_some(),
-            spot_token: cfg.spot_token.as_deref().filter(|s| !s.is_empty()).is_some(),
-            slack_webhook: cfg.slack_webhook.as_deref().filter(|s| !s.is_empty()).is_some(),
-            gitlab_token: cfg.gitlab_token.as_deref().filter(|s| !s.is_empty()).is_some(),
+            vercel_token: cfg
+                .vercel_token
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .is_some(),
+            spot_token: cfg
+                .spot_token
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .is_some(),
+            slack_webhook: cfg
+                .slack_webhook
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .is_some(),
+            gitlab_token: cfg
+                .gitlab_token
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .is_some(),
             op_cli: which("op").is_some(),
             git_binary: which("git").is_some(),
             gateway_checkout: checkout.is_some(),

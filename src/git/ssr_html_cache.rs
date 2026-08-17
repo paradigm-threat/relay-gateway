@@ -12,8 +12,7 @@ use std::sync::{Mutex, OnceLock};
 const MAX_ENTRIES: usize = 256;
 
 /// Cache-Control for public park SSR HTML (CDN glue on a commit-keyed body).
-pub const SSR_HTML_CACHE_CONTROL: &str =
-    "public, s-maxage=60, stale-while-revalidate=3600";
+pub const SSR_HTML_CACHE_CONTROL: &str = "public, s-maxage=60, stale-while-revalidate=3600";
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct SsrHtmlKey {
@@ -115,13 +114,7 @@ pub fn get(
 }
 
 /// Store a rendered SSR HTML document (FIFO eviction when full).
-pub fn put(
-    repo_path: &Path,
-    branch: &str,
-    initial_path: &str,
-    client_hook: &str,
-    html: String,
-) {
+pub fn put(repo_path: &Path, branch: &str, initial_path: &str, client_hook: &str, html: String) {
     if !cache_enabled() {
         return;
     }
@@ -181,7 +174,9 @@ mod tests {
             .unwrap();
         let commit_obj = repo.find_commit(commit).unwrap();
         repo.branch(branch, &commit_obj, true).unwrap();
-        let mut checkout = repo.find_reference(&format!("refs/heads/{}", branch)).unwrap();
+        let mut checkout = repo
+            .find_reference(&format!("refs/heads/{}", branch))
+            .unwrap();
         repo.set_head(checkout.name().unwrap()).unwrap();
         let _ = checkout;
         commit.to_string()
@@ -193,7 +188,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let oid = init_repo_with_branch(dir.path(), "main");
         assert!(!oid.is_empty());
-        put(dir.path(), "main", "/", "hooks/client/get.jsx", "<html/>".into());
+        put(
+            dir.path(),
+            "main",
+            "/",
+            "hooks/client/get.jsx",
+            "<html/>".into(),
+        );
         let hit = get(dir.path(), "main", "/", "hooks/client/get.jsx");
         assert_eq!(hit.as_deref(), Some("<html/>"));
         let miss = get(dir.path(), "main", "/other.md", "hooks/client/get.jsx");

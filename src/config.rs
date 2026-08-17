@@ -138,11 +138,9 @@ impl Config {
         let authorized_repos = authorized_repos.map(Arc::new);
 
         // Parked-domain routing: worktree catalog → bare relay-master tip → state map file.
-        let parked_domains = crate::catalog_policy::resolve_parked_domains(
-            &repo_path,
-            catalog_path.as_deref(),
-        )?
-        .map(Arc::new);
+        let parked_domains =
+            crate::catalog_policy::resolve_parked_domains(&repo_path, catalog_path.as_deref())?
+                .map(Arc::new);
 
         let features_path = std::env::var("RELAY_FEATURES_STATE_PATH")
             .ok()

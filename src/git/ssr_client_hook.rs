@@ -1,8 +1,8 @@
 //! Server-side render of the repo **client GET hook** into an HTML fragment for embed pages.
 
 use crate::git::repo::read_file_from_repo;
-use relay_runtime::host::{host_fetch_object, Host, HostHandle, MockHost};
 use relay_runtime::hook_runner::run_hook_to_vnode_stable_isolated;
+use relay_runtime::host::{host_fetch_object, Host, HostHandle, MockHost};
 use relay_runtime::html::{vnode_to_html, HtmlRenderOptions};
 use relay_runtime::style_resolve::Platform;
 use relay_runtime::value::Value;
@@ -55,19 +55,17 @@ impl RepoFetchHost {
         if base.is_empty() {
             return None;
         }
-        let stripped = u
-            .strip_prefix(base)
-            .or_else(|| {
-                // Tolerate http/https mismatch on the same host path.
-                let alt = if base.starts_with("https://") {
-                    format!("http://{}", base.trim_start_matches("https://"))
-                } else if base.starts_with("http://") {
-                    format!("https://{}", base.trim_start_matches("http://"))
-                } else {
-                    return None;
-                };
-                u.strip_prefix(&alt)
-            })?;
+        let stripped = u.strip_prefix(base).or_else(|| {
+            // Tolerate http/https mismatch on the same host path.
+            let alt = if base.starts_with("https://") {
+                format!("http://{}", base.trim_start_matches("https://"))
+            } else if base.starts_with("http://") {
+                format!("https://{}", base.trim_start_matches("http://"))
+            } else {
+                return None;
+            };
+            u.strip_prefix(&alt)
+        })?;
         let path = stripped.split('?').next().unwrap_or(stripped);
         let path = path.split('#').next().unwrap_or(path);
         Some(path.trim_start_matches('/').to_string())
@@ -81,7 +79,9 @@ impl RepoFetchHost {
                 false,
                 400.0,
                 "",
-                Some(format!("SSR QUERY only supported on collection root, got path {rel}")),
+                Some(format!(
+                    "SSR QUERY only supported on collection root, got path {rel}"
+                )),
             ));
         }
 
@@ -150,7 +150,9 @@ impl Host for RepoFetchHost {
                 false,
                 405.0,
                 "",
-                Some(format!("SSR host only supports GET/HEAD/QUERY, got {method}")),
+                Some(format!(
+                    "SSR host only supports GET/HEAD/QUERY, got {method}"
+                )),
             ));
         }
 
@@ -377,11 +379,7 @@ fn load_module_map(
 }
 
 fn theme_yaml_from_repo(repo_path: &PathBuf, branch: &str) -> String {
-    for path in [
-        "hooks/client/theme.yaml",
-        "theme.yaml",
-        "hooks/theme.yaml",
-    ] {
+    for path in ["hooks/client/theme.yaml", "theme.yaml", "hooks/theme.yaml"] {
         if let Some(s) = read_repo_text(repo_path, branch, path) {
             return s;
         }
@@ -402,7 +400,9 @@ fn panic_payload_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 /// Try to SSR the client GET hook. Returns `None` on any failure (caller falls back to empty shell).
 /// Panics inside the renderer are caught so HTTP handlers can return 500 instead of dropping the connection.
 pub fn try_ssr_client_hook(req: &ClientHookSsrRequest<'_>) -> Option<ClientHookSsrResult> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| try_ssr_client_hook_inner(req))) {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        try_ssr_client_hook_inner(req)
+    })) {
         Ok(v) => v,
         Err(payload) => {
             let msg = panic_payload_message(&payload);
@@ -435,10 +435,7 @@ fn try_ssr_client_hook_inner(req: &ClientHookSsrRequest<'_>) -> Option<ClientHoo
             "relayDefaultMarkdownUrl".to_string(),
             Value::String(format!("{}/README.md", base.trim_end_matches('/'))),
         );
-        map.insert(
-            "relayPathSlash".to_string(),
-            Value::String("/".to_string()),
-        );
+        map.insert("relayPathSlash".to_string(), Value::String("/".to_string()));
         map.insert(
             "relayInitialPath".to_string(),
             Value::String(req.initial_path.to_string()),
@@ -456,8 +453,7 @@ fn try_ssr_client_hook_inner(req: &ClientHookSsrRequest<'_>) -> Option<ClientHoo
 
     // Seed CS globalThis so tip PopImage sees the tip portrait index during SSR
     // (browser window.globalThis is not the CleverScript sandbox).
-    let portraits_json =
-        crate::git::portrait::portrait_sibling_set_json(req.repo_path, req.branch);
+    let portraits_json = crate::git::portrait::portrait_sibling_set_json(req.repo_path, req.branch);
     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&portraits_json) {
         relay_runtime::set_cs_global_this_extra(
             "__RELAY_PORTRAIT_SIBLINGS__",
@@ -574,7 +570,9 @@ export default function App() {
         );
         assert!(result.body_html.contains("ssr-root") || result.body_html.contains("<div"));
         assert!(
-            result.body_html.contains("class=\"ssr-root\"") || result.body_html.contains("class='ssr-root'") || result.body_html.contains("ssr-root"),
+            result.body_html.contains("class=\"ssr-root\"")
+                || result.body_html.contains("class='ssr-root'")
+                || result.body_html.contains("ssr-root"),
             "className must survive SSR: {}",
             result.body_html
         );
@@ -586,14 +584,15 @@ export default function App() {
 
     #[test]
     fn ssr_clevertree_site_produces_landmarks() {
-        let bare = std::env::var("CLEVERTREE_BARE").ok().filter(|s| !s.is_empty());
+        let bare = std::env::var("CLEVERTREE_BARE")
+            .ok()
+            .filter(|s| !s.is_empty());
         let Some(bare) = bare else {
             eprintln!("skip: set CLEVERTREE_BARE to a bare clevertree-site.git");
             return;
         };
         let path = PathBuf::from(bare);
-        let branch =
-            std::env::var("CLEVERTREE_BRANCH").unwrap_or_else(|_| "main".to_string());
+        let branch = std::env::var("CLEVERTREE_BRANCH").unwrap_or_else(|_| "main".to_string());
         let result = try_ssr_client_hook(&ClientHookSsrRequest {
             repo_path: &path,
             branch: &branch,
@@ -610,7 +609,10 @@ export default function App() {
         assert!(html.contains("Key Projects"), "{html}");
         assert!(html.contains("Resume"), "{html}");
         assert!(html.contains("Forgotten Future"), "{html}");
-        assert!(html.contains("ct-home") || html.contains("id=\"ct-home\""), "{html}");
+        assert!(
+            html.contains("ct-home") || html.contains("id=\"ct-home\""),
+            "{html}"
+        );
         assert!(
             html.contains("ct-projects"),
             "projects grid class must survive SSR: {html}"
@@ -660,7 +662,10 @@ export default function App() {
             host.repo_rel_from_url("http://files.example.com/README.md?embed=1"),
             Some("README.md".into())
         );
-        assert_eq!(host.repo_rel_from_url("blog/x.md"), Some("blog/x.md".into()));
+        assert_eq!(
+            host.repo_rel_from_url("blog/x.md"),
+            Some("blog/x.md".into())
+        );
         assert_eq!(host.repo_rel_from_url("https://other.example/a.md"), None);
     }
 }

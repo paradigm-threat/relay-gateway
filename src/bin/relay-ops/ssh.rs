@@ -94,8 +94,9 @@ impl SshCtx<'_> {
 }
 
 pub fn checkout(cfg: &OpsConfig) -> Result<std::path::PathBuf> {
-    cfg.checkout_path()
-        .ok_or_else(|| anyhow!("no gateway checkout (clone the GitLab project or set gateway_checkout)"))
+    cfg.checkout_path().ok_or_else(|| {
+        anyhow!("no gateway checkout (clone the GitLab project or set gateway_checkout)")
+    })
 }
 
 pub fn output_text(out: &Output) -> String {

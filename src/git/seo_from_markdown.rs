@@ -65,9 +65,7 @@ pub fn seo_from_markdown(input: SeoFromMarkdownInput<'_>) -> ArticleSeo {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or("Paradigm Threat");
-    let title = if article_title.eq_ignore_ascii_case(site)
-        || article_title.contains(site)
-    {
+    let title = if article_title.eq_ignore_ascii_case(site) || article_title.contains(site) {
         article_title.clone()
     } else {
         format!("{article_title} | {site}")
@@ -141,9 +139,7 @@ fn path_is_markdown(rel_path: &str) -> bool {
 
 fn title_from_path(rel_path: &str) -> Option<String> {
     let pretty = pretty_public_path(rel_path);
-    let seg = pretty
-        .rsplit('/')
-        .find(|s| !s.is_empty())?;
+    let seg = pretty.rsplit('/').find(|s| !s.is_empty())?;
     let t = seg.replace(['-', '_'], " ");
     let t = t.trim();
     if t.is_empty() {
@@ -180,7 +176,8 @@ fn fm_string(fm: &Option<&str>, key: &str) -> Option<String> {
         let t = line.trim();
         if let Some(rest) = t.strip_prefix(&prefix) {
             let mut v = rest.trim().to_string();
-            if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\''))
+            if (v.starts_with('"') && v.ends_with('"'))
+                || (v.starts_with('\'') && v.ends_with('\''))
             {
                 v = v[1..v.len() - 1].to_string();
             }
@@ -325,10 +322,7 @@ fn resolve_image_url(raw: &str, article_rel: &str, origin: Option<&str>) -> Opti
             }
         };
         // Strip legacy /files/ prefix if present in absolute-ish site paths
-        let rel = rel
-            .strip_prefix("files/")
-            .unwrap_or(&rel)
-            .to_string();
+        let rel = rel.strip_prefix("files/").unwrap_or(&rel).to_string();
         format!("{origin}/{}", rel.trim_start_matches('/'))
     } else {
         return None;
@@ -347,7 +341,11 @@ fn article_dir(rel_path: &str) -> String {
 
 fn maybe_append_og_width(absolute_url: &str) -> String {
     if !is_raster_path(absolute_url) {
-        return absolute_url.split('?').next().unwrap_or(absolute_url).to_string();
+        return absolute_url
+            .split('?')
+            .next()
+            .unwrap_or(absolute_url)
+            .to_string();
     }
     let base = absolute_url.split('?').next().unwrap_or(absolute_url);
     format!("{base}?w={OG_SHARE_IMAGE_WIDTH}")
@@ -374,10 +372,7 @@ More body.
             request_origin: None,
             site_name: Some("Paradigm Threat"),
         });
-        assert_eq!(
-            seo.title,
-            "Mission Accomplished (Again) | Paradigm Threat"
-        );
+        assert_eq!(seo.title, "Mission Accomplished (Again) | Paradigm Threat");
         assert!(
             seo.description
                 .as_deref()
@@ -417,7 +412,10 @@ More body.
 
     #[test]
     fn page_md_pretty_path_is_parent() {
-        assert_eq!(pretty_public_path("governance/war/page.md"), "/governance/war");
+        assert_eq!(
+            pretty_public_path("governance/war/page.md"),
+            "/governance/war"
+        );
         assert_eq!(pretty_public_path("page.md"), "/");
         assert_eq!(pretty_public_path("/"), "/");
     }

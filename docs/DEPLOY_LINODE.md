@@ -6,9 +6,9 @@
 
 **`relay.env` permissions:** **`install.sh`** sets **`$INSTALL/relay.env`** to **`root:root`** **`chmod 600`**. Only root (installer, **`install.sh update`**, **`repair`**, or **`relay-bootstrap.sh`** run as root) should edit it; the **`relay`** user gets variables from systemd **`EnvironmentFile`**.
 
-**DNS / IPs:** For the current phase, **public IPs can be set manually**; automated DNS (Vercel API or other) remains optional via **`RELAY_SKIP_VERCEL_DNS=1`** or the existing Vercel flow below. **Wildcard** **`*.jp-osa.relaygateway.net`** (repo vhosts) must point at the JP master; the apex **`jp-osa.relaygateway.net`** **A** record must match that host’s **public IPv4** (if the A record is stale, HTTPS to the apex misroutes until Vercel DNS is updated).
+**DNS / IPs:** For the current phase, **public IPs can be set manually**; automated DNS (Vercel API or other) remains optional via **`RELAY_SKIP_VERCEL_DNS=1`** or the existing Vercel flow below. **Wildcard** **`*.dfw1.relaygateway.net`** (and the same for **lon1** / **hkg1**) must point at that master; the apex **A** record must match the host’s **public IPv4**.
 
-**Operator SSH:** connect by **FQDN** (e.g. **`ssh ari@jp-osa.relaygateway.net`**). Do not rely on **literal IPv4** values from old docs, chat, or screenshots—Linode reassignment changes them; **`~/.ssh/config`** should not pin **`HostName`** to a stale IP when the name resolves correctly.
+**Operator SSH:** connect by **FQDN** (e.g. **`ssh ubuntu@dfw1.relaygateway.net`** with **`~/.ssh/id_ed25519_relay_gateway`**). Do not rely on **literal IPv4** values from old docs, chat, or screenshots—Spot/Linode reassignment changes them; **`~/.ssh/config`** should not pin **`HostName`** to a stale IP when the name resolves correctly.
 
 **Fleet operations (canonical):** use **`./scripts/relay-fleet.sh`** from **`relay-gateway/`** for **`ssh-check`**, **`status`**, **`drift`**, **`deploy-all`**, **`repair`**, **`features-set`**, **`reclone-repo`**, etc. See **[`RELAY_OPS.md`](./RELAY_OPS.md)**.
 
@@ -18,7 +18,7 @@
 
 | Step | What |
 |------|------|
-| **1. VM** | Linode **Ubuntu 22.04/24.04 LTS** via **`terraform/linode-relay`** (import existing atlanta2) or dashboard; open **22, 8080, 9418** (and **5590** if Piper). |
+| **1. VM** | Ubuntu **22.04/24.04 LTS** (Spot VM or Linode via **`terraform/linode-relay`**) or dashboard; open **22, 8080, 9418**, **4001/tcp+udp** (Kubo swarm), and **5590** if Piper. Kubo API/gateway stay on **loopback** (5001 / 8081). |
 | **2. Binaries** | On a trusted machine: **`./scripts/pack-linode-deploy.sh`** → **`target/relay-linode-deploy.tgz`**. Host the tarball on **any** HTTPS you control (GitLab generic package, internal nginx, USB copy + `file:` path not supported by curl — use **`scp`** or **`RELAY_BIN_SOURCE`**). See **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)**. |
 | **3. Install** | **`relay-curl.sh`** one-liner with **`RELAY_DEPLOY_TGZ_URL`**, **or** `scp` the tgz and **`sudo ./install.sh install`**. The installer’s **first step** is **Vercel DNS** (unless skipped): detect public IPv4, upsert **A** record for your **FQDN**, wait until DNS resolves, then install packages and binaries. Uses **`VERCEL_API_TOKEN`** (optional **`VERCEL_TEAM_ID`**) like Docker/K8s. See **[Vercel DNS (first step of `install`)](#vercel-dns-first-step-of-install)**. |
 | **4. Trust** | **`relay.env`**: **`RELAY_SERVER_ID`** + catalog (**[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**). Prefer **`RELAY_MASTER_CATALOG_GIT_URL`** + **`RELAY_MASTER_TRUST_ROOT`** so a **new** node needs **no manual git clone** — **`ExecStartPre`** clones **`relay-master`** then runs **`sync-relay-catalog.sh`**. *Or* **`RELAY_AUTHORIZED_REPOS_PATH`** (YAML) — never both catalog path and YAML. |
@@ -49,7 +49,7 @@ sudo systemctl restart relay-gateway
 Add to **`/opt/relay/relay.env`** (example):
 
 ```
-RELAY_SERVER_ID=relay-atlanta3
+RELAY_SERVER_ID=relay-dfw1
 RELAY_MASTER_CATALOG_PATH=/opt/relay/src/relay-master
 RELAY_MASTER_TRUST_ROOT=14f88ca11ce88f580c1a3cab1dfa5493eace34e2
 RELAY_DEFAULT_REPO=relay-master
@@ -82,26 +82,26 @@ After **`install.sh`** (or an equivalent tarball install) has created **`/opt/re
 | **HTTP routing** | **`RELAY_PUBLIC_HOSTNAME`**, **`RELAY_SERVER_ID`** | Wildcard DNS **`*.node`** → server IP for **`{repo}.{node}`** hosts. |
 | **Catalog clone** | **`RELAY_MASTER_CATALOG_GIT_URL`** (HTTPS), **`RELAY_MASTER_TRUST_ROOT`** (40 hex) | **`RELAY_MASTER_CATALOG_PATH`** defaults to **`/opt/relay/src/relay-master`** when the URL is set. Branch: **`RELAY_MASTER_CATALOG_BRANCH`** (default **`main`**). |
 | **Site apex** | **`RELAY_DEFAULT_REPO=relay-master`** | Optional but typical for catalog-as-homepage. |
-| **Masters** | **`RELAY_MASTER_PEER_LIST`** | Semicolon-separated FQDNs of **every** master (installer default includes **`atlanta2`**, **`atlanta3`**, **`jp-osa`**). **Listing this host is fine** — startup sync **skips self** for peer fetch. Align list + mesh secrets across masters per **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)**. |
-| **Network** | UFW / cloud firewall | **22**, **8080**, **9418** (and **5590** if Piper). Masters must reach each other on **`RELAY_GIT_PORT`** (**9418**) for peer **`git fetch`**. |
+| **Masters** | **`RELAY_MASTER_PEER_LIST`** | Semicolon-separated FQDNs of **every** master (installer default **`dfw1.relaygateway.net;lon1.relaygateway.net;hkg1.relaygateway.net`**). **Listing this host is fine** — startup sync **skips self** for peer fetch. Align list + mesh secrets across masters per **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)**. |
+| **Network** | UFW / cloud firewall | **22**, **8080**, **9418**, **4001/tcp+udp** (Kubo swarm; API **5001** and gateway **8081** stay loopback), and **5590** if Piper. Masters must reach each other on **`RELAY_GIT_PORT`** (**9418**) for peer **`git fetch`**. |
 
-**Verify after first start:** `curl -sS -X POST 'http://127.0.0.1:8080/api/config'` → **`startup_catalog_sync.catalog_forge_sync_ok`** should be **`true`**; **`peer_fetch`** reports **`ok` / `failed`** counts (peer round is best-effort). If **`catalog_forge_sync_ok`** is **`false`**, fix forge/auth, then **`sudo systemctl restart relay-gateway`**.
+**Verify after first start:** `curl -sS 'http://127.0.0.1:8080/api/config'` → **`startup_catalog_sync.catalog_forge_sync_ok`** should be **`true`**; **`peer_fetch`** reports **`ok` / `failed`** counts (peer round is best-effort). If **`catalog_forge_sync_ok`** is **`false`**, fix forge/auth, then **`sudo systemctl restart relay-gateway`**.
 
-**Example deployed masters (default installer `RELAY_MASTER_PEER_LIST`):** **`atlanta2.relaygateway.net`**, **`atlanta3.relaygateway.net`**, and **`jp-osa.relaygateway.net`**. Use your real FQDNs if you override the list.
+**Example deployed masters (default installer `RELAY_MASTER_PEER_LIST`):** **`dfw1.relaygateway.net`**, **`lon1.relaygateway.net`**, and **`hkg1.relaygateway.net`**. Use your real FQDNs if you override the list.
 
-**`/api/config`** and **`/api/status`** use **POST** (not GET) so paths like **`/api/status`** are never served as repo files from the **`/*path`** wildcard. Call with **`curl -X POST`**. HTML status: `curl -sS -X POST 'https://atlanta2.relaygateway.net/api/status?format=html'` (pipe to a file or **`less`**; browsers do not send POST from a plain bookmark).
+**`GET /api/config`** and **`GET /api/status`** (also **POST**/**HEAD**) are **node FQDN / loopback** operator APIs. Open **`https://{node}/api/status`** in a browser. Parked domains and **`{repo}.{node}`** keep `/api/*` as site files. HTML: `curl -sS 'https://dfw1.relaygateway.net/api/status?format=html'`.
 
-| Node | HTML status (`POST`, `?format=html`) | JSON status (`POST`) | JSON config (`POST`) |
-|------|--------------------------------------|----------------------|----------------------|
-| **Atlanta2** | `curl -sS -X POST 'https://atlanta2.relaygateway.net/api/status?format=html'` | `curl -sS -X POST 'https://atlanta2.relaygateway.net/api/status'` | `curl -sS -X POST 'https://atlanta2.relaygateway.net/api/config'` |
-| **Atlanta3** | `curl -sS -X POST 'https://atlanta3.relaygateway.net/api/status?format=html'` | `curl -sS -X POST 'https://atlanta3.relaygateway.net/api/status'` | `curl -sS -X POST 'https://atlanta3.relaygateway.net/api/config'` |
-| **JP (Osaka)** | `curl -sS -X POST 'https://jp-osa.relaygateway.net/api/status?format=html'` | `curl -sS -X POST 'https://jp-osa.relaygateway.net/api/status'` | `curl -sS -X POST 'https://jp-osa.relaygateway.net/api/config'` |
+| Node | HTML status (`GET`, `?format=html`) | JSON status | JSON config |
+|------|--------------------------------------|-------------|-------------|
+| **dfw1** | `curl -sS 'https://dfw1.relaygateway.net/api/status?format=html'` | `curl -sS 'https://dfw1.relaygateway.net/api/status'` | `curl -sS 'https://dfw1.relaygateway.net/api/config'` |
+| **lon1** | `curl -sS 'https://lon1.relaygateway.net/api/status?format=html'` | `curl -sS 'https://lon1.relaygateway.net/api/status'` | `curl -sS 'https://lon1.relaygateway.net/api/config'` |
+| **hkg1** | `curl -sS 'https://hkg1.relaygateway.net/api/status?format=html'` | `curl -sS 'https://hkg1.relaygateway.net/api/status'` | `curl -sS 'https://hkg1.relaygateway.net/api/config'` |
 
-**`/api/config`** returns **JSON only** (no HTML). **`POST /api/status`** defaults to JSON; use **`?format=html`** or **`Accept: text/html`** for the operator page body (includes a **per-repo** table from local bares — catalog vs on disk, publish SHA). For load checks, **`?strict=1`** returns HTTP **503** when any configured peer probe fails (`repos_ok` is independent of `strict`).
+**`/api/config`** returns **JSON only** (no HTML). **`GET /api/status`** defaults to JSON; use **`?format=html`** or **`Accept: text/html`** for the operator page (git repos + **IPFS seed**). For load checks, **`?strict=1`** returns HTTP **503** when any configured **git-mesh** peer probe fails (`repos_ok` and **`ipfs_ok`** are independent of `strict`).
 
-**Redeploy to masters (e.g. atlanta2 / atlanta3 / jp-osa):** build **`relay-linode-deploy.tgz`** on a trusted machine (**`./scripts/pack-linode-deploy.sh`**; see **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)**). Copy to each host and run **`sudo ./install.sh update`** from the unpacked bundle (or replace **`/opt/relay/bin/relay-gateway`** and **`relay-hook-handler`**, then **`sudo systemctl restart relay-gateway relay-git-daemon`**). Confirm with **`curl -sS -X POST 'http://127.0.0.1:8080/api/config' | head -c 400`** on the VM.
+**Redeploy to masters (dfw1 / lon1 / hkg1):** build **`relay-linode-deploy.tgz`** on a trusted machine (**`./scripts/pack-linode-deploy.sh`**; see **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)**). The pack script **refuses a dirty/unpushed tree** unless **`RELAY_PACK_ALLOW_DIRTY=1`**. Copy to each host and run **`sudo ./install.sh update`** from the unpacked bundle (or replace **`/opt/relay/bin/relay-gateway`**, **`relay-hook-handler`**, and **`relay-git-proxy`**, then **`sudo systemctl restart relay-gateway relay-git-daemon relay-git-proxy`**). Confirm with **`curl -sS -X POST 'http://127.0.0.1:8080/api/config' | head -c 400`** on the VM. **`update`** also installs **Kubo** (`relay-ipfs.service`) unless **`RELAY_INSTALL_IPFS=0`**.
 
-**Fleet shortcut:** **`./scripts/relay-fleet.sh --build deploy-all`** from **`relay-gateway/`** (after **`relay.env`**). If you skip **`--build`**, an existing **`target/relay-linode-deploy.tgz`** may be **old**; masters then keep an outdated **`relay-gateway`** even though your **working tree** is new — see **`docs/RELAY_OPS.md`** (stale tarball + **`--build` placement).
+**Fleet shortcut:** **`./scripts/relay-fleet.sh --build deploy-all`** from **`relay-gateway/`** (after **`relay.env`**). Packs a **clean, pushed** tree by default; pass **`--allow-dirty`** only as an explicit override. If you skip **`--build`**, an existing **`target/relay-linode-deploy.tgz`** may be **old**; masters then keep an outdated **`relay-gateway`** even though your **working tree** is new — see **`docs/RELAY_OPS.md`** (stale tarball + **`--build` placement).
 
 **`RELAY_MASTER_TRUST_ROOT` vs shallow catalog:** **`relay-gateway`** checks that the trust root is an ancestor of catalog **`HEAD`**. The startup script clones with **`RELAY_MASTER_CATALOG_CLONE_DEPTH`** (default **128** in **`relay-startup-catalog-sync.sh`**) and **deepens** a shallow catalog when needed. If the service still errors on **`merge-base`** / missing object, run **`sudo -u relay git -C /opt/relay/src/relay-master fetch --deepen 2048 origin`** (adjust path/remote if yours differ), then **`sudo systemctl restart relay-gateway`**.
 
@@ -202,7 +202,7 @@ With **Vercel DNS** (recommended when the hostname should point at this VM):
 
 ```bash
 sudo RELAY_INSTALL_NONINTERACTIVE=1 \
-  RELAY_PUBLIC_FQDN="atlanta1.relaygateway.net" \
+  RELAY_PUBLIC_FQDN="dfw1.relaygateway.net" \
   VERCEL_API_TOKEN="your-token" \
   RELAY_FEAT_PIPER=0 \
   RELAY_FEAT_TRANSLATION=0 \
@@ -213,7 +213,7 @@ Optional: **`VERCEL_TEAM_ID=...`**, **`RELAY_VERCEL_DOMAIN=relaygateway.net`** (
 
 Skipping DNS (no token on host, or DNS managed manually):
 
-Set **`RELAY_PUBLIC_HOSTNAME`** to this node’s FQDN (required for **`Host: {repo}.{node}`** routing when Vercel did not append it). Set **`RELAY_SERVER_ID`**. **`RELAY_MASTER_PEER_LIST`** defaults in **`install.sh`** to the canonical mesh / **master** FQDNs (**`atlanta2.relaygateway.net;atlanta3.relaygateway.net;jp-osa.relaygateway.net`**); override only when you need a different set. Roadmap for mesh events, **internal** anti–over-ping (**SHA-first**, optional **`via` / hops**; **Slack-independent**), and subscriptions: **[`RELAY_MESH_NETWORKING_PLAN.md`](./RELAY_MESH_NETWORKING_PLAN.md)**. Optional operator Slack: **[`SLACK_MESH_NOTIFY.md`](./SLACK_MESH_NOTIFY.md)**.
+Set **`RELAY_PUBLIC_HOSTNAME`** to this node’s FQDN (required for **`Host: {repo}.{node}`** routing when Vercel did not append it). Set **`RELAY_SERVER_ID`**. **`RELAY_MASTER_PEER_LIST`** defaults in **`install.sh`** to the canonical mesh / **master** FQDNs (**`dfw1.relaygateway.net;lon1.relaygateway.net;hkg1.relaygateway.net`**); override only when you need a different set. Roadmap for mesh events, **internal** anti–over-ping (**SHA-first**, optional **`via` / hops**; **Slack-independent**), and subscriptions: **[`RELAY_MESH_NETWORKING_PLAN.md`](./RELAY_MESH_NETWORKING_PLAN.md)**. Optional operator Slack: **[`SLACK_MESH_NOTIFY.md`](./SLACK_MESH_NOTIFY.md)**.
 
 ```bash
 sudo RELAY_INSTALL_NONINTERACTIVE=1 RELAY_SKIP_VERCEL_DNS=1 \
@@ -258,7 +258,7 @@ Non-interactive: `export RELAY_INSTALL_NONINTERACTIVE=1` before the same **`curl
 **Binaries on disk instead of URL:**
 
 ```bash
-export RELAY_BIN_SOURCE=/root/deploy   # relay-server + relay-hook-handler here
+export RELAY_BIN_SOURCE=/root/deploy   # relay-gateway + relay-hook-handler + relay-git-proxy here
 curl -fsSL "https://gitlab.com/clevertree/relay-gateway/-/raw/main/scripts/relay-curl.sh" | sudo -E bash -s -- install
 ```
 
@@ -268,12 +268,10 @@ curl -fsSL "https://gitlab.com/clevertree/relay-gateway/-/raw/main/scripts/relay
 
 Relay’s git daemon uses the **`git://`** protocol: there is **no transport-level authentication**. Policy (signed commits, custom hooks, etc.) is optional and comes from each repo’s **`.relay.yaml`** and **`relay-hook-handler`**, not from the server requiring SSH keys or HTTP basic auth.
 
-**New bare repo (today):** stock **`git daemon`** does **not** create missing paths; **`git push git://…`** fails until the bare directory exists. Create the slot over HTTP (no SSH needed), then push. **`RELAY_GIT_ENSURE_BARE_ENABLED`** defaults to **`1`** on install; set **`RELAY_GIT_ENSURE_BARE_ENABLED=0`** in **`relay.env`** to disable and use manual init only.
-
-**Planned:** Relay will provision **`RELAY_REPO_PATH/<repo>.git`** on first allowed push (same trust rules as today’s whitelist—see **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)**), so the **`curl …/ensure-bare/…`** step becomes optional for supported clients.
+**New bare repo:** first allowed **`git push git://…/{repo}.git`** creates **`RELAY_REPO_PATH/<repo>.git`** (same path as **`POST /api/git/ensure-bare/:repo`**). Catalog **`publish_origin`** is honored: a replica will not create the slot. **`RELAY_GIT_ENSURE_BARE_ENABLED`** defaults to **`1`** on install; set **`RELAY_GIT_ENSURE_BARE_ENABLED=0`** in **`relay.env`** to disable first-push create and HTTP ensure-bare (manual `git init --bare` only). HTTP **`ensure-bare`** is still useful to pre-create a slot.
 
 ```bash
-# Laptop (replace IP and repo name) — required until push-time provisioning ships
+# Laptop (optional pre-create)
 curl -fsS -X POST "http://IP:8080/api/git/ensure-bare/snesology-presets"
 ```
 
@@ -329,7 +327,7 @@ Use this after **SSH key auth** works for your operator user (**`user@IP`**, oft
 | 1 | Build tarball: **`./scripts/pack-linode-deploy.sh`** (or GitLab **`package:linode-tgz`** artifact). |
 | 2 | **Automated:** **`./scripts/relay-linode-redeploy-seed.sh IP`** (default SSH user **`ari`**; **`RELAY_SSH_USER=root`** for first-boot images). Optional **`RELAY_SSH_IDENTITY`**, **`RELAY_LOCAL_REPO`**, **`RELAY_SEED_*`**. |
 | 3 | **Manual:** **`root`:** `scp … root@IP:/root/` → **`ssh root@IP`** → **`tar xzf … && ./install.sh update`**. **Non-root:** same flow as **hardened** binary install § above (**`/tmp` → `/root` → `sudo ./install.sh update`**). |
-| 4 | **`curl -fsS -X POST "http://IP:8080/api/git/ensure-bare/your-repo"`** (skip if script ran; **planned:** optional once first-push provisioning exists). |
+| 4 | Optional: **`curl -fsS -X POST "http://IP:8080/api/git/ensure-bare/your-repo"`** (first **`git push`** also creates the bare when enabled). |
 | 5 | **`git push -u git://IP:9418/your-repo.git your-branch`** |
 | 6 | Confirm: **`curl -s http://IP:8080/api/config \| jq .git_ensure_bare_enabled,.repos`** |
 

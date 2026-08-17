@@ -1,11 +1,47 @@
-use std::path::PathBuf;
-
 use axum::http::HeaderMap;
 use git2::Repository;
 use percent_encoding::percent_decode_str;
 
 fn normalize_fqdn(s: &str) -> String {
     s.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Hostname from `Host` without port (`example:8080`, `[::1]:8080`).
+pub fn host_without_port(host_header: &str) -> String {
+    let h = host_header.trim();
+    if let Some(rest) = h.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            return normalize_fqdn(&rest[..end]);
+        }
+    }
+    if let Some((host, port)) = h.rsplit_once(':') {
+        if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
+            return normalize_fqdn(host);
+        }
+    }
+    normalize_fqdn(h)
+}
+
+fn host_is_loopback(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
+/// True when this `Host` may call node operator `/api/*` (apex FQDN or loopback).
+pub fn host_is_node_ops_api(node_fqdn: Option<&str>, headers: &HeaderMap) -> bool {
+    match headers.get("host").and_then(|v| v.to_str().ok()) {
+        Some(h) => {
+            let host = host_without_port(h);
+            if host_is_loopback(&host) {
+                return true;
+            }
+            let node = match node_fqdn.map(normalize_fqdn).filter(|s| !s.is_empty()) {
+                Some(n) => n,
+                None => return true,
+            };
+            host == node
+        }
+        None => true,
+    }
 }
 
 /// Extract repo slug from `Host` when it matches `{repo}.{node_fqdn}`.
@@ -194,4 +230,51 @@ pub fn list_branches(repo: &Repository) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderValue};
+
+    fn host(h: &str) -> HeaderMap {
+        let mut m = HeaderMap::new();
+        m.insert("host", HeaderValue::from_str(h).unwrap());
+        m
+    }
+
+    #[test]
+    fn host_without_port_strips_ipv4_and_bracket_v6() {
+        assert_eq!(
+            host_without_port("dfw1.relaygateway.net:8080"),
+            "dfw1.relaygateway.net"
+        );
+        assert_eq!(host_without_port("127.0.0.1:8080"), "127.0.0.1");
+        assert_eq!(host_without_port("[::1]:8080"), "::1");
+        assert_eq!(host_without_port("localhost"), "localhost");
+    }
+
+    #[test]
+    fn node_ops_api_allows_apex_and_loopback() {
+        let node = Some("dfw1.relaygateway.net");
+        assert!(host_is_node_ops_api(node, &host("dfw1.relaygateway.net")));
+        assert!(host_is_node_ops_api(
+            node,
+            &host("dfw1.relaygateway.net:8080")
+        ));
+        assert!(host_is_node_ops_api(node, &host("127.0.0.1:8080")));
+        assert!(host_is_node_ops_api(node, &host("localhost")));
+        assert!(host_is_node_ops_api(node, &host("[::1]:8080")));
+        assert!(host_is_node_ops_api(None, &host("anything.example")));
+    }
+
+    #[test]
+    fn node_ops_api_rejects_parked_and_repo_subdomain() {
+        let node = Some("dfw1.relaygateway.net");
+        assert!(!host_is_node_ops_api(node, &host("clevertree.net")));
+        assert!(!host_is_node_ops_api(
+            node,
+            &host("clevertree-site.dfw1.relaygateway.net")
+        ));
+    }
 }

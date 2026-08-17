@@ -15,10 +15,7 @@ pub fn request_headers_object(headers: &HeaderMap) -> Value {
     let mut m = Map::new();
     for (name, val) in headers.iter() {
         let name_lc = name.as_str().to_ascii_lowercase();
-        if SKIP_HEADERS
-            .iter()
-            .any(|s| name_lc.eq_ignore_ascii_case(s))
-        {
+        if SKIP_HEADERS.iter().any(|s| name_lc.eq_ignore_ascii_case(s)) {
             continue;
         }
         if HeaderName::try_from(name.as_str()).is_err() {

@@ -5,7 +5,7 @@ mod tests {
     use axum::http::header::{ACCEPT, CONTENT_TYPE, HOST};
     use axum::{
         extract::{Path as AxPath, State},
-        http::{HeaderMap, StatusCode},
+        http::{HeaderMap, Method, StatusCode},
         response::IntoResponse,
         Json,
     };
@@ -32,6 +32,12 @@ mod tests {
     fn host_header(repo: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
         h.insert(HOST, format!("{}.test.local", repo).parse().expect("host"));
+        h
+    }
+
+    fn apex_host() -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(HOST, "test.local".parse().expect("host"));
         h
     }
 
@@ -121,9 +127,7 @@ server:
         let mut tb = repo.treebuilder(None).unwrap();
         tb.insert(".relay.yaml", config_oid, 0o100644).unwrap();
         let mut tb_server = repo.treebuilder(None).unwrap();
-        tb_server
-            .insert("query.cs", cs_oid, 0o100644)
-            .unwrap();
+        tb_server.insert("query.cs", cs_oid, 0o100644).unwrap();
         let server_tid = tb_server.write().unwrap();
         let mut tb_hooks = repo.treebuilder(None).unwrap();
         tb_hooks.insert("server", server_tid, 0o040000).unwrap();
@@ -237,6 +241,132 @@ server:
             .unwrap()
             .to_vec();
         assert_eq!(body_bytes, file_content);
+    }
+
+    fn site_with_indexes(repo_dir: &std::path::Path) {
+        let repo_path = repo_dir.join("site.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("relay", "relay@local").unwrap();
+        let index_html = repo.blob(b"<html>home</html>").unwrap();
+        let index_json = repo.blob(br#"{"ok":true}"#).unwrap();
+        let blog_index = repo.blob(b"<html>blog</html>").unwrap();
+        let post = repo.blob(b"# post\n").unwrap();
+        let mut tb_blog = repo.treebuilder(None).unwrap();
+        tb_blog.insert("index.html", blog_index, 0o100644).unwrap();
+        tb_blog.insert("post.md", post, 0o100644).unwrap();
+        let blog_tid = tb_blog.write().unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert("index.html", index_html, 0o100644).unwrap();
+        tb.insert("index.json", index_json, 0o100644).unwrap();
+        tb.insert("blog", blog_tid, 0o040000).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_root_tree_header_lists_despite_index_html() {
+        let repo_dir = tempdir().unwrap();
+        site_with_indexes(repo_dir.path());
+        let state = test_state(repo_dir.path().to_path_buf());
+        let mut headers = host_header("site");
+        headers.insert(HEADER_TREE, "1".parse().unwrap());
+        let response = handlers::get_root(State(state), headers, None).await;
+        let (parts, body) = response.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let ct = parts
+            .headers
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            ct.contains(git::RELAY_TREE_MEDIA_TYPE),
+            "expected tree listing content-type, got {ct:?}"
+        );
+        let json: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(body, usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(json["schema"], "relay.tree.v1");
+        let names: Vec<&str> = json["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"index.html"));
+        assert!(names.contains(&"blog"));
+    }
+
+    #[tokio::test]
+    async fn test_get_root_without_tree_header_is_not_listing() {
+        let repo_dir = tempdir().unwrap();
+        site_with_indexes(repo_dir.path());
+        let state = test_state(repo_dir.path().to_path_buf());
+        let headers = host_header("site");
+        let response = handlers::get_root(State(state), headers, None).await;
+        let (parts, body) = response.into_response().into_parts();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("relay.tree.v1"),
+            "default GET / must not be a tree listing, status={} body={text}",
+            parts.status
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_dir_tree_header_lists_despite_index_html() {
+        let repo_dir = tempdir().unwrap();
+        site_with_indexes(repo_dir.path());
+        let state = test_state(repo_dir.path().to_path_buf());
+        let mut headers = host_header("site");
+        headers.insert(HEADER_TREE, "1".parse().unwrap());
+        let response =
+            handlers::handle_get_file(State(state), headers, AxPath("blog".to_string()), None)
+                .await;
+        let (parts, body) = response.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let json: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(body, usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(json["schema"], "relay.tree.v1");
+        assert_eq!(json["path"], "blog");
+        let names: Vec<&str> = json["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"index.html"));
+        assert!(names.contains(&"post.md"));
+    }
+
+    #[tokio::test]
+    async fn test_get_index_json_with_tree_header_still_blob() {
+        let repo_dir = tempdir().unwrap();
+        site_with_indexes(repo_dir.path());
+        let state = test_state(repo_dir.path().to_path_buf());
+        let mut headers = host_header("site");
+        headers.insert(HEADER_TREE, "1".parse().unwrap());
+        let response = handlers::handle_get_file(
+            State(state),
+            headers,
+            AxPath("index.json".to_string()),
+            None,
+        )
+        .await;
+        let (parts, body) = response.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let ct = parts
+            .headers
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            !ct.contains(git::RELAY_TREE_MEDIA_TYPE),
+            "must serve the JSON blob, got {ct:?}"
+        );
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        assert_eq!(bytes.as_ref(), br#"{"ok":true}"#);
     }
 
     /// GET without X-Relay-Branch uses bare repo HEAD (e.g. master-only repos).
@@ -387,10 +517,7 @@ server:
         let h = host_header("repo");
         let selected = helpers::repo_from_host(&state, Some("test.local"), &h);
         assert_eq!(selected, Some("repo".to_string()));
-        assert_eq!(
-            git::repo_names_for_state(&state),
-            vec!["repo".to_string()]
-        );
+        assert_eq!(git::repo_names_for_state(&state), vec!["repo".to_string()]);
     }
 
     /// No bare repos → no selection
@@ -627,9 +754,7 @@ export default function run(ctx, next) {
         server.insert("get.cs", get_cs_oid, 0o100644).unwrap();
         let server_id = server.write().unwrap();
         let mut client = repo.treebuilder(None).unwrap();
-        client
-            .insert("get.jsx", client_get_oid, 0o100644)
-            .unwrap();
+        client.insert("get.jsx", client_get_oid, 0o100644).unwrap();
         let client_id = client.write().unwrap();
         let mut hooks = repo.treebuilder(None).unwrap();
         hooks.insert("server", server_id, 0o040000).unwrap();
@@ -637,19 +762,14 @@ export default function run(ctx, next) {
         let hooks_id = hooks.write().unwrap();
 
         let mut root_tree = repo.treebuilder(None).unwrap();
-        root_tree
-            .insert(".relay.yaml", yaml_oid, 0o100644)
-            .unwrap();
+        root_tree.insert(".relay.yaml", yaml_oid, 0o100644).unwrap();
         root_tree.insert("hooks", hooks_id, 0o040000).unwrap();
         let tree_id = root_tree.write().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
         repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
             .unwrap();
 
-        let state = parked_state(
-            root,
-            &[("relay.paradigmthreat.net", "park-site")],
-        );
+        let state = parked_state(root, &[("relay.paradigmthreat.net", "park-site")]);
 
         let mut headers = HeaderMap::new();
         headers.insert(HOST, "relay.paradigmthreat.net".parse().unwrap());
@@ -1271,8 +1391,12 @@ export default function run(ctx) {
         tb_data.insert("t", t_tid, 0o040000).unwrap();
         let data_tid = tb_data.write().unwrap();
         let mut tb_server = repo.treebuilder(None).unwrap();
-        tb_server.insert("index.cs", index_cs_oid, 0o100644).unwrap();
-        tb_server.insert("query.cs", query_cs_oid, 0o100644).unwrap();
+        tb_server
+            .insert("index.cs", index_cs_oid, 0o100644)
+            .unwrap();
+        tb_server
+            .insert("query.cs", query_cs_oid, 0o100644)
+            .unwrap();
         tb_server.insert("mcp.cs", mcp_cs_oid, 0o100644).unwrap();
         let server_tid = tb_server.write().unwrap();
         let mut tb_hooks = repo.treebuilder(None).unwrap();
@@ -1293,6 +1417,8 @@ export default function run(ctx) {
 
         let health = handlers::mcp::get_mcp(
             State(state.clone()),
+            Method::GET,
+            apex_host(),
             AxPath("repo".to_string()),
             axum::extract::Query(
                 [("health".to_string(), "1".to_string())]
@@ -1422,8 +1548,12 @@ export default function run(ctx) {
         let index_cs_oid = repo.blob(INDEX_STUB_CS.as_bytes()).unwrap();
         let query_cs_oid = repo.blob(query_cs.as_bytes()).unwrap();
         let mut tb_server = repo.treebuilder(None).unwrap();
-        tb_server.insert("index.cs", index_cs_oid, 0o100644).unwrap();
-        tb_server.insert("query.cs", query_cs_oid, 0o100644).unwrap();
+        tb_server
+            .insert("index.cs", index_cs_oid, 0o100644)
+            .unwrap();
+        tb_server
+            .insert("query.cs", query_cs_oid, 0o100644)
+            .unwrap();
         let server_tid = tb_server.write().unwrap();
         let mut tb_hooks = repo.treebuilder(None).unwrap();
         tb_hooks.insert("server", server_tid, 0o040000).unwrap();
@@ -1487,8 +1617,12 @@ tools:
         let mut tb = repo.treebuilder(None).unwrap();
         tb.insert(".relay.yaml", repo.blob(yaml.as_bytes()).unwrap(), 0o100644)
             .unwrap();
-        tb.insert("mcp.yaml", repo.blob(mcp_yaml.as_bytes()).unwrap(), 0o100644)
-            .unwrap();
+        tb.insert(
+            "mcp.yaml",
+            repo.blob(mcp_yaml.as_bytes()).unwrap(),
+            0o100644,
+        )
+        .unwrap();
         tb.insert(
             "site-claims.json",
             repo.blob(claims.as_bytes()).unwrap(),
@@ -1502,7 +1636,8 @@ tools:
         let server_tid = tb_server.write().unwrap();
         let mut tb_hooks = repo.treebuilder(None).unwrap();
         tb_hooks.insert("server", server_tid, 0o040000).unwrap();
-        tb.insert("hooks", tb_hooks.write().unwrap(), 0o040000).unwrap();
+        tb.insert("hooks", tb_hooks.write().unwrap(), 0o040000)
+            .unwrap();
         let tree = repo.find_tree(tb.write().unwrap()).unwrap();
         repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
             .unwrap();
@@ -1576,32 +1711,58 @@ server:
         let repo = Repository::init_bare(&repo_path).unwrap();
         let sig = Signature::now("relay", "relay@local").unwrap();
         let mut tb = repo.treebuilder(None).unwrap();
-        tb.insert(".relay.yaml", repo.blob(yaml2.as_bytes()).unwrap(), 0o100644)
-            .unwrap();
-        tb.insert("mcp.yaml", repo.blob(mcp_yaml.as_bytes()).unwrap(), 0o100644)
-            .unwrap();
-        tb.insert("index.json", repo.blob(index_json.as_bytes()).unwrap(), 0o100644)
-            .unwrap();
+        tb.insert(
+            ".relay.yaml",
+            repo.blob(yaml2.as_bytes()).unwrap(),
+            0o100644,
+        )
+        .unwrap();
+        tb.insert(
+            "mcp.yaml",
+            repo.blob(mcp_yaml.as_bytes()).unwrap(),
+            0o100644,
+        )
+        .unwrap();
+        tb.insert(
+            "index.json",
+            repo.blob(index_json.as_bytes()).unwrap(),
+            0o100644,
+        )
+        .unwrap();
         let mut tb_data = repo.treebuilder(None).unwrap();
         tb_data
-            .insert("events.json", repo.blob(events.as_bytes()).unwrap(), 0o100644)
+            .insert(
+                "events.json",
+                repo.blob(events.as_bytes()).unwrap(),
+                0o100644,
+            )
             .unwrap();
-        tb.insert("data", tb_data.write().unwrap(), 0o040000).unwrap();
+        tb.insert("data", tb_data.write().unwrap(), 0o040000)
+            .unwrap();
         let mut tb_server = repo.treebuilder(None).unwrap();
         tb_server
             .insert("mcp.cs", repo.blob(mcp_cs.as_bytes()).unwrap(), 0o100644)
             .unwrap();
         tb_server
-            .insert("query.cs", repo.blob(query_cs.as_bytes()).unwrap(), 0o100644)
+            .insert(
+                "query.cs",
+                repo.blob(query_cs.as_bytes()).unwrap(),
+                0o100644,
+            )
             .unwrap();
         tb_server
-            .insert("index.cs", repo.blob(INDEX_STUB_CS.as_bytes()).unwrap(), 0o100644)
+            .insert(
+                "index.cs",
+                repo.blob(INDEX_STUB_CS.as_bytes()).unwrap(),
+                0o100644,
+            )
             .unwrap();
         let mut tb_hooks = repo.treebuilder(None).unwrap();
         tb_hooks
             .insert("server", tb_server.write().unwrap(), 0o040000)
             .unwrap();
-        tb.insert("hooks", tb_hooks.write().unwrap(), 0o040000).unwrap();
+        tb.insert("hooks", tb_hooks.write().unwrap(), 0o040000)
+            .unwrap();
         let tree = repo.find_tree(tb.write().unwrap()).unwrap();
         repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
             .unwrap();
@@ -1681,7 +1842,8 @@ server:
         assert_eq!(einner["projectSignedYear"], -670);
         assert!(einner["elapsed"]["calendarYears"].as_i64().unwrap() > 2000);
 
-        let del = handlers::mcp::delete_mcp(State(state), AxPath("repo".to_string())).await;
+        let del =
+            handlers::mcp::delete_mcp(State(state), apex_host(), AxPath("repo".to_string())).await;
         assert_eq!(del.into_response().status(), StatusCode::NO_CONTENT);
     }
 
@@ -1768,8 +1930,12 @@ server:
         let repo_dir = tempdir().unwrap();
         std::fs::create_dir_all(repo_dir.path()).unwrap();
         let state = test_state(repo_dir.path().to_path_buf());
-        let r1 =
-            handlers::post_ensure_bare(State(state.clone()), AxPath("new-repo".to_string())).await;
+        let r1 = handlers::post_ensure_bare(
+            State(state.clone()),
+            apex_host(),
+            AxPath("new-repo".to_string()),
+        )
+        .await;
         let (parts, body) = r1.into_response().into_parts();
         assert_eq!(parts.status, StatusCode::CREATED);
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
@@ -1778,7 +1944,9 @@ server:
         assert_eq!(v["created"], true);
         assert!(repo_dir.path().join("new-repo.git").exists());
 
-        let r2 = handlers::post_ensure_bare(State(state), AxPath("new-repo".to_string())).await;
+        let r2 =
+            handlers::post_ensure_bare(State(state), apex_host(), AxPath("new-repo".to_string()))
+                .await;
         let (parts2, body2) = r2.into_response().into_parts();
         assert_eq!(parts2.status, StatusCode::OK);
         let bytes2 = axum::body::to_bytes(body2, usize::MAX).await.unwrap();
@@ -1798,7 +1966,9 @@ server:
     async fn test_post_ensure_bare_rejects_bad_slug() {
         let repo_dir = tempdir().unwrap();
         let state = test_state(repo_dir.path().to_path_buf());
-        let r = handlers::post_ensure_bare(State(state), AxPath("../evil".to_string())).await;
+        let r =
+            handlers::post_ensure_bare(State(state), apex_host(), AxPath("../evil".to_string()))
+                .await;
         let (parts, _) = r.into_response().into_parts();
         assert_eq!(parts.status, StatusCode::BAD_REQUEST);
     }
@@ -1808,7 +1978,8 @@ server:
         let repo_dir = tempdir().unwrap();
         let mut state = test_state(repo_dir.path().to_path_buf());
         state.git_ensure_bare_enabled = false;
-        let r = handlers::post_ensure_bare(State(state), AxPath("x".to_string())).await;
+        let r =
+            handlers::post_ensure_bare(State(state), apex_host(), AxPath("x".to_string())).await;
         let (parts, _) = r.into_response().into_parts();
         assert_eq!(parts.status, StatusCode::FORBIDDEN);
     }
@@ -1937,21 +2108,362 @@ server:
 
         let state = Config::desktop_local_state(checkout.clone(), "repo".into());
         let mut headers = host_header("repo");
-        headers.insert(
-            crate::types::HEADER_BRANCH,
-            "main".parse().unwrap(),
-        );
-        let r = git::git_resolve_and_respond(
-            &state,
-            &headers,
-            "main",
-            "repo",
-            "local-only.txt",
-            None,
-        );
+        headers.insert(crate::types::HEADER_BRANCH, "main".parse().unwrap());
+        let r =
+            git::git_resolve_and_respond(&state, &headers, "main", "repo", "local-only.txt", None);
         let GitResolveResult::Respond(resp) = r else {
             panic!("expected worktree file");
         };
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    #[serial(ipfs_status_env)]
+    async fn get_api_status_on_node_host_is_operator_json() {
+        use crate::build_router;
+        use axum::body::{to_bytes, Body};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path().to_path_buf());
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/status")
+                    .header("host", "test.local")
+                    .header("accept", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["schema_version"], 3);
+        assert!(v.get("ipfs_ok").is_some());
+        assert!(v["self"].get("ipfs").is_some());
+        assert_eq!(v["healthy"], true);
+    }
+
+    #[tokio::test]
+    #[serial(ipfs_status_env)]
+    async fn get_api_status_html_from_accept() {
+        use crate::build_router;
+        use axum::body::{to_bytes, Body};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path().to_path_buf());
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/status")
+                    .header("host", "test.local")
+                    .header("accept", "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("Relay status"), "{text}");
+        assert!(text.contains("IPFS seed"), "{text}");
+        assert!(!text.contains("\"schema_version\"") || text.contains("<pre>"));
+    }
+
+    #[tokio::test]
+    #[serial(ipfs_status_env)]
+    async fn get_api_status_healthy_when_ipfs_daemon_down() {
+        use crate::build_router;
+        use axum::body::{to_bytes, Body};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let prev_api = std::env::var("RELAY_IPFS_API").ok();
+        let prev_peers = std::env::var("RELAY_MASTER_PEER_LIST").ok();
+        unsafe {
+            std::env::set_var("RELAY_IPFS_API", "http://127.0.0.1:1");
+            std::env::remove_var("RELAY_MASTER_PEER_LIST");
+        }
+
+        let dir = tempdir().unwrap();
+        let state = test_state(dir.path().to_path_buf());
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/status?strict=1")
+                    .header("host", "test.local")
+                    .header("accept", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        unsafe {
+            match prev_api {
+                Some(x) => std::env::set_var("RELAY_IPFS_API", x),
+                None => std::env::remove_var("RELAY_IPFS_API"),
+            }
+            match prev_peers {
+                Some(x) => std::env::set_var("RELAY_MASTER_PEER_LIST", x),
+                None => std::env::remove_var("RELAY_MASTER_PEER_LIST"),
+            }
+        }
+
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["healthy"], true);
+        assert_eq!(v["ipfs_ok"], false);
+        assert_eq!(v["self"]["ipfs"]["enabled"], true);
+        assert_eq!(v["self"]["ipfs"]["api_reachable"], false);
+    }
+
+    #[tokio::test]
+    async fn get_api_status_on_parked_host_is_not_operator() {
+        use crate::build_router;
+        use axum::body::{to_bytes, Body};
+        use axum::http::Request;
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        let dir = tempdir().unwrap();
+        let repo_path = dir.path().join("site.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+        let blob = repo.blob(b"<p>hi</p>").unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert("index.html", blob, 0o100644).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        let mut state = test_state(dir.path().to_path_buf());
+        let mut parked = std::collections::HashMap::new();
+        parked.insert("clevertree.net".into(), "site".into());
+        state.parked_domains = Some(Arc::new(parked));
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/status")
+                    .header("host", "clevertree.net")
+                    .header("accept", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            status != StatusCode::OK
+                || !text.contains("\"schema_version\"")
+                || !text.contains("\"ipfs_ok\""),
+            "parked Host must not get operator status JSON: {status} {text}"
+        );
+    }
+
+    struct CatalogPathGuard {
+        prev: Option<String>,
+    }
+
+    impl CatalogPathGuard {
+        fn set(path: &std::path::Path) -> Self {
+            let prev = std::env::var("RELAY_MASTER_CATALOG_PATH").ok();
+            unsafe {
+                std::env::set_var("RELAY_MASTER_CATALOG_PATH", path);
+            }
+            Self { prev }
+        }
+    }
+
+    impl Drop for CatalogPathGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var("RELAY_MASTER_CATALOG_PATH", v),
+                    None => std::env::remove_var("RELAY_MASTER_CATALOG_PATH"),
+                }
+            }
+        }
+    }
+
+    fn catalog_worktree(repo: &str, origin: Option<&str>) -> tempfile::TempDir {
+        let d = tempdir().unwrap();
+        let repos = d.path().join("catalog/repos");
+        std::fs::create_dir_all(&repos).unwrap();
+        let origin_json = match origin {
+            Some(o) => format!(r#""publish_origin": "{o}","#),
+            None => String::new(),
+        };
+        std::fs::write(
+            repos.join(format!("{repo}.json")),
+            format!(
+                r#"{{
+                  "repo": "{repo}",
+                  "tier": "hosted",
+                  "relay_root_commit": "{}",
+                  "publish_branch": "main",
+                  {origin_json}
+                  "signing_keys_source": "repo"
+                }}"#,
+                "a".repeat(40)
+            ),
+        )
+        .unwrap();
+        d
+    }
+
+    fn unsigned_write_fixture(dir: &std::path::Path, repo: &str) {
+        let repo_path = dir.join(format!("{repo}.git"));
+        let git = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("relay", "relay@local").unwrap();
+        let yaml = br#"
+git:
+  branchRules:
+    default:
+      requireSigned: false
+      allowUnsigned: true
+"#;
+        let yaml_oid = git.blob(yaml).unwrap();
+        let hello = git.blob(b"hello").unwrap();
+        let mut tb = git.treebuilder(None).unwrap();
+        tb.insert(".relay.yaml", yaml_oid, 0o100644).unwrap();
+        tb.insert("hello.txt", hello, 0o100644).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = git.find_tree(tree_id).unwrap();
+        git.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+    }
+
+    fn host_on(repo: &str, fqdn: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(HOST, format!("{repo}.{fqdn}").parse().expect("host"));
+        h
+    }
+
+    #[tokio::test]
+    #[serial(catalog_path_env)]
+    async fn put_delete_rejected_when_publish_origin_mismatches() {
+        let catalog = catalog_worktree("files", Some("dfw1.relaygateway.net"));
+        let _guard = CatalogPathGuard::set(catalog.path());
+        let repo_dir = tempdir().unwrap();
+        unsigned_write_fixture(repo_dir.path(), "files");
+        let mut state = test_state(repo_dir.path().to_path_buf());
+        state.node_fqdn = Some("lon1.relaygateway.net".into());
+        let headers = host_on("files", "lon1.relaygateway.net");
+
+        let put = handlers::put_file(
+            State(state.clone()),
+            headers.clone(),
+            AxPath("probe.txt".into()),
+            None,
+            bytes::Bytes::from_static(b"nope"),
+        )
+        .await
+        .into_response();
+        let (parts, body) = put.into_parts();
+        assert_eq!(parts.status, StatusCode::FORBIDDEN);
+        let text = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(text.contains("dfw1.relaygateway.net"), "{text}");
+        assert!(
+            text.contains("git://dfw1.relaygateway.net:9418/files.git"),
+            "{text}"
+        );
+        assert!(!text.contains("unsigned"), "{text}");
+
+        let del = handlers::delete_file(State(state), headers, AxPath("hello.txt".into()), None)
+            .await
+            .into_response();
+        let (parts, body) = del.into_parts();
+        assert_eq!(parts.status, StatusCode::FORBIDDEN);
+        let text = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(
+            text.contains("publish_origin=dfw1.relaygateway.net"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial(catalog_path_env)]
+    async fn put_allowed_when_publish_origin_matches() {
+        let catalog = catalog_worktree("files", Some("dfw1.relaygateway.net"));
+        let _guard = CatalogPathGuard::set(catalog.path());
+        let repo_dir = tempdir().unwrap();
+        unsigned_write_fixture(repo_dir.path(), "files");
+        let mut state = test_state(repo_dir.path().to_path_buf());
+        state.node_fqdn = Some("dfw1.relaygateway.net".into());
+        let headers = host_on("files", "dfw1.relaygateway.net");
+        let put = handlers::put_file(
+            State(state),
+            headers,
+            AxPath("probe.txt".into()),
+            None,
+            bytes::Bytes::from_static(b"ok"),
+        )
+        .await
+        .into_response();
+        let (parts, body) = put.into_parts();
+        assert_eq!(parts.status, StatusCode::OK, "origin match must not 403");
+        let text = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(text.contains("\"commit\""), "{text}");
+        assert!(!text.contains("publish_origin"), "{text}");
+    }
+
+    #[tokio::test]
+    #[serial(catalog_path_env)]
+    async fn put_allowed_when_publish_origin_omitted_in_catalog() {
+        let catalog = catalog_worktree("files", None);
+        let _guard = CatalogPathGuard::set(catalog.path());
+        let repo_dir = tempdir().unwrap();
+        unsigned_write_fixture(repo_dir.path(), "files");
+        let mut state = test_state(repo_dir.path().to_path_buf());
+        state.node_fqdn = Some("lon1.relaygateway.net".into());
+        let headers = host_on("files", "lon1.relaygateway.net");
+        let put = handlers::put_file(
+            State(state),
+            headers,
+            AxPath("probe.txt".into()),
+            None,
+            bytes::Bytes::from_static(b"compat"),
+        )
+        .await
+        .into_response();
+        assert_eq!(put.into_response().status(), StatusCode::OK);
     }
 }

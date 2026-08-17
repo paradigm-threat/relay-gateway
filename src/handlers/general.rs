@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use axum::{
+    body::Bytes,
     extract::{Path as AxPath, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
@@ -143,12 +144,48 @@ pub async fn post_api_config(State(state): State<AppState>) -> impl IntoResponse
     (StatusCode::OK, Json(config))
 }
 
+/// GET/HEAD/POST `/api/config` on the node FQDN (or loopback). Other Hosts: site files or 404.
+pub async fn api_config(
+    State(state): State<AppState>,
+    method: axum::http::Method,
+    headers: HeaderMap,
+    query: Option<Query<HashMap<String, String>>>,
+    body: Bytes,
+) -> axum::response::Response {
+    if let Some(resp) = super::node_api::if_not_node_ops(
+        state.clone(),
+        method.clone(),
+        headers,
+        "api/config".into(),
+        query,
+        body,
+    )
+    .await
+    {
+        return resp;
+    }
+    if method == axum::http::Method::PUT || method == axum::http::Method::DELETE {
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            [(axum::http::header::ALLOW, "GET, HEAD, POST")],
+            "Use GET, HEAD, or POST for /api/config on the node Host",
+        )
+            .into_response();
+    }
+    let resp = post_api_config(State(state)).await.into_response();
+    if method == axum::http::Method::HEAD {
+        return super::node_api::empty_head(resp);
+    }
+    resp
+}
+
 pub(crate) fn summarize_features(m: &std::sync::Arc<serde_json::Value>) -> serde_json::Value {
     let f = m.get("features").cloned().unwrap_or(serde_json::json!({}));
     let piper = f.get("piper_tts");
     let npm = f.get("npm_extensions");
     let translation = f.get("text_translation");
     let libre = f.get("libretranslate_api");
+    let ipfs = f.get("ipfs_kubo");
     let voice_count = piper
         .and_then(|p| p.get("voices"))
         .and_then(|v| v.as_array())
@@ -182,6 +219,13 @@ pub(crate) fn summarize_features(m: &std::sync::Arc<serde_json::Value>) -> serde
             "http_port": libre.and_then(|p| p.get("http_port")),
             "load_only": libre.and_then(|p| p.get("load_only")),
         },
+        "ipfs_kubo": {
+            "enabled": ipfs.and_then(|p| p.get("enabled")),
+            "api": ipfs.and_then(|p| p.get("api")),
+            "gateway": ipfs.and_then(|p| p.get("gateway")),
+            "swarm_port": ipfs.and_then(|p| p.get("swarm_port")),
+            "service": ipfs.and_then(|p| p.get("service")),
+        },
     })
 }
 
@@ -207,7 +251,9 @@ pub async fn post_git_pull(State(state): State<AppState>, headers: HeaderMap) ->
     {
         match &state.serve_context {
             crate::types::ServeContext::LocalWorktree { checkout, .. } => (checkout.clone(), n),
-            crate::types::ServeContext::BareFleet => (state.repo_path.join(format!("{}.git", n)), n),
+            crate::types::ServeContext::BareFleet => {
+                (state.repo_path.join(format!("{}.git", n)), n)
+            }
         }
     } else if names.is_empty() && Repository::open_bare(&state.repo_path).is_ok() {
         let stem = state
@@ -514,7 +560,13 @@ pub async fn options_capabilities(
     let allow = "GET, PUT, DELETE, OPTIONS, QUERY";
     let mut body = serde_json::json!({
         "ok": true,
-        "capabilities": {"supports": ["GET","PUT","DELETE","OPTIONS","QUERY"]},
+        "capabilities": {
+            "supports": ["GET","PUT","DELETE","OPTIONS","QUERY"],
+            "tree": {
+                "header": crate::types::HEADER_TREE,
+                "mediaType": git::RELAY_TREE_MEDIA_TYPE
+            }
+        },
         "repos": repos_json,
         "currentBranch": branch,
         "currentRepo": repo_name.clone().unwrap_or_default(),
@@ -567,12 +619,45 @@ fn site_shell_ssr_failed_response() -> axum::response::Response {
         .into_response()
 }
 
+pub(crate) fn respond_relay_tree_root(
+    state: &AppState,
+    headers: &HeaderMap,
+    query: Option<&HashMap<String, String>>,
+) -> axum::response::Response {
+    let Some(repo_name) =
+        helpers::repo_from_host_or_default(state, state.node_fqdn.as_deref(), headers)
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            "Not Found\n\nNo repository for this Host; cannot list a tree.\n",
+        )
+            .into_response();
+    };
+    let branch = helpers::branch_for_request(headers, state, Some(&repo_name));
+    match git::git_resolve_and_respond(state, headers, &branch, &repo_name, "", query) {
+        GitResolveResult::Respond(resp) => resp,
+        GitResolveResult::NotFound(_) => (
+            StatusCode::NOT_FOUND,
+            [
+                ("Content-Type", "text/plain".to_string()),
+                (HEADER_BRANCH, branch),
+                (HEADER_REPO, repo_name),
+            ],
+            "Not Found\n",
+        )
+            .into_response(),
+    }
+}
+
 pub async fn get_root(
     State(state): State<AppState>,
     headers: HeaderMap,
     query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
     let qmap = query.as_ref().map(|q| &q.0);
+    if git::wants_relay_tree(&headers) {
+        return respond_relay_tree_root(&state, &headers, qmap);
+    }
     // `{repo}.{node}` subdomain or parked catalog domain: site shell before gateway SPA.
     let routed_repo = helpers::repo_from_host(&state, state.node_fqdn.as_deref(), &headers)
         .or_else(|| helpers::repo_from_parked_domain(&state, &headers));
@@ -710,9 +795,12 @@ pub async fn post_github_hook(
 }
 
 /// Create `RELAY_REPO_PATH/<repo>.git` when missing so `git push git://host:9418/<repo>.git` is accepted.
+/// Same create path as first-push provision in `relay-git-proxy`.
 /// Relay does **not** implement git-protocol authentication; optional policy lives in per-repo `.relay.yaml` / hooks.
+/// Node FQDN / loopback only (not parked Hosts).
 pub async fn post_ensure_bare(
     State(state): State<AppState>,
+    headers: HeaderMap,
     AxPath(repo): AxPath<String>,
 ) -> impl IntoResponse {
     #[derive(Serialize)]
@@ -723,6 +811,10 @@ pub async fn post_ensure_bare(
         path: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+    }
+
+    if !helpers::host_is_node_ops_api(state.node_fqdn.as_deref(), &headers) {
+        return StatusCode::NOT_FOUND.into_response();
     }
 
     if !state.git_ensure_bare_enabled {
@@ -758,22 +850,8 @@ pub async fn post_ensure_bare(
 
     let root = state.repo_path.clone();
     let slug_for_task = slug.clone();
-    let join = tokio::task::spawn_blocking(move || -> Result<(bool, PathBuf), String> {
-        let dest = root.join(format!("{}.git", slug_for_task));
-        std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-        if dest.exists() {
-            let r = Repository::open(&dest).map_err(|e| e.to_string())?;
-            if !r.is_bare() {
-                return Err("path exists but is not a bare git repository".to_string());
-            }
-            git::apply_bare_receive_security_at_path(&dest)?;
-            return Ok((false, dest));
-        }
-        Repository::init_bare(&dest).map_err(|e| e.to_string())?;
-        git::apply_bare_receive_security_at_path(&dest)?;
-        Ok((true, dest))
-    })
-    .await;
+    let join =
+        tokio::task::spawn_blocking(move || git::ensure_bare_repo(&root, &slug_for_task)).await;
 
     let Ok(task_result) = join else {
         return (
@@ -825,8 +903,10 @@ pub async fn post_ensure_bare(
 
 /// `POST /api/index/warm/:repo` — full SearchStore regen from git (default branch `main`).
 /// Always rebuilds; leftover `index.db.json` / a matching store head must not skip ingest.
+/// Node FQDN / loopback only (not parked Hosts).
 pub async fn post_index_warm(
     State(state): State<AppState>,
+    headers: HeaderMap,
     AxPath(repo): AxPath<String>,
 ) -> impl IntoResponse {
     #[derive(Serialize)]
@@ -838,6 +918,10 @@ pub async fn post_index_warm(
         tip: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+    }
+
+    if !helpers::host_is_node_ops_api(state.node_fqdn.as_deref(), &headers) {
+        return StatusCode::NOT_FOUND.into_response();
     }
 
     let slug = match crate::peer_hook::validate_repo_slug(&repo) {

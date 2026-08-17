@@ -12,7 +12,7 @@ Normative **product / ops** notes for serving **relay-server** and **multiple st
 
 ### Git sync to relay nodes (normative)
 
-Pushes that **land in relay’s bare repos** MUST use the **git daemon URL** — **`git://{node}:{port}/{repo}.git`** (default port **9418**). Do not use **SSH (`git@…`)** for that path; SSH is for **server administration**, not relay’s published git service. **Normative human-facing form:** **`git://relaygateway.net/{repo}.git`** — implement with **DNS / L4 routing** to the right node (**[`relay-master/README.md`](../../relay-master/README.md)**). See **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (seed repos, **`POST /api/git/ensure-bare/:repo`**). Until push-time bare provisioning exists, **`git daemon`** rejects unknown paths first; see **[`README.md`](../README.md)** (Git daemon).
+Pushes that **land in relay’s bare repos** MUST use the **git daemon URL** — **`git://{node}:{port}/{repo}.git`** (default port **9418**, **`relay-git-proxy`**). Do not use **SSH (`git@…`)** for that path; SSH is for **server administration**, not relay’s published git service. **Normative human-facing form:** **`git://relaygateway.net/{repo}.git`** — implement with **DNS / L4 routing** to the right node (**[`relay-master/README.md`](../../relay-master/README.md)**). See **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (seed repos). First **`git-receive-pack`** creates a missing bare when **`RELAY_GIT_ENSURE_BARE_ENABLED`** is on and catalog **`publish_origin`** allows this node; **`POST /api/git/ensure-bare/:repo`** remains for pre-create. See **[`README.md`](../README.md)** (Git daemon).
 
 ---
 
@@ -214,7 +214,7 @@ Remove support in **all** maintained repos so the protocol has a **single** bran
 | GitLab CI **`package:linode-tgz`** + tests/smoke | **Done** (`.gitlab-ci.yml`) |
 | **`relay-master`** catalog (**`.gitmodules`** + **`relayRootCommit`**) + **`sync-relay-catalog.sh`** | **Done** (workspace **[`relay-master`](../../relay-master)**); **`relay-server`** still consumes emitted YAML |
 | **`POST /api/git/ensure-bare/:repo`** + normative **`git://`** sync docs | **Done** |
-| First **`git push`** creates bare when allowed (gateway / smart HTTP; root-commit identity) | **Planned** (see **`README`**, **`RELAY_TRUST_AND_BOOTSTRAP`**) |
+| First **`git push`** creates bare when allowed (`relay-git-proxy`; same as ensure-bare + `publish_origin`) | **Done** |
 | **`scripts/relay-linode-redeploy-seed.sh`** + checklist in **`DEPLOY_LINODE.md`** | **Done** |
 | Caddy/nginx + **static `root` / `file_server`** + relay split | Planned |
 | **No** Next/Node **HTTP** or **`npm run build`** on relay for marketing sites | **Normative** (this doc) |

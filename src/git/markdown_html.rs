@@ -4,19 +4,72 @@ use md2ast::{parse as md2ast_parse, Node, TranspileOptions};
 use serde_json::Value;
 use std::collections::HashSet;
 
-use crate::git::portrait::{
-    portrait_sibling_in_set, portrait_sibling_src, PORTRAIT_MEDIA_QUERY,
-};
+use crate::git::portrait::{portrait_sibling_in_set, portrait_sibling_src, PORTRAIT_MEDIA_QUERY};
 
 /// HTML tag allowlist for md2ast (standard blocks + paradigm-threat inline HTML).
 pub fn default_markdown_html_allowed_tags() -> Vec<String> {
     let mut tags: Vec<String> = [
-        "a", "abbr", "article", "b", "blockquote", "br", "cite", "code", "del", "div", "em",
-        "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "iframe", "img",
-        "ins", "li", "mark", "nav", "ol", "p", "picture", "pre", "q", "s", "section", "small",
-        "source", "span", "strong", "sub", "sup", "table", "tbody", "td", "th", "thead", "time",
-        "tr", "u", "ul", "video", "math", "annotation", "semantics", "mrow", "mi", "mo", "mn",
-        "msup", "msub", "mfrac", "mtext",
+        "a",
+        "abbr",
+        "article",
+        "b",
+        "blockquote",
+        "br",
+        "cite",
+        "code",
+        "del",
+        "div",
+        "em",
+        "figcaption",
+        "figure",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "hr",
+        "i",
+        "iframe",
+        "img",
+        "ins",
+        "li",
+        "mark",
+        "nav",
+        "ol",
+        "p",
+        "picture",
+        "pre",
+        "q",
+        "s",
+        "section",
+        "small",
+        "source",
+        "span",
+        "strong",
+        "sub",
+        "sup",
+        "table",
+        "tbody",
+        "td",
+        "th",
+        "thead",
+        "time",
+        "tr",
+        "u",
+        "ul",
+        "video",
+        "math",
+        "annotation",
+        "semantics",
+        "mrow",
+        "mi",
+        "mo",
+        "mn",
+        "msup",
+        "msub",
+        "mfrac",
+        "mtext",
     ]
     .into_iter()
     .map(str::to_string)
@@ -102,7 +155,11 @@ fn render_node_html(node: &Node, out: &mut String, portraits: Option<&HashSet<St
         Node::Text { content } => {
             out.push_str(&escape_html_text(content));
         }
-        Node::Element { tag, props, children } => {
+        Node::Element {
+            tag,
+            props,
+            children,
+        } => {
             let tag = tag.as_str();
             if tag.is_empty() {
                 render_nodes_html(children, out, portraits);
@@ -144,8 +201,20 @@ fn render_node_html(node: &Node, out: &mut String, portraits: Option<&HashSet<St
 fn is_void_html_tag(tag: &str) -> bool {
     matches!(
         tag,
-        "area" | "base" | "br" | "col" | "embed" | "hr" | "img" | "input" | "link" | "meta"
-            | "param" | "source" | "track" | "wbr"
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
     )
 }
 
@@ -252,7 +321,10 @@ mod tests {
     fn markdown_image_json_title_becomes_class() {
         let md = r#"![alt](/influence/conspiracy/embedding.jpg?w=360 '{"className":"sm:float-right clear-both"}')"#;
         let html = markdown_to_html_fragment(md).unwrap();
-        assert!(html.contains("class=\"sm:float-right clear-both\""), "html: {html}");
+        assert!(
+            html.contains("class=\"sm:float-right clear-both\""),
+            "html: {html}"
+        );
         assert!(!html.contains("title=\"{"));
     }
 
@@ -263,17 +335,13 @@ mod tests {
         )
         .unwrap();
         assert!(!html.contains("<picture>"), "html: {html}");
-        assert!(html.contains(
-            "src=\"/governance/war/presidential-alignment-scorecard-au046.png\""
-        ));
+        assert!(html.contains("src=\"/governance/war/presidential-alignment-scorecard-au046.png\""));
     }
 
     #[test]
     fn markdown_image_wraps_portrait_sibling_picture_when_in_set() {
         let mut set = HashSet::new();
-        set.insert(
-            "governance/war/presidential-alignment-scorecard-au046-portrait.png".into(),
-        );
+        set.insert("governance/war/presidential-alignment-scorecard-au046-portrait.png".into());
         let html = markdown_to_html_fragment_with_portraits(
             "![chart](/governance/war/presidential-alignment-scorecard-au046.png)",
             Some(&set),
@@ -313,17 +381,13 @@ mod tests {
         )
         .unwrap();
         assert!(!html.contains("<picture>"), "html: {html}");
-        assert!(html.contains(
-            "src=\"/governance/war/the-great-depression-was-planned.png\""
-        ));
+        assert!(html.contains("src=\"/governance/war/the-great-depression-was-planned.png\""));
     }
 
     #[test]
     fn markdown_portrait_asset_does_not_nest_another_portrait() {
         let mut set = HashSet::new();
-        set.insert(
-            "governance/war/presidential-alignment-scorecard-au046-portrait.png".into(),
-        );
+        set.insert("governance/war/presidential-alignment-scorecard-au046-portrait.png".into());
         let html = markdown_to_html_fragment_with_portraits(
             "![chart](/governance/war/presidential-alignment-scorecard-au046-portrait.png)",
             Some(&set),

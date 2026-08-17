@@ -89,7 +89,9 @@ pub async fn refresh_inner(app: &App) {
                                     tracing::info!("{msg}");
                                     crate::notify::notify(
                                         cfg.slack_webhook.as_deref(),
-                                        &format!("relay-ops dropped dead fleet A records: {stale:?}"),
+                                        &format!(
+                                            "relay-ops dropped dead fleet A records: {stale:?}"
+                                        ),
                                     )
                                     .await;
                                 }
@@ -156,12 +158,18 @@ pub async fn refresh_inner(app: &App) {
 
 pub async fn serve(app: App, bind: &str) -> anyhow::Result<()> {
     refresh_inner(&app).await;
-    let interval = app.cfg.probe_interval();
     let bg = app.clone();
     tokio::spawn(async move {
-        let mut t = tokio::time::interval(std::time::Duration::from_secs(interval));
         loop {
-            t.tick().await;
+            let secs = {
+                let g = bg.inner.lock().await;
+                crate::probe::next_probe_secs(
+                    &g.nodes,
+                    bg.cfg.probe_interval(),
+                    bg.cfg.probe_interval_down(),
+                )
+            };
+            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
             refresh_inner(&bg).await;
         }
     });
@@ -247,7 +255,10 @@ async fn fleet_dns_drop(State(app): State<App>) -> impl IntoResponse {
     }
     let g = app.inner.lock().await;
     let Some(ing) = g.ingress.clone() else {
-        return (StatusCode::BAD_REQUEST, "no fleetIngress in topology".into());
+        return (
+            StatusCode::BAD_REQUEST,
+            "no fleetIngress in topology".into(),
+        );
     };
     let keep = healthy_node_ips(&g.nodes);
     drop(g);
@@ -339,10 +350,14 @@ async fn job(State(app): State<App>, Json(body): Json<JobReq>) -> impl IntoRespo
         Err(e) => return (StatusCode::BAD_REQUEST, format!("{e:#}")),
     };
     let cfg = app.cfg.clone();
-    let target = body
-        .fqdn
-        .clone()
-        .unwrap_or_else(|| fleet.nodes.iter().map(|n| n.fqdn.clone()).collect::<Vec<_>>().join(","));
+    let target = body.fqdn.clone().unwrap_or_else(|| {
+        fleet
+            .nodes
+            .iter()
+            .map(|n| n.fqdn.clone())
+            .collect::<Vec<_>>()
+            .join(",")
+    });
     let started = match kind {
         "hosts" => {
             app.jobs
@@ -405,7 +420,7 @@ async fn job(State(app): State<App>, Json(body): Json<JobReq>) -> impl IntoRespo
                 .start_blocking("update", &target, {
                     let cfg = cfg.clone();
                     let fleet = fleet.clone();
-                    move || crate::fleet_cmd::update(&cfg, &fleet, false, true)
+                    move || crate::fleet_cmd::update(&cfg, &fleet, false, true, false)
                 })
                 .await
         }
@@ -443,13 +458,7 @@ async fn job(State(app): State<App>, Json(body): Json<JobReq>) -> impl IntoRespo
                     let cfg = cfg.clone();
                     let fleet = fleet.clone();
                     move || {
-                        crate::fleet_cmd::reclone_repo(
-                            &cfg,
-                            &fleet,
-                            false,
-                            &repo,
-                            peer.as_deref(),
-                        )
+                        crate::fleet_cmd::reclone_repo(&cfg, &fleet, false, &repo, peer.as_deref())
                     }
                 })
                 .await
@@ -481,9 +490,7 @@ async fn job(State(app): State<App>, Json(body): Json<JobReq>) -> impl IntoRespo
             if fqdn.is_empty() {
                 return (StatusCode::BAD_REQUEST, "fqdn required".into());
             }
-            app.jobs
-                .start_reclaim(cfg, fleet_all, fqdn, body.ip)
-                .await
+            app.jobs.start_reclaim(cfg, fleet_all, fqdn, body.ip).await
         }
         other => return (StatusCode::BAD_REQUEST, format!("unknown job kind {other}")),
     };
@@ -517,7 +524,12 @@ struct BrowseQ {
 
 async fn browse_port(app: &App, fqdn: &str) -> Result<u16, String> {
     let g = app.inner.lock().await;
-    if !g.fleet.nodes.iter().any(|n| n.fqdn.eq_ignore_ascii_case(fqdn)) {
+    if !g
+        .fleet
+        .nodes
+        .iter()
+        .any(|n| n.fqdn.eq_ignore_ascii_case(fqdn))
+    {
         return Err("unknown fleet host".into());
     }
     Ok(g.fleet.git_port())
@@ -526,7 +538,13 @@ async fn browse_port(app: &App, fqdn: &str) -> Result<u16, String> {
 async fn git_refs(State(app): State<App>, Query(q): Query<BrowseQ>) -> Response {
     let port = match browse_port(&app, &q.fqdn).await {
         Ok(p) => p,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e})),
+            )
+                .into_response()
+        }
     };
     match crate::browse::list_heads(&q.fqdn, port, &q.repo).await {
         Ok(v) => Json(v).into_response(),
@@ -541,7 +559,13 @@ async fn git_refs(State(app): State<App>, Query(q): Query<BrowseQ>) -> Response 
 async fn git_tree(State(app): State<App>, Query(q): Query<BrowseQ>) -> Response {
     let port = match browse_port(&app, &q.fqdn).await {
         Ok(p) => p,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e})),
+            )
+                .into_response()
+        }
     };
     let git_ref = q.git_ref.as_deref().unwrap_or("main");
     let prefix = q.prefix.as_deref().unwrap_or("");
@@ -558,7 +582,13 @@ async fn git_tree(State(app): State<App>, Query(q): Query<BrowseQ>) -> Response 
 async fn git_file(State(app): State<App>, Query(q): Query<BrowseQ>) -> Response {
     let port = match browse_port(&app, &q.fqdn).await {
         Ok(p) => p,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e})),
+            )
+                .into_response()
+        }
     };
     let git_ref = q.git_ref.as_deref().unwrap_or("main");
     let Some(path) = q.path.filter(|s| !s.is_empty()) else {

@@ -10,7 +10,7 @@ use crate::types::AppState;
 use crate::DEFAULT_BRANCH;
 use axum::{
     extract::{Path as AxPath, Query, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -93,9 +93,9 @@ fn coerce_mcp_keyword_query(q: Option<&Value>) -> anyhow::Result<Value> {
             }
             Ok(Value::String(joined))
         }
-        Some(_) => anyhow::bail!(
-            "query must be a keyword string (e.g. \"iran\"), not an object or number"
-        ),
+        Some(_) => {
+            anyhow::bail!("query must be a keyword string (e.g. \"iran\"), not an object or number")
+        }
         None => anyhow::bail!("query is required"),
     }
 }
@@ -352,9 +352,14 @@ fn current_utc_year() -> i64 {
     1970 + (secs / 31_557_600) as i64
 }
 
-fn load_json_entries(repo_full: &std::path::PathBuf, branch: &str, source: &str) -> anyhow::Result<Vec<Value>> {
+fn load_json_entries(
+    repo_full: &std::path::PathBuf,
+    branch: &str,
+    source: &str,
+) -> anyhow::Result<Vec<Value>> {
     let bytes = read_file_from_repo(repo_full, branch, source)?;
-    let root: Value = serde_json::from_slice(&bytes).map_err(|e| anyhow::anyhow!("{source}: {e}"))?;
+    let root: Value =
+        serde_json::from_slice(&bytes).map_err(|e| anyhow::anyhow!("{source}: {e}"))?;
     Ok(match root {
         Value::Array(a) => a,
         Value::Object(o) => {
@@ -412,9 +417,7 @@ fn call_tool(
                     .or(def.collection.as_deref())
                     .unwrap_or("index");
                 let q = coerce_mcp_keyword_query(
-                    arguments
-                        .get("query")
-                        .or_else(|| arguments.get("q")),
+                    arguments.get("query").or_else(|| arguments.get("q")),
                 )?;
                 let limit = mcp_search_limit(arguments);
                 let mut outcome = execute_search_outcome(
@@ -486,7 +489,9 @@ fn call_tool(
                         }
                         continue;
                     }
-                    let hay = serde_json::to_string(&entry).unwrap_or_default().to_lowercase();
+                    let hay = serde_json::to_string(&entry)
+                        .unwrap_or_default()
+                        .to_lowercase();
                     let terms = keyword_and_stems(&q);
                     if terms.is_empty() {
                         continue;
@@ -513,10 +518,7 @@ fn call_tool(
                 }))
             }
             "events_lookup" => {
-                let source = def
-                    .source
-                    .as_deref()
-                    .unwrap_or("data/events.json");
+                let source = def.source.as_deref().unwrap_or("data/events.json");
                 let source = safe_repo_rel_path(source)?;
                 let entries = load_json_entries(&repo_full, branch, source)?;
                 let event_id = arguments
@@ -541,9 +543,9 @@ fn call_tool(
 
                 let mut found: Option<Value> = None;
                 if !event_id.is_empty() {
-                    found = entries.into_iter().find(|e| {
-                        e.get("id").and_then(|v| v.as_str()) == Some(event_id)
-                    });
+                    found = entries
+                        .into_iter()
+                        .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(event_id));
                 } else if title_q.len() >= 2 {
                     let terms = keyword_and_stems(&title_q);
                     if terms.is_empty() {
@@ -577,7 +579,10 @@ fn call_tool(
                     elapsed.insert("calendarYears".into(), json!(cal));
                     if blip_adjust {
                         let overlap = blip_overlap_years(y, ref_year);
-                        elapsed.insert("blipAdjustedYears".into(), json!(cal.saturating_sub(overlap)));
+                        elapsed.insert(
+                            "blipAdjustedYears".into(),
+                            json!(cal.saturating_sub(overlap)),
+                        );
                         elapsed.insert(
                             "note".into(),
                             json!(format!(
@@ -664,8 +669,7 @@ fn handle_jsonrpc(
     let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
     // Notifications: no JSON-RPC response body required.
-    if body.get("id").is_none()
-        && (method.starts_with("notifications/") || method == "initialized")
+    if body.get("id").is_none() && (method.starts_with("notifications/") || method == "initialized")
     {
         return json!({});
     }
@@ -747,9 +751,23 @@ fn json_response(status: StatusCode, body: Value) -> Response {
 /// GET /api/mcp/:repo — health when `?health=1`.
 pub async fn get_mcp(
     State(state): State<AppState>,
+    method: axum::http::Method,
+    headers: HeaderMap,
     AxPath(repo): AxPath<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
+    if let Some(resp) = super::node_api::if_not_node_ops(
+        state.clone(),
+        method,
+        headers,
+        format!("api/mcp/{repo}"),
+        Some(Query(q.clone())),
+        axum::body::Bytes::new(),
+    )
+    .await
+    {
+        return resp;
+    }
     if q.get("health").map(|s| s.as_str()) != Some("1") {
         return (
             StatusCode::METHOD_NOT_ALLOWED,
@@ -760,19 +778,14 @@ pub async fn get_mcp(
     }
     let repo_full = state.repo_path.join(format!("{}.git", repo));
     if !repo_full.exists() {
-        return json_response(
-            StatusCode::NOT_FOUND,
-            json!({ "error": "repo not found" }),
-        );
+        return json_response(StatusCode::NOT_FOUND, json!({ "error": "repo not found" }));
     }
     let branch = DEFAULT_BRANCH;
     let enabled = mcp_enabled(&state, &repo, branch);
     let (name, version, tool_count) = if enabled {
         let manifest = load_manifest(&repo_full, branch);
         (
-            manifest
-                .name
-                .unwrap_or_else(|| format!("relay-{repo}")),
+            manifest.name.unwrap_or_else(|| format!("relay-{repo}")),
             manifest.version.unwrap_or_else(|| "0.1.0".into()),
             manifest.tools.len(),
         )
@@ -796,14 +809,23 @@ pub async fn get_mcp(
 /// DELETE /api/mcp/:repo — stateless session teardown (noop).
 pub async fn delete_mcp(
     State(state): State<AppState>,
+    headers: HeaderMap,
     AxPath(repo): AxPath<String>,
 ) -> Response {
+    if !crate::helpers::host_is_node_ops_api(state.node_fqdn.as_deref(), &headers) {
+        return super::node_api::dispatch_site(
+            state,
+            axum::http::Method::DELETE,
+            headers,
+            format!("api/mcp/{repo}"),
+            None,
+            axum::body::Bytes::new(),
+        )
+        .await;
+    }
     let repo_full = state.repo_path.join(format!("{}.git", repo));
     if !repo_full.exists() {
-        return json_response(
-            StatusCode::NOT_FOUND,
-            json!({ "error": "repo not found" }),
-        );
+        return json_response(StatusCode::NOT_FOUND, json!({ "error": "repo not found" }));
     }
     StatusCode::NO_CONTENT.into_response()
 }
@@ -815,12 +837,12 @@ pub async fn post_mcp(
     headers: axum::http::HeaderMap,
     body: Option<Json<Value>>,
 ) -> Response {
+    if !crate::helpers::host_is_node_ops_api(state.node_fqdn.as_deref(), &headers) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let repo_full = state.repo_path.join(format!("{}.git", repo));
     if !repo_full.exists() {
-        return json_response(
-            StatusCode::NOT_FOUND,
-            json!({ "error": "repo not found" }),
-        );
+        return json_response(StatusCode::NOT_FOUND, json!({ "error": "repo not found" }));
     }
 
     let branch = headers

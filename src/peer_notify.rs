@@ -130,9 +130,7 @@ pub fn notify_peers_blocking(
     }
     let self_host = mesh_role::node_fqdn_normalized().unwrap_or_else(|| "localhost".to_string());
 
-    let ring_hops = if hops_remaining.is_none()
-        && matches!(git_cfg.notify_mode, NotifyMode::Next)
-    {
+    let ring_hops = if hops_remaining.is_none() && matches!(git_cfg.notify_mode, NotifyMode::Next) {
         let n = origins::relay_ring_hosts(git_cfg).len();
         if n > 1 {
             Some((n - 1) as u32)
@@ -214,14 +212,7 @@ pub fn notify_peers_blocking(
             }
             for target in targets {
                 let _ = post_peer_notify(
-                    &client,
-                    &self_host,
-                    &target,
-                    repo,
-                    branch,
-                    new_sha,
-                    via,
-                    ring_hops,
+                    &client, &self_host, &target, repo, branch, new_sha, via, ring_hops,
                 );
             }
         }
@@ -232,14 +223,7 @@ pub fn notify_peers_blocking(
                 return;
             };
             if post_peer_notify(
-                &client,
-                &self_host,
-                &first,
-                repo,
-                branch,
-                new_sha,
-                via,
-                ring_hops,
+                &client, &self_host, &first, repo, branch, new_sha, via, ring_hops,
             ) {
                 return;
             }
@@ -254,14 +238,7 @@ pub fn notify_peers_blocking(
                 );
                 let via2 = vec![first];
                 let _ = post_peer_notify(
-                    &client,
-                    &self_host,
-                    &alt,
-                    repo,
-                    branch,
-                    new_sha,
-                    &via2,
-                    ring_hops,
+                    &client, &self_host, &alt, repo, branch, new_sha, &via2, ring_hops,
                 );
             }
         }

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use anyhow::Result;
 use axum::{
@@ -14,7 +13,7 @@ use thiserror::Error;
 use tracing::{debug, error};
 
 use crate::{git, helpers, types::AppState};
-use git::enforce_unsigned_http_allowed;
+use git::{enforce_publish_origin_fence, enforce_unsigned_http_allowed};
 
 /// Handle PUT writes into a repo branch and commit changes.
 pub async fn put_file(
@@ -48,7 +47,9 @@ pub async fn put_file(
         Err(e) => {
             error!(?e, "write error");
             let msg = e.to_string();
-            if msg.contains("rejected by") || msg.contains("validation failed") {
+            if msg.contains("publish_origin") {
+                (StatusCode::FORBIDDEN, msg).into_response()
+            } else if msg.contains("rejected by") || msg.contains("validation failed") {
                 (StatusCode::BAD_REQUEST, msg).into_response()
             } else {
                 (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
@@ -65,14 +66,11 @@ pub async fn delete_file(
     _query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
-    let repo_name = match helpers::repo_from_host_or_default(
-        &state,
-        state.node_fqdn.as_deref(),
-        &headers,
-    ) {
-        Some(r) => r,
-        None => return StatusCode::NOT_FOUND.into_response(),
-    };
+    let repo_name =
+        match helpers::repo_from_host_or_default(&state, state.node_fqdn.as_deref(), &headers) {
+            Some(r) => r,
+            None => return StatusCode::NOT_FOUND.into_response(),
+        };
     let branch = helpers::branch_for_request(&headers, &state, Some(repo_name.as_str()));
     match delete_file_in_repo(&state, &repo_name, &branch, &decoded) {
         Ok((commit, branch)) => {
@@ -82,7 +80,12 @@ pub async fn delete_file(
         Err(RepoEditError::NotFound) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             error!(?e, "delete error");
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            let msg = e.to_string();
+            if msg.contains("publish_origin") {
+                (StatusCode::FORBIDDEN, msg).into_response()
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+            }
         }
     }
 }
@@ -108,6 +111,8 @@ pub fn write_file_to_repo(
             return Err(anyhow::anyhow!("Repository not found"));
         }
     };
+    enforce_publish_origin_fence(repo.path(), state.node_fqdn.as_deref())
+        .map_err(|e| anyhow::anyhow!(e))?;
     let refname = format!("refs/heads/{}", branch);
     let sig = Signature::now("relay", "relay@local")?;
 
@@ -259,6 +264,8 @@ pub fn delete_file_in_repo(
     path: &str,
 ) -> Result<(String, String), RepoEditError> {
     let repo = git::open_repo_for_state(state, repo_name).ok_or(RepoEditError::NotFound)?;
+    enforce_publish_origin_fence(repo.path(), state.node_fqdn.as_deref())
+        .map_err(|e| RepoEditError::Other(anyhow::anyhow!(e)))?;
     let refname = format!("refs/heads/{}", branch);
     let sig = Signature::now("relay", "relay@local").map_err(|e| RepoEditError::Other(e.into()))?;
     let (parent_commit, base_tree) = match repo.find_reference(&refname) {

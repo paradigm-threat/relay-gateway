@@ -51,7 +51,10 @@ fn main() -> anyhow::Result<()> {
         } => {
             relay_server::git::enforce_push_range(&repo, &old_oid, &new_oid, &branch)
                 .map_err(|e| anyhow::anyhow!(e))?;
-            eprintln!("OK: range {}..{} on {} passes branch policy", old_oid, new_oid, branch);
+            eprintln!(
+                "OK: range {}..{} on {} passes branch policy",
+                old_oid, new_oid, branch
+            );
         }
         Commands::Walk {
             repo,

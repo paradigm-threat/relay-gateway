@@ -11,13 +11,17 @@ mod store;
 
 pub use acme::ensure_certs_for_domains;
 pub use caddy::write_parked_caddyfile;
-pub use fanout::{authorize_park_tls_peer, post_park_tls_hook, spawn_fanout_challenge, spawn_fanout_cert};
+pub use fanout::{
+    authorize_park_tls_peer, post_park_tls_hook, spawn_fanout_cert, spawn_fanout_challenge,
+};
 pub use store::{
-    challenge_body, park_tls_root, persist_challenge, persist_cert_pair, read_cert_expiry_days,
+    challenge_body, park_tls_root, persist_cert_pair, persist_challenge, read_cert_expiry_days,
     remove_challenge,
 };
 
-use crate::catalog_policy::{normalize_domain, parked_domains_allowlist_path, parked_domains_map_path};
+use crate::catalog_policy::{
+    normalize_domain, parked_domains_allowlist_path, parked_domains_map_path,
+};
 use crate::git::repo::{open_repo, read_relay_config};
 use crate::types::AppState;
 use std::collections::{HashMap, HashSet};
@@ -74,9 +78,8 @@ pub fn write_tls_allowlist(repo_path: &Path, map: &HashMap<String, String>) {
     }
     let mut domains: Vec<&String> = tls_map.keys().collect();
     domains.sort();
-    let mut body = String::from(
-        "# relay parked TLS domains (plugin=park only); managed by relay-gateway\n",
-    );
+    let mut body =
+        String::from("# relay parked TLS domains (plugin=park only); managed by relay-gateway\n");
     for d in domains {
         body.push_str(d);
         body.push('\n');
@@ -189,21 +192,11 @@ pub async fn serve_challenge(legacy_dir: &str, token: &str) -> axum::response::R
         return StatusCode::NOT_FOUND.into_response();
     }
     if let Some(body) = challenge_body(token) {
-        return (
-            StatusCode::OK,
-            [("Content-Type", "text/plain")],
-            body,
-        )
-            .into_response();
+        return (StatusCode::OK, [("Content-Type", "text/plain")], body).into_response();
     }
     let path = PathBuf::from(legacy_dir).join(token);
     match tokio::fs::read(&path).await {
-        Ok(bytes) => (
-            StatusCode::OK,
-            [("Content-Type", "text/plain")],
-            bytes,
-        )
-            .into_response(),
+        Ok(bytes) => (StatusCode::OK, [("Content-Type", "text/plain")], bytes).into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }

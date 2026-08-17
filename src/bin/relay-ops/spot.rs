@@ -31,9 +31,8 @@ pub async fn list_assignments(token: &str) -> Result<Vec<SpotAssignment>> {
         }
     }
     if let Ok(ns) = std::env::var("RXTSPOT_ORG") {
-        let url = format!(
-            "https://spot.rackspace.com/apis/ngpc.rxt.io/v1/namespaces/{ns}/vmcloudspaces"
-        );
+        let url =
+            format!("https://spot.rackspace.com/apis/ngpc.rxt.io/v1/namespaces/{ns}/vmcloudspaces");
         if let Ok(v) = fetch_json(&client, token, &url).await {
             let found = walk_assignments(&v);
             if !found.is_empty() {

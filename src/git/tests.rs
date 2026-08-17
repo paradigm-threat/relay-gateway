@@ -181,4 +181,22 @@ server:
             .clone();
         assert_eq!(fields, vec!["title", "_meta_dir"]);
     }
+
+    #[test]
+    fn ensure_bare_repo_creates_and_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let (created, dest) = crate::git::ensure_bare_repo(dir.path(), "demo").unwrap();
+        assert!(created);
+        assert!(dest.ends_with("demo.git"));
+        let deny = git2::Repository::open_bare(&dest)
+            .unwrap()
+            .config()
+            .unwrap()
+            .get_string("receive.denyNonFastForwards")
+            .unwrap();
+        assert_eq!(deny, "true");
+        let (created2, dest2) = crate::git::ensure_bare_repo(dir.path(), "demo").unwrap();
+        assert!(!created2);
+        assert_eq!(dest, dest2);
+    }
 }

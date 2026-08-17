@@ -106,52 +106,52 @@ pub async fn health(cfg: &OpsConfig, fleet: &FleetFile, mcp: bool) -> Result<Str
         }
         for repo in &repos {
             log.push_str(&format!("  QUERY {repo} q={q}\n"));
-            let ok = if let (Some((q_script, _)), Some(node)) = (scripts.as_ref(), node_bin.as_ref())
-            {
-                let out = Command::new(node)
-                    .arg(q_script)
-                    .arg(&base)
-                    .arg(repo)
-                    .arg(&q)
-                    .output();
-                match out {
-                    Ok(o) => {
-                        log.push_str(&output_text(&o));
-                        o.status.success()
+            let ok =
+                if let (Some((q_script, _)), Some(node)) = (scripts.as_ref(), node_bin.as_ref()) {
+                    let out = Command::new(node)
+                        .arg(q_script)
+                        .arg(&base)
+                        .arg(repo)
+                        .arg(&q)
+                        .output();
+                    match out {
+                        Ok(o) => {
+                            log.push_str(&output_text(&o));
+                            o.status.success()
+                        }
+                        Err(e) => {
+                            log.push_str(&format!("    FAIL {e}\n"));
+                            false
+                        }
                     }
-                    Err(e) => {
-                        log.push_str(&format!("    FAIL {e}\n"));
-                        false
-                    }
-                }
-            } else {
-                let url = format!("{base}/{repo}");
-                let collection = if repo.contains("timeline") {
-                    "events"
                 } else {
-                    "index"
+                    let url = format!("{base}/{repo}");
+                    let collection = if repo.contains("timeline") {
+                        "events"
+                    } else {
+                        "index"
+                    };
+                    match client
+                        .request(method.clone(), &url)
+                        .header("content-type", "application/json")
+                        .json(&serde_json::json!({ "collection": collection, "query": q }))
+                        .send()
+                        .await
+                    {
+                        Ok(r) if r.status().is_success() => {
+                            log.push_str("    ok\n");
+                            true
+                        }
+                        Ok(r) => {
+                            log.push_str(&format!("    FAIL {}\n", r.status()));
+                            false
+                        }
+                        Err(e) => {
+                            log.push_str(&format!("    FAIL {e}\n"));
+                            false
+                        }
+                    }
                 };
-                match client
-                    .request(method.clone(), &url)
-                    .header("content-type", "application/json")
-                    .json(&serde_json::json!({ "collection": collection, "query": q }))
-                    .send()
-                    .await
-                {
-                    Ok(r) if r.status().is_success() => {
-                        log.push_str("    ok\n");
-                        true
-                    }
-                    Ok(r) => {
-                        log.push_str(&format!("    FAIL {}\n", r.status()));
-                        false
-                    }
-                    Err(e) => {
-                        log.push_str(&format!("    FAIL {e}\n"));
-                        false
-                    }
-                }
-            };
             if !ok {
                 fail = true;
             }
@@ -379,6 +379,7 @@ pub fn update(
     fleet: &FleetFile,
     interactive: bool,
     build: bool,
+    allow_dirty: bool,
 ) -> Result<String> {
     let root = checkout(cfg)?;
     let ssh = SshCtx {
@@ -389,6 +390,13 @@ pub fn update(
     ssh.require_admin()?;
     let tgz = root.join("target/relay-linode-deploy.tgz");
     let mut log = String::new();
+    if allow_dirty {
+        std::env::set_var("RELAY_PACK_ALLOW_DIRTY", "1");
+        log.push_str("allow-dirty: RELAY_PACK_ALLOW_DIRTY=1\n");
+    } else {
+        // Do not inherit a laptop RELAY_PACK_ALLOW_DIRTY=1 habit.
+        std::env::remove_var("RELAY_PACK_ALLOW_DIRTY");
+    }
     if build || !tgz.is_file() {
         log.push_str("pack-linode-deploy.sh\n");
         let st = Command::new("bash")
@@ -430,7 +438,7 @@ pub fn update(
         }
         let out = ssh.run(
             &n.fqdn,
-            "sudo systemctl restart relay-gateway relay-git-daemon",
+            "sudo systemctl restart relay-gateway relay-git-daemon relay-git-proxy",
         )?;
         log.push_str(&output_text(&out));
         if health_gate {
@@ -486,20 +494,12 @@ pub fn remote_install(
         if let Some(env_body) = feat_env {
             let mut tmp = tempfile::NamedTempFile::new()?;
             tmp.write_all(env_body.as_bytes())?;
-            ssh.scp_to(
-                &n.fqdn,
-                tmp.path(),
-                &format!("/tmp/{staging}.feat.env"),
-            )?;
+            ssh.scp_to(&n.fqdn, tmp.path(), &format!("/tmp/{staging}.feat.env"))?;
         }
         if let Some(mesh) = mesh_env_body() {
             let mut tmp = tempfile::NamedTempFile::new()?;
             tmp.write_all(mesh.as_bytes())?;
-            ssh.scp_to(
-                &n.fqdn,
-                tmp.path(),
-                &format!("/tmp/{staging}.mesh.env"),
-            )?;
+            ssh.scp_to(&n.fqdn, tmp.path(), &format!("/tmp/{staging}.mesh.env"))?;
         }
         let remote = r#"set -euo pipefail
 ST="$1" TGZ="$2" MODE="$3"
@@ -542,10 +542,7 @@ pub fn features_env(
 ) -> String {
     let mut s = String::from("RELAY_INSTALL_NONINTERACTIVE=1\n");
     s.push_str(&format!("RELAY_FEAT_PIPER={}\n", piper.unwrap_or("0")));
-    s.push_str(&format!(
-        "RELAY_FEAT_NPM_PKGS={}\n",
-        npm_pkgs.unwrap_or("")
-    ));
+    s.push_str(&format!("RELAY_FEAT_NPM_PKGS={}\n", npm_pkgs.unwrap_or("")));
     s.push_str(&format!(
         "RELAY_FEAT_TRANSLATION={}\n",
         translation.unwrap_or("0")
@@ -646,7 +643,7 @@ while IFS= read -r name; do
   fi
 done < <(git config --file .gitmodules --name-only --get-regexp '^submodule\..*\.path$' | sed -n 's/^submodule\.\(.*\)\.path$/\1/p' | sort -u)
 INNER
-sudo systemctl restart relay-gateway relay-git-daemon 2>/dev/null || true
+sudo systemctl restart relay-gateway relay-git-daemon relay-git-proxy 2>/dev/null || true
 "#
     );
     let mut log = String::new();
@@ -733,7 +730,7 @@ pub fn reinstall_wipe(
     let out = ssh.run(
         h,
         &format!(
-            "sudo systemctl stop relay-gateway relay-git-daemon || true; sudo rm -rf {data}/*.git; echo wiped"
+            "sudo systemctl stop relay-gateway relay-git-daemon relay-git-proxy || true; sudo rm -rf {data}/*.git; echo wiped"
         ),
     )?;
     let log = output_text(&out);

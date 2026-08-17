@@ -179,4 +179,4 @@ if [[ $EUID -eq 0 ]] && [[ -f "$ENV_OUT" ]]; then
   chmod 600 "$ENV_OUT"
 fi
 
-log "Done. Restart: systemctl restart relay-gateway relay-git-daemon"
+log "Done. Restart: systemctl restart relay-gateway relay-git-daemon relay-git-proxy"

@@ -197,8 +197,8 @@ impl SqliteSearchStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(path)
-            .with_context(|| format!("open search db {}", path.display()))?;
+        let conn =
+            Connection::open(path).with_context(|| format!("open search db {}", path.display()))?;
         conn.busy_timeout(Duration::from_millis(5_000))?;
         conn.execute_batch(
             "
@@ -365,19 +365,28 @@ pub fn effective_filter_fields(declared: Option<&[String]>) -> Vec<String> {
 pub fn effective_sort_fields(declared: Option<&[String]>) -> Vec<String> {
     match declared {
         Some(f) if !f.is_empty() => f.to_vec(),
-        _ => DEFAULT_SORT_FIELDS.iter().map(|s| (*s).to_string()).collect(),
+        _ => DEFAULT_SORT_FIELDS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect(),
     }
 }
 
 pub fn effective_fts_fields(declared: Option<&[String]>) -> Vec<String> {
     match declared {
         Some(f) if !f.is_empty() => f.to_vec(),
-        _ => DEFAULT_FTS_FIELDS.iter().map(|s| (*s).to_string()).collect(),
+        _ => DEFAULT_FTS_FIELDS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect(),
     }
 }
 
 /// True when every object-QUERY key is in the declared `filterFields` list.
-pub fn filter_keys_allowed(keys: impl IntoIterator<Item = impl AsRef<str>>, filter_fields: &[String]) -> bool {
+pub fn filter_keys_allowed(
+    keys: impl IntoIterator<Item = impl AsRef<str>>,
+    filter_fields: &[String],
+) -> bool {
     keys.into_iter()
         .all(|k| filter_fields.iter().any(|f| f == k.as_ref()))
 }
@@ -458,7 +467,11 @@ fn get_meta(conn: &Connection, key: &StoreKey, meta_key: &str) -> anyhow::Result
 
 fn promoted_fields(doc: &Value) -> (Option<String>, Option<String>, Option<String>) {
     let str_field = |k: &str| doc.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
-    (str_field("sort_key"), str_field("path"), str_field("md_path"))
+    (
+        str_field("sort_key"),
+        str_field("path"),
+        str_field("md_path"),
+    )
 }
 
 fn doc_id_for(doc: &Value, fallback_index: usize, id_fields: Option<&[String]>) -> String {
@@ -497,7 +510,15 @@ fn search_text_for(doc: &Value, fts_fields: Option<&[String]>) -> String {
         }
         return parts.join(" ");
     }
-    for key in ["title", "_title", "path", "name", "description", "summary", "body"] {
+    for key in [
+        "title",
+        "_title",
+        "path",
+        "name",
+        "description",
+        "summary",
+        "body",
+    ] {
         if let Some(s) = doc.get(key).and_then(|v| v.as_str()) {
             parts.push(s.to_string());
         }
@@ -628,9 +649,7 @@ fn replace_collection(
 fn is_safe_json_field(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -764,12 +783,8 @@ fn order_by_sql_fragment(order: QueryOrder) -> &'static str {
         QueryOrder::Random => "ORDER BY path ASC, doc_id ASC",
         QueryOrder::PathAsc => "ORDER BY path ASC",
         QueryOrder::PathDesc => "ORDER BY path DESC",
-        QueryOrder::SortKeyAsc => {
-            "ORDER BY coalesce(sort_key, md_path, path) ASC, doc_id ASC"
-        }
-        QueryOrder::SortKeyDesc => {
-            "ORDER BY coalesce(sort_key, md_path, path) DESC, doc_id DESC"
-        }
+        QueryOrder::SortKeyAsc => "ORDER BY coalesce(sort_key, md_path, path) ASC, doc_id ASC",
+        QueryOrder::SortKeyDesc => "ORDER BY coalesce(sort_key, md_path, path) DESC, doc_id DESC",
     }
 }
 

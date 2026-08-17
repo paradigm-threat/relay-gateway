@@ -144,7 +144,8 @@ pub async fn handle_get_file(
         GitResolveResult::Respond(resp) => return resp,
         GitResolveResult::NotFound(rel_missing) => {
             let hook_resp =
-                run_get_clever_or_404(&state, &headers, &branch, &repo_name, &rel_missing, qmap).await;
+                run_get_clever_or_404(&state, &headers, &branch, &repo_name, &rel_missing, qmap)
+                    .await;
             if hook_resp.status() != StatusCode::NOT_FOUND {
                 return hook_resp;
             }
@@ -253,9 +254,7 @@ async fn run_get_clever_or_404(
         Ok(v) => v,
         Err(e) => {
             error!(?e, "GET CleverScript hook failed");
-            return git::get_hook_http::get_hook_execution_error_response(
-                branch, repo_name, &e,
-            );
+            return git::get_hook_http::get_hook_execution_error_response(branch, repo_name, &e);
         }
     };
     if let Some(resp) = git::get_hook_json_to_response(&val, branch, repo_name) {

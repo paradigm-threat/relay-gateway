@@ -22,7 +22,7 @@ Use the fleet CLI from **`relay-gateway/`**:
 The command reads the repo URL, trusted root, and branch from the node’s currently
 served **`$RELAY_REPO_PATH/relay-master.git`**. It prepares and validates a staging
 clone while the existing mirror remains online, then briefly stops
-**`relay-git-daemon`** for a same-filesystem swap. A failed clone, peer fetch, or
+**`relay-git-proxy`** and **`relay-git-daemon`** for a same-filesystem swap. A failed clone, peer fetch, or
 trust-root check leaves the existing mirror untouched. It does not depend on an
 optional **`/opt/relay/src/relay-master`** worktree.
 
@@ -106,7 +106,7 @@ Fix **forge DNS** for user **`relay`** if **`catalog_forge_sync_ok`** is false (
 
 ```bash
 sudo -u relay bash -lc 'set -e; cd /opt/relay/src/relay-master && git pull origin main && RELAY_REPO_PATH=/opt/relay/data ./scripts/sync-relay-catalog.sh'
-sudo systemctl restart relay-gateway relay-git-daemon
+sudo systemctl restart relay-gateway relay-git-daemon relay-git-proxy
 # Optional: new tarball from a trusted build — see DEPLOY_LINODE.md / production-ops (install.sh update).
 ```
 

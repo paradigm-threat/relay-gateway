@@ -208,12 +208,7 @@ pub fn spawn_fanout_challenge(state: &AppState, token: &str, key_authorization: 
         .ok();
 }
 
-pub fn spawn_fanout_cert(
-    state: &AppState,
-    domain: &str,
-    fullchain_pem: &str,
-    privkey_pem: &str,
-) {
+pub fn spawn_fanout_cert(state: &AppState, domain: &str, fullchain_pem: &str, privkey_pem: &str) {
     let state = state.clone();
     let body = ParkTlsBody::Cert {
         domain: domain.to_string(),

@@ -55,11 +55,7 @@ fn git_show(repo: &Path, commit: &str, path: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn git_diff_name_status(
-    repo: &Path,
-    old: &str,
-    new: &str,
-) -> anyhow::Result<Vec<(char, String)>> {
+fn git_diff_name_status(repo: &Path, old: &str, new: &str) -> anyhow::Result<Vec<(char, String)>> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -141,7 +137,11 @@ fn parse_chat_markdown(path: &str, text: &str) -> Option<ChatRow> {
         return None;
     }
     let (body, fm) = strip_frontmatter(text);
-    let body = body.trim().chars().take(CHAT_BODY_MAX_CHARS).collect::<String>();
+    let body = body
+        .trim()
+        .chars()
+        .take(CHAT_BODY_MAX_CHARS)
+        .collect::<String>();
     let fm = fm?;
     let map: serde_yaml::Mapping = serde_yaml::from_str(fm).ok()?;
     let mut row = ChatRow {
@@ -209,12 +209,7 @@ fn ingest_path_row(repo: &Path, commit: &str, path: &str) -> Option<ChatCommentR
 }
 
 /// Full rebuild of chat_comments from tip tree under `root`.
-pub fn rebuild_chat(
-    repo: &Path,
-    branch: &str,
-    commit: &str,
-    root: &str,
-) -> anyhow::Result<usize> {
+pub fn rebuild_chat(repo: &Path, branch: &str, commit: &str, root: &str) -> anyhow::Result<usize> {
     let store = store_for_bare_repo(repo)?;
     let key = store_key_for_bare(repo, branch);
     let root = root.trim_matches('/');
@@ -300,13 +295,7 @@ pub fn ensure_chat_indexed(ctx: &HookContext, root: &str) -> anyhow::Result<()> 
             new = %ctx.new_commit,
             "chat index stale; incremental ingest"
         );
-        apply_chat_diff(
-            &ctx.repo_path,
-            &ctx.branch,
-            &indexed,
-            &ctx.new_commit,
-            root,
-        )?;
+        apply_chat_diff(&ctx.repo_path, &ctx.branch, &indexed, &ctx.new_commit, root)?;
     }
     Ok(())
 }
@@ -385,7 +374,14 @@ mod tests {
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
         let oid = repo
-            .commit(Some("refs/heads/chat/public"), &sig, &sig, "init", &tree, &[])
+            .commit(
+                Some("refs/heads/chat/public"),
+                &sig,
+                &sig,
+                "init",
+                &tree,
+                &[],
+            )
             .unwrap();
         (dir, repo_path, oid.to_string())
     }

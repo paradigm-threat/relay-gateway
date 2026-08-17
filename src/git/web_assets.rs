@@ -82,12 +82,11 @@ fn opt_in_from_bare(bare: &Path, branch: &str) -> bool {
         }
     }
 
-    let source = match crate::git::relay_config_cache::read_hook_source_cached(
-        bare, branch, &hook_path,
-    ) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
+    let source =
+        match crate::git::relay_config_cache::read_hook_source_cached(bare, branch, &hook_path) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
     let opted = source_imports_web_assets(&source);
 
     if cache_enabled() {
@@ -169,10 +168,7 @@ fn env_assets_branch() -> String {
 
 /// Bare-repos root + configured slug (from AppState or env).
 pub fn assets_repo_config(state: &AppState) -> Option<(PathBuf, String, String)> {
-    let slug = state
-        .web_assets_repo
-        .clone()
-        .or_else(env_assets_repo)?;
+    let slug = state.web_assets_repo.clone().or_else(env_assets_repo)?;
     let branch = if state.web_assets_branch.is_empty() {
         env_assets_branch()
     } else {
@@ -189,7 +185,9 @@ fn bare_path(repos_root: &Path, slug: &str) -> PathBuf {
 pub fn tip_commit_oid(repos_root: &Path, slug: &str, branch: &str) -> Option<String> {
     let path = bare_path(repos_root, slug);
     let repo = Repository::open_bare(&path).ok()?;
-    let reference = repo.find_reference(&format!("refs/heads/{}", branch)).ok()?;
+    let reference = repo
+        .find_reference(&format!("refs/heads/{}", branch))
+        .ok()?;
     let commit = reference.peel_to_commit().ok()?;
     Some(commit.id().to_string())
 }
@@ -239,7 +237,12 @@ pub fn pinned_assets_url_prefix_if_opted_in(
     pinned_assets_url_prefix(state)
 }
 
-fn read_blob_at_commit(repos_root: &Path, slug: &str, commit: &str, tree_path: &str) -> Option<Vec<u8>> {
+fn read_blob_at_commit(
+    repos_root: &Path,
+    slug: &str,
+    commit: &str,
+    tree_path: &str,
+) -> Option<Vec<u8>> {
     let path = bare_path(repos_root, slug);
     let repo = Repository::open_bare(&path).ok()?;
     let oid = git2::Oid::from_str(commit).ok()?;
@@ -375,11 +378,22 @@ server:
         tb.insert("assets", assets_oid, 0o040000).unwrap();
         let tree = tb.write().unwrap();
         let commit = repo
-            .commit(Some("refs/heads/main"), &sig, &sig, "init", &repo.find_tree(tree).unwrap(), &[])
+            .commit(
+                Some("refs/heads/main"),
+                &sig,
+                &sig,
+                "init",
+                &repo.find_tree(tree).unwrap(),
+                &[],
+            )
             .unwrap();
         let oid = commit.to_string();
-        assert_eq!(tip_commit_oid(&root, "relay-web-assets", "main").as_deref(), Some(oid.as_str()));
-        let bytes = read_blob_at_commit(&root, "relay-web-assets", &oid, "assets/embed.js").unwrap();
+        assert_eq!(
+            tip_commit_oid(&root, "relay-web-assets", "main").as_deref(),
+            Some(oid.as_str())
+        );
+        let bytes =
+            read_blob_at_commit(&root, "relay-web-assets", &oid, "assets/embed.js").unwrap();
         assert_eq!(bytes, b"console.log(1)");
     }
 }

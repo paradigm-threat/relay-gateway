@@ -29,6 +29,10 @@ name = "relay-branch-policy-check"
 path = "src/bin/relay-branch-policy-check.rs"
 
 [[bin]]
+name = "relay-git-proxy"
+path = "src/bin/relay-git-proxy.rs"
+
+[[bin]]
 name = "relay-ops"
 path = "src/bin/relay-ops/main.rs"
 

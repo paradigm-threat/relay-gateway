@@ -23,4 +23,6 @@ identity_file = "~/.ssh/id_ed25519_relay_gateway"
 
 bind = "127.0.0.1:7780"
 probe_interval_secs = 300
+# While any node is down or DNS-empty: DNS + TCP only (no HTTPS/git) every N seconds.
+probe_interval_down_secs = 10
 auto_drop_dead_fleet_a = true

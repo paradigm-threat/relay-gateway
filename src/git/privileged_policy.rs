@@ -6,11 +6,7 @@ use crate::git::relay_config_cache;
 use crate::types::{BranchRule, RelayConfig};
 
 /// Built-in privileged sections — repos cannot shrink this set.
-pub fn privileged_relay_yaml_changed(
-    repo_path: &Path,
-    parent: &str,
-    commit: &str,
-) -> bool {
+pub fn privileged_relay_yaml_changed(repo_path: &Path, parent: &str, commit: &str) -> bool {
     let parent_cfg = match relay_config_cache::read_relay_config_at_path_cached(repo_path, parent) {
         Some(c) => c,
         None => return relay_yaml_file_changed(repo_path, parent, commit),
@@ -59,12 +55,7 @@ pub fn admin_rule_from_parent(parent_rule: &BranchRule) -> Result<BranchRule, St
         .admin_keys
         .as_ref()
         .filter(|k| !k.is_empty())
-        .or_else(|| {
-            parent_rule
-                .allowed_keys
-                .as_ref()
-                .filter(|k| !k.is_empty())
-        })
+        .or_else(|| parent_rule.allowed_keys.as_ref().filter(|k| !k.is_empty()))
         .ok_or_else(|| {
             "privileged .relay.yaml change requires adminKeys or allowedKeys on parent branchRules"
                 .to_string()

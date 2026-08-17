@@ -152,11 +152,8 @@ pub fn hop_forward_target(
     via: &[String],
     hops_remaining: Option<u32>,
 ) -> Option<(String, u32)> {
-    let hops = hops_remaining.unwrap_or_else(|| {
-        relay_ring_hosts(git)
-            .len()
-            .saturating_sub(1) as u32
-    });
+    let hops =
+        hops_remaining.unwrap_or_else(|| relay_ring_hosts(git).len().saturating_sub(1) as u32);
     if hops == 0 {
         return None;
     }
@@ -206,8 +203,14 @@ mod tests {
             "b.example".to_string(),
             "c.example".to_string(),
         ];
-        assert_eq!(next_hop_after(&h, "b.example").as_deref(), Some("c.example"));
-        assert_eq!(next_hop_after(&h, "c.example").as_deref(), Some("a.example"));
+        assert_eq!(
+            next_hop_after(&h, "b.example").as_deref(),
+            Some("c.example")
+        );
+        assert_eq!(
+            next_hop_after(&h, "c.example").as_deref(),
+            Some("a.example")
+        );
     }
 
     #[test]
@@ -226,7 +229,10 @@ mod tests {
     #[test]
     fn next_hop_bootstrap_when_self_missing() {
         let h = vec!["a.example".into(), "b.example".into()];
-        assert_eq!(next_hop_after(&h, "z.example").as_deref(), Some("a.example"));
+        assert_eq!(
+            next_hop_after(&h, "z.example").as_deref(),
+            Some("a.example")
+        );
     }
 
     #[test]

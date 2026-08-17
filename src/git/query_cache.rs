@@ -120,10 +120,24 @@ mod tests {
 
     #[test]
     fn cache_hit_and_tip_key_miss() {
-        let k1 = cache_key("repo", "aaa", "index", Some(&json!("q")), Some(10), QueryOrder::default());
+        let k1 = cache_key(
+            "repo",
+            "aaa",
+            "index",
+            Some(&json!("q")),
+            Some(10),
+            QueryOrder::default(),
+        );
         put(k1.clone(), sample_outcome("aaa"));
         assert!(get(&k1).is_some());
-        let k2 = cache_key("repo", "bbb", "index", Some(&json!("q")), Some(10), QueryOrder::default());
+        let k2 = cache_key(
+            "repo",
+            "bbb",
+            "index",
+            Some(&json!("q")),
+            Some(10),
+            QueryOrder::default(),
+        );
         assert!(get(&k2).is_none());
     }
 }

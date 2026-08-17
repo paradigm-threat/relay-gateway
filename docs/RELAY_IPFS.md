@@ -75,16 +75,30 @@ return resolveIpfsFromGetContext(ctx, ipfsOpts);
 
 For catalog `thin_ipfs_assets` repos, **GET** on a logical path **missing from the Git tree** still runs `server.hooks.get` (so central-dir + manifest resolution works).
 
+## Fleet Kubo (`install.sh`)
+
+Production **`install.sh update`** / **`install`** installs **Kubo v0.32.1** by default (`RELAY_INSTALL_IPFS=0` to skip). It does **not** bind Kubo’s default **:8080** (that is **relay-gateway**).
+
+| Port | Bind | Role |
+|------|------|------|
+| **5001** | `127.0.0.1` | Kubo HTTP API (`RELAY_IPFS_API`) |
+| **8081** | `127.0.0.1` | Kubo gateway (`RELAY_IPFS_GATEWAY`) |
+| **4001** | `0.0.0.0` TCP+UDP | Swarm (open in firewall so this node can **provide**) |
+
+Public CID bytes stay **`GET /ipfs/{cid}`** on the relay. systemd: **`relay-ipfs.service`** (API/gateway loopback-only, `Gateway.Writable=false`, no public relay service; Kubo tarball **sha512**-verified) and **`relay-ipfs-pin-catalog.timer`** (pins CIDs from thin catalog Git pointers + `assets.manifest.json`). That is **IPFS seed**, not git **`ensure-bare`** seed.
+
+**`GET /api/status`** on the **node FQDN** (`schema_version` ≥ 3) includes **`self.ipfs`**, **`ipfs_ok`**, and per-repo **`repos[].ipfs`** (`cid_count` / `cached_count`). Kubo-down does **not** 503 `?strict=1` (git-mesh only). Per-CID JSON remains **`GET /ipfs/{cid}?relayAssetStatus=1`**.
+
 ## Gateway env
 
 | Env | Default |
 |-----|---------|
-| `RELAY_IPFS_CACHE_ROOT` | `/tmp/ipfs-cache` |
+| `RELAY_IPFS_CACHE_ROOT` | `/tmp/ipfs-cache` (fleet install: `/opt/relay/ipfs-cache`) |
 | `RELAY_IPFS_CACHE_MAX_BYTES` | 2 GiB |
-| `RELAY_IPFS_GATEWAY` | `https://ipfs.io` |
-| `RELAY_IPFS_API` | *(unset)* — Kubo HTTP API for `block/stat` + `routing/findprovs` seed probes |
+| `RELAY_IPFS_GATEWAY` | `https://ipfs.io` (fleet: `http://127.0.0.1:8081`) |
+| `RELAY_IPFS_API` | *(unset)* — Kubo HTTP API for `block/stat` + `routing/findprovs` seed probes (fleet: `http://127.0.0.1:5001`) |
 | `RELAY_IPFS_GATEWAY_ALLOWLIST` | *(unset)* — comma-separated allowed gateway hosts |
-| `RELAY_IPFS_GATEWAY_ALLOW_PRIVATE` | `0` — set `1` for `http://127.0.0.1:8080` (local Kubo / sidecar) |
+| `RELAY_IPFS_GATEWAY_ALLOW_PRIVATE` | `0` — set `1` for loopback Kubo (fleet install sets `1`) |
 | `RELAY_IPFS_MAX_FETCH_BYTES` | 100 MiB (max per CID fetch) |
 | `RELAY_IPFS_FETCH_TIMEOUT` | 30s |
 | `RELAY_IPFS_WAIT_MAX` | 120s |

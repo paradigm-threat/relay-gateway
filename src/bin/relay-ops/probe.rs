@@ -127,7 +127,10 @@ pub async fn probe_fleet(fleet: &FleetFile) -> (Vec<NodeProbe>, Option<IngressPr
     for n in &nodes {
         if let Some(cfg) = &n.https_config {
             for p in &cfg.peers {
-                if !live_peers.iter().any(|x: &String| x.eq_ignore_ascii_case(p)) {
+                if !live_peers
+                    .iter()
+                    .any(|x: &String| x.eq_ignore_ascii_case(p))
+                {
                     live_peers.push(p.clone());
                 }
             }
@@ -144,24 +147,67 @@ pub async fn probe_fleet(fleet: &FleetFile) -> (Vec<NodeProbe>, Option<IngressPr
     (nodes, ingress, live_peers)
 }
 
+/// Sleep this many seconds until the next background probe.
+pub(crate) fn next_probe_secs(nodes: &[NodeProbe], up_secs: u64, down_secs: u64) -> u64 {
+    if nodes.is_empty() || nodes.iter().any(|n| !n.healthy || n.dns.is_empty()) {
+        down_secs
+    } else {
+        up_secs
+    }
+}
+
+fn unreachable_probe(
+    fqdn: String,
+    dns: Vec<String>,
+    tcp22: bool,
+    tcp443: bool,
+    tcp_git: bool,
+) -> NodeProbe {
+    NodeProbe {
+        fqdn,
+        dns,
+        tcp22,
+        tcp443,
+        tcp_git,
+        https_config: None,
+        git_tips: Vec::new(),
+        healthy: false,
+        error: None,
+        missing_repos: Vec::new(),
+        drift: Vec::new(),
+        sync_ok: true,
+    }
+}
+
 async fn probe_node(node: &FleetNode, git_port: u16, repos: &[String]) -> NodeProbe {
     let fqdn = node.fqdn.clone();
-    let (dns, tcp22, tcp443, tcp_git, mut https_config, https_status) = tokio::join!(
-        resolve_ips(&fqdn),
+    // DNS first: empty result is a laptop-resolver miss (boot race). No SYNs, no HTTPS.
+    let dns = resolve_ips(&fqdn).await;
+    if dns.is_empty() {
+        return unreachable_probe(fqdn, dns, false, false, false);
+    }
+    let (tcp22, tcp443, tcp_git) = tokio::join!(
         tcp_open(&fqdn, 22),
         tcp_open(&fqdn, 443),
         tcp_open(&fqdn, git_port),
-        https_api_config(&fqdn),
-        https_api_status(&fqdn),
     );
+    // 443 closed: TCP SYNs only. Skip HTTPS and git-daemon until the port opens.
+    if !tcp443 {
+        return unreachable_probe(fqdn, dns, tcp22, tcp443, tcp_git);
+    }
+    let (mut https_config, https_status) =
+        tokio::join!(https_api_config(&fqdn), https_api_status(&fqdn));
     if let (Some(cfg), Some(st)) = (https_config.as_mut(), https_status.as_ref()) {
         merge_status_into_config(cfg, st);
     }
     // Prefer local `POST /api/status` tips (no git-daemon). Fall back to bounded
-    // ls-remote on nodes that have not been upgraded (schema < 2).
+    // ls-remote only on reachable old nodes (schema < 2). Never ls-remote a down host.
     let git_tips = match https_status.as_ref() {
         Some(s) if s.ok && s.schema_version >= 2 => git_tips_from_status(&s.repos),
-        _ => ls_remote_tips(&fqdn, git_port, https_config.as_ref(), repos).await,
+        _ if https_config.as_ref().map(|c| c.ok).unwrap_or(false) => {
+            ls_remote_tips(&fqdn, git_port, https_config.as_ref(), repos).await
+        }
+        _ => Vec::new(),
     };
     let healthy = https_config.as_ref().map(|c| c.ok).unwrap_or(false) && tcp_git;
     NodeProbe {
@@ -210,7 +256,11 @@ pub(crate) fn git_tips_from_status(repos: &[StatusRepo]) -> Vec<GitTip> {
         .filter(|r| r.on_disk && !r.name.is_empty())
         .map(|r| {
             let mut refs = Vec::new();
-            push_ref(&mut refs, r.publish_branch.as_deref(), r.publish_sha.as_deref());
+            push_ref(
+                &mut refs,
+                r.publish_branch.as_deref(),
+                r.publish_sha.as_deref(),
+            );
             push_ref(&mut refs, r.head_branch.as_deref(), r.head_sha.as_deref());
             GitTip {
                 repo: r.name.clone(),
@@ -284,9 +334,7 @@ pub async fn resolve_ips(host: &str) -> Vec<String> {
     let lookup = format!("{host}:0");
     match timeout(Duration::from_secs(4), tokio::net::lookup_host(lookup)).await {
         Ok(Ok(addrs)) => {
-            let mut out: Vec<String> = addrs
-                .map(|a: SocketAddr| a.ip().to_string())
-                .collect();
+            let mut out: Vec<String> = addrs.map(|a: SocketAddr| a.ip().to_string()).collect();
             out.sort();
             out.dedup();
             out
@@ -311,7 +359,12 @@ async fn https_api_config(host: &str) -> Option<ConfigProbe> {
         .danger_accept_invalid_certs(false)
         .build()
         .ok()?;
-    let resp = client.post(&url).json(&serde_json::json!({})).send().await.ok()?;
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .ok()?;
     let status = resp.status().as_u16();
     let ok = resp.status().is_success();
     let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
@@ -509,7 +562,11 @@ pub fn apply_catalog_sync(nodes: &mut [NodeProbe], extra_expected: &[String]) {
                 if repo_key != repo {
                     continue;
                 }
-                let have = tip.refs.iter().find(|r| r.name == *branch).map(|r| r.sha.as_str());
+                let have = tip
+                    .refs
+                    .iter()
+                    .find(|r| r.name == *branch)
+                    .map(|r| r.sha.as_str());
                 if have != Some(want_sha.as_str()) {
                     n.drift.push(RepoDrift {
                         repo: repo.clone(),
@@ -521,7 +578,8 @@ pub fn apply_catalog_sync(nodes: &mut [NodeProbe], extra_expected: &[String]) {
             }
         }
         n.missing_repos.sort();
-        n.drift.sort_by(|a, b| (&a.repo, &a.branch).cmp(&(&b.repo, &b.branch)));
+        n.drift
+            .sort_by(|a, b| (&a.repo, &a.branch).cmp(&(&b.repo, &b.branch)));
         n.sync_ok = n.missing_repos.is_empty() && n.drift.is_empty();
     }
 }
@@ -556,7 +614,10 @@ fn canonical_tips(
         if total < 2 {
             continue;
         }
-        let Some((sha, _)) = shas.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0))) else {
+        let Some((sha, _)) = shas
+            .into_iter()
+            .max_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)))
+        else {
             continue;
         };
         out.insert(key, sha);
@@ -633,7 +694,10 @@ mod tests {
             dns: vec!["1.1.1.1".into(), "2.2.2.2".into()],
         };
         let keep = vec!["1.1.1.1".to_string()];
-        assert_eq!(dead_ingress_ips(&ingress, &keep), vec!["2.2.2.2".to_string()]);
+        assert_eq!(
+            dead_ingress_ips(&ingress, &keep),
+            vec!["2.2.2.2".to_string()]
+        );
     }
 
     #[test]
@@ -693,7 +757,10 @@ mod tests {
                 "a.example",
                 &["relay-master", "park"],
                 &["relay-master", "park"],
-                vec![tip("relay-master", "main", "aaa1111"), tip("park", "main", "bbb2222")],
+                vec![
+                    tip("relay-master", "main", "aaa1111"),
+                    tip("park", "main", "bbb2222"),
+                ],
             ),
             up_node(
                 "b.example",
@@ -817,8 +884,24 @@ mod tests {
     }
 
     #[test]
+    fn next_probe_secs_is_fast_when_down_or_dns_empty() {
+        let up = up_node("a.example", &["park"], &["park"], vec![]);
+        assert_eq!(next_probe_secs(&[up.clone()], 300, 10), 300);
+        let mut down = up.clone();
+        down.healthy = false;
+        assert_eq!(next_probe_secs(&[down], 300, 10), 10);
+        let mut no_dns = up.clone();
+        no_dns.dns.clear();
+        assert_eq!(next_probe_secs(&[no_dns], 300, 10), 10);
+        assert_eq!(next_probe_secs(&[], 300, 10), 10);
+    }
+
+    #[test]
     fn old_status_schema_is_not_treated_as_local_tips() {
-        let st = parse_status_probe(true, &serde_json::json!({"schema_version": 1, "healthy": true}));
+        let st = parse_status_probe(
+            true,
+            &serde_json::json!({"schema_version": 1, "healthy": true}),
+        );
         assert_eq!(st.schema_version, 1);
         assert!(st.repos.is_empty());
     }

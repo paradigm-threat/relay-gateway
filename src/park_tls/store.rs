@@ -48,7 +48,11 @@ pub fn cert_paths(domain: &str) -> (PathBuf, PathBuf) {
     (dir.join("fullchain.pem"), dir.join("privkey.pem"))
 }
 
-pub fn persist_cert_pair(domain: &str, fullchain_pem: &str, privkey_pem: &str) -> std::io::Result<()> {
+pub fn persist_cert_pair(
+    domain: &str,
+    fullchain_pem: &str,
+    privkey_pem: &str,
+) -> std::io::Result<()> {
     let (chain, key) = cert_paths(domain);
     if let Some(parent) = chain.parent() {
         ensure_dir(parent)?;
@@ -72,10 +76,7 @@ pub fn read_cert_expiry_days(domain: &str) -> Option<f64> {
     let pem = std::fs::read_to_string(chain).ok()?;
     let der = pem_to_first_cert_der(&pem)?;
     let not_after = x509_not_after_unix(&der)?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_secs() as i64;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
     Some((not_after - now) as f64 / 86400.0)
 }
 
