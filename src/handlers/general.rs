@@ -11,7 +11,7 @@ use axum::{
 use git2::Repository;
 use serde::Serialize;
 
-use crate::{authorized_repos, git, helpers, notify, types::*};
+use crate::{authorized_repos, catalog_policy, git, helpers, notify, types::*};
 
 fn panic_payload_message(payload: &Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
@@ -89,6 +89,9 @@ pub async fn post_api_config(State(state): State<AppState>) -> impl IntoResponse
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
         publish_branch: String,
+        /// FQDN of the node that accepts client pushes for this repo.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        publish_origin: Option<String>,
     }
 
     #[derive(Serialize)]
@@ -133,6 +136,9 @@ pub async fn post_api_config(State(state): State<AppState>) -> impl IntoResponse
             .collect::<Vec<_>>()
     });
 
+    let catalog_index = catalog_policy::catalog_path_from_env()
+        .and_then(|p| catalog_policy::try_load_catalog_index(&p));
+
     let catalog_repos = state.authorized_repos.as_ref().map(|a| {
         let mut rows: Vec<CatalogRepoSummary> = a
             .repos
@@ -141,6 +147,10 @@ pub async fn post_api_config(State(state): State<AppState>) -> impl IntoResponse
                 name: name.clone(),
                 description: anchor.description.clone(),
                 publish_branch: anchor.branch.clone(),
+                publish_origin: catalog_index
+                    .as_ref()
+                    .and_then(|idx| idx.repos.get(name))
+                    .and_then(|rec| rec.publish_origin.clone()),
             })
             .collect();
         rows.sort_by(|a, b| a.name.cmp(&b.name));

@@ -25,9 +25,21 @@ pub struct NodeProbe {
     pub missing_repos: Vec<String>,
     #[serde(default)]
     pub drift: Vec<RepoDrift>,
+    /// Unhealthy publisher/replica ordering (not ordinary per-node drift).
+    #[serde(default)]
+    pub sync_anomalies: Vec<SyncAnomaly>,
     /// False when this up node is missing catalog repos or git tips disagree with the fleet.
     #[serde(default = "sync_ok_default")]
     pub sync_ok: bool,
+    /// Admin SSH probe (Observer leaves this unset).
+    #[serde(default)]
+    pub ssh_ok: Option<bool>,
+    /// `~/.ssh/known_hosts` key does not match the live host.
+    #[serde(default)]
+    pub host_key_changed: bool,
+    /// `Some(false)` = SSH worked and `/opt/relay` is missing (empty VM).
+    #[serde(default)]
+    pub install_present: Option<bool>,
 }
 
 #[allow(dead_code)]
@@ -41,6 +53,41 @@ pub struct RepoDrift {
     pub branch: String,
     pub sha: Option<String>,
     pub expected_sha: String,
+    /// How this drift was classified (publisher-aware mesh rules).
+    #[serde(default)]
+    pub kind: DriftKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DriftKind {
+    /// No `publish_origin`; compared against fleet majority tip.
+    #[default]
+    TipMismatch,
+    /// Non-publisher replica behind its publish origin.
+    ReplicaBehind,
+    /// Non-publisher replica ahead of publish origin (mesh anomaly; do not sync down).
+    ReplicaAhead,
+}
+
+/// Unhealthy mesh: publish origin tip is behind a non-publisher replica.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SyncAnomaly {
+    pub kind: String,
+    pub repo: String,
+    pub branch: String,
+    pub publisher_fqdn: String,
+    pub publisher_sha: String,
+    pub replica_fqdn: String,
+    pub replica_sha: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CatalogRepoInfo {
+    pub name: String,
+    pub publish_branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,6 +106,8 @@ pub struct ConfigProbe {
     pub repos: Vec<String>,
     #[serde(default)]
     pub authorized_repos: Vec<String>,
+    #[serde(default)]
+    pub catalog_repos: Vec<CatalogRepoInfo>,
 }
 
 /// Subset of gateway `POST /api/status` used for local per-repo tips (schema ≥ 2).
@@ -175,7 +224,11 @@ fn unreachable_probe(
         error: None,
         missing_repos: Vec::new(),
         drift: Vec::new(),
+        sync_anomalies: Vec::new(),
         sync_ok: true,
+        ssh_ok: None,
+        host_key_changed: false,
+        install_present: None,
     }
 }
 
@@ -222,7 +275,11 @@ async fn probe_node(node: &FleetNode, git_port: u16, repos: &[String]) -> NodePr
         error: None,
         missing_repos: Vec::new(),
         drift: Vec::new(),
+        sync_anomalies: Vec::new(),
         sync_ok: true,
+        ssh_ok: None,
+        host_key_changed: false,
+        install_present: None,
     }
 }
 
@@ -375,6 +432,10 @@ async fn https_api_config(host: &str) -> Option<ConfigProbe> {
     let peers = json_string_vec(&body, "peers");
     let repos = json_string_vec(&body, "repos");
     let authorized_repos = json_string_vec(&body, "authorized_repos");
+    let catalog_repos = body
+        .get("catalog_repos")
+        .and_then(|v| serde_json::from_value::<Vec<CatalogRepoInfo>>(v.clone()).ok())
+        .unwrap_or_default();
     Some(ConfigProbe {
         ok,
         relay_server_id,
@@ -382,6 +443,7 @@ async fn https_api_config(host: &str) -> Option<ConfigProbe> {
         status,
         repos,
         authorized_repos,
+        catalog_repos,
     })
 }
 
@@ -525,10 +587,14 @@ pub fn expected_catalog_repos(nodes: &[NodeProbe], extra: &[String]) -> Vec<Stri
 
 pub fn apply_catalog_sync(nodes: &mut [NodeProbe], extra_expected: &[String]) {
     let expected = expected_catalog_repos(nodes, extra_expected);
+    let catalog_meta = collect_catalog_repos(nodes);
     let canonical = canonical_tips(nodes, &expected);
+    let publisher_tips = build_publisher_tips(nodes, &catalog_meta, &expected);
+
     for n in nodes.iter_mut() {
         n.missing_repos.clear();
         n.drift.clear();
+        n.sync_anomalies.clear();
         n.sync_ok = true;
         if !n.healthy {
             continue;
@@ -550,7 +616,6 @@ pub fn apply_catalog_sync(nodes: &mut [NodeProbe], extra_expected: &[String]) {
                 n.missing_repos.push(repo.clone());
                 continue;
             }
-            // ls-remote errors (timeout, max-connections, etc.) are not "missing".
             let Some(tip) = n
                 .git_tips
                 .iter()
@@ -558,22 +623,59 @@ pub fn apply_catalog_sync(nodes: &mut [NodeProbe], extra_expected: &[String]) {
             else {
                 continue;
             };
-            for ((repo_key, branch), want_sha) in &canonical {
-                if repo_key != repo {
+
+            let meta = catalog_meta.get(repo);
+            let publish_branch = meta.map(|m| m.publish_branch.as_str());
+            let publish_origin = meta.and_then(|m| m.publish_origin.as_deref());
+
+            if let Some(_origin) = publish_origin.filter(|o| !o.is_empty()) {
+                let branch = publish_branch.unwrap_or("main");
+                let key = (repo.clone(), branch.to_string());
+                let Some((expected_sha, origin_fqdn)) = publisher_tips.get(&key) else {
+                    continue;
+                };
+                let is_publisher = fqdn_eq(&n.fqdn, origin_fqdn);
+                if is_publisher {
                     continue;
                 }
-                let have = tip
-                    .refs
-                    .iter()
-                    .find(|r| r.name == *branch)
-                    .map(|r| r.sha.as_str());
-                if have != Some(want_sha.as_str()) {
+                let have = tip_sha_for_branch(tip, branch);
+                if have.as_deref() != Some(expected_sha.as_str()) {
+                    let majority = canonical.get(&key);
+                    let kind = if majority
+                        .filter(|m| m.as_str() != expected_sha.as_str())
+                        .is_some_and(|m| have.as_ref() == Some(m))
+                    {
+                        DriftKind::ReplicaAhead
+                    } else {
+                        DriftKind::ReplicaBehind
+                    };
                     n.drift.push(RepoDrift {
                         repo: repo.clone(),
-                        branch: branch.clone(),
-                        sha: have.map(|s| s.to_string()),
-                        expected_sha: want_sha.clone(),
+                        branch: branch.to_string(),
+                        sha: have,
+                        expected_sha: expected_sha.clone(),
+                        kind,
                     });
+                }
+            } else {
+                for ((repo_key, branch), want_sha) in &canonical {
+                    if repo_key != repo {
+                        continue;
+                    }
+                    let have = tip
+                        .refs
+                        .iter()
+                        .find(|r| r.name == *branch)
+                        .map(|r| r.sha.as_str());
+                    if have != Some(want_sha.as_str()) {
+                        n.drift.push(RepoDrift {
+                            repo: repo.clone(),
+                            branch: branch.clone(),
+                            sha: have.map(|s| s.to_string()),
+                            expected_sha: want_sha.clone(),
+                            kind: DriftKind::TipMismatch,
+                        });
+                    }
                 }
             }
         }
@@ -582,6 +684,148 @@ pub fn apply_catalog_sync(nodes: &mut [NodeProbe], extra_expected: &[String]) {
             .sort_by(|a, b| (&a.repo, &a.branch).cmp(&(&b.repo, &b.branch)));
         n.sync_ok = n.missing_repos.is_empty() && n.drift.is_empty();
     }
+
+    attach_publisher_behind_anomalies(nodes, &publisher_tips, &canonical);
+}
+
+fn attach_publisher_behind_anomalies(
+    nodes: &mut [NodeProbe],
+    publisher_tips: &std::collections::BTreeMap<(String, String), (String, String)>,
+    canonical: &std::collections::BTreeMap<(String, String), String>,
+) {
+    for ((repo, branch), (pub_sha, origin_fqdn)) in publisher_tips {
+        let majority = canonical.get(&(repo.clone(), branch.clone()));
+        let Some(majority_sha) = majority else {
+            continue;
+        };
+        if majority_sha == pub_sha {
+            continue;
+        }
+        let Some(_publisher) = nodes.iter().find(|n| n.healthy && fqdn_eq(&n.fqdn, origin_fqdn))
+        else {
+            continue;
+        };
+        let Some(replica) = nodes.iter().find(|n| {
+            n.healthy
+                && !fqdn_eq(&n.fqdn, origin_fqdn)
+                && n.git_tips.iter().any(|t| {
+                    t.repo == *repo
+                        && t.error.is_none()
+                        && tip_sha_for_branch(t, branch).as_deref() == Some(majority_sha.as_str())
+                })
+        }) else {
+            continue;
+        };
+        let replica_sha = replica
+            .git_tips
+            .iter()
+            .find(|t| t.repo == *repo)
+            .and_then(|t| tip_sha_for_branch(t, branch))
+            .unwrap_or_default();
+        let anomaly = SyncAnomaly {
+            kind: "publisher_behind_replica".into(),
+            repo: repo.clone(),
+            branch: branch.clone(),
+            publisher_fqdn: origin_fqdn.clone(),
+            publisher_sha: pub_sha.clone(),
+            replica_fqdn: replica.fqdn.clone(),
+            replica_sha,
+        };
+        if let Some(n) = nodes
+            .iter_mut()
+            .find(|n| fqdn_eq(&n.fqdn, origin_fqdn))
+        {
+            if !n.sync_anomalies.iter().any(|a| {
+                a.kind == anomaly.kind
+                    && a.repo == anomaly.repo
+                    && a.branch == anomaly.branch
+                    && a.replica_fqdn == anomaly.replica_fqdn
+            }) {
+                n.sync_anomalies.push(anomaly);
+            }
+        }
+    }
+    for n in nodes.iter_mut() {
+        n.sync_anomalies.sort_by(|a, b| {
+            (&a.repo, &a.branch, &a.replica_fqdn).cmp(&(&b.repo, &b.branch, &b.replica_fqdn))
+        });
+    }
+}
+
+/// Merge `catalog_repos` from all healthy nodes (first wins per repo name).
+pub fn collect_catalog_repos(nodes: &[NodeProbe]) -> std::collections::BTreeMap<String, CatalogRepoInfo> {
+    let mut out = std::collections::BTreeMap::new();
+    for n in nodes {
+        if !n.healthy {
+            continue;
+        }
+        let Some(cfg) = &n.https_config else {
+            continue;
+        };
+        for row in &cfg.catalog_repos {
+            if row.name.is_empty() {
+                continue;
+            }
+            out.entry(row.name.clone()).or_insert_with(|| row.clone());
+        }
+    }
+    out
+}
+
+fn build_publisher_tips(
+    nodes: &[NodeProbe],
+    catalog: &std::collections::BTreeMap<String, CatalogRepoInfo>,
+    expected: &[String],
+) -> std::collections::BTreeMap<(String, String), (String, String)> {
+    let mut out = std::collections::BTreeMap::new();
+    for repo in expected {
+        let Some(meta) = catalog.get(repo) else {
+            continue;
+        };
+        let Some(origin) = meta.publish_origin.as_deref().filter(|o| !o.is_empty()) else {
+            continue;
+        };
+        let branch = meta.publish_branch.as_str();
+        let Some(publisher) = nodes.iter().find(|n| n.healthy && fqdn_eq(&n.fqdn, origin)) else {
+            continue;
+        };
+        let Some(tip) = publisher
+            .git_tips
+            .iter()
+            .find(|t| t.repo == *repo && t.error.is_none())
+        else {
+            continue;
+        };
+        let Some(sha) = tip_sha_for_branch(tip, branch) else {
+            continue;
+        };
+        out.insert((repo.clone(), branch.to_string()), (sha, origin.to_string()));
+    }
+    out
+}
+
+fn tip_sha_for_branch(tip: &GitTip, branch: &str) -> Option<String> {
+    tip.refs
+        .iter()
+        .find(|r| r.name == branch)
+        .map(|r| r.sha.clone())
+        .or_else(|| {
+            if tip.refs.is_empty() {
+                tip.sha.clone()
+            } else {
+                None
+            }
+        })
+}
+
+pub(crate) fn fqdn_eq(a: &str, b: &str) -> bool {
+    normalize_fqdn(a) == normalize_fqdn(b)
+}
+
+fn normalize_fqdn(host: &str) -> String {
+    let h = host.trim();
+    let h = h.split(':').next().unwrap_or(h);
+    h.trim_end_matches('.').to_ascii_lowercase()
 }
 
 /// Most common SHA per (repo, branch) among up nodes that advertised that ref.
@@ -626,7 +870,10 @@ fn canonical_tips(
 }
 
 pub fn attention_nodes(nodes: &[NodeProbe]) -> usize {
-    nodes.iter().filter(|n| !n.healthy || !n.sync_ok).count()
+    nodes
+        .iter()
+        .filter(|n| !n.healthy || !n.sync_ok || !n.sync_anomalies.is_empty())
+        .count()
 }
 
 pub fn down_nodes(nodes: &[NodeProbe]) -> usize {
@@ -714,7 +961,13 @@ mod tests {
         assert_eq!(auth, vec!["relay-master"]);
     }
 
-    fn up_node(fqdn: &str, repos: &[&str], authorized: &[&str], tips: Vec<GitTip>) -> NodeProbe {
+    fn up_node(
+        fqdn: &str,
+        repos: &[&str],
+        authorized: &[&str],
+        tips: Vec<GitTip>,
+        catalog_repos: Vec<CatalogRepoInfo>,
+    ) -> NodeProbe {
         NodeProbe {
             fqdn: fqdn.into(),
             dns: vec!["1.1.1.1".into()],
@@ -728,13 +981,26 @@ mod tests {
                 status: 200,
                 repos: repos.iter().map(|s| s.to_string()).collect(),
                 authorized_repos: authorized.iter().map(|s| s.to_string()).collect(),
+                catalog_repos,
             }),
             git_tips: tips,
             healthy: true,
             error: None,
             missing_repos: vec![],
             drift: vec![],
+            sync_anomalies: vec![],
             sync_ok: true,
+            ssh_ok: None,
+            host_key_changed: false,
+            install_present: None,
+        }
+    }
+
+    fn catalog_row(name: &str, branch: &str, origin: &str) -> CatalogRepoInfo {
+        CatalogRepoInfo {
+            name: name.into(),
+            publish_branch: branch.into(),
+            publish_origin: Some(origin.into()),
         }
     }
 
@@ -761,12 +1027,14 @@ mod tests {
                     tip("relay-master", "main", "aaa1111"),
                     tip("park", "main", "bbb2222"),
                 ],
+                vec![],
             ),
             up_node(
                 "b.example",
                 &["relay-master"],
                 &["relay-master", "park"],
                 vec![tip("relay-master", "main", "aaa1111")],
+                vec![],
             ),
         ];
         apply_catalog_sync(&mut nodes, &[]);
@@ -785,24 +1053,28 @@ mod tests {
                 &["park"],
                 &["park"],
                 vec![tip("park", "release", "aaa1111")],
+                vec![],
             ),
             up_node(
                 "b.example",
                 &["park"],
                 &["park"],
                 vec![tip("park", "release", "bbb2222")],
+                vec![],
             ),
             up_node(
                 "c.example",
                 &["park"],
                 &["park"],
                 vec![tip("park", "release", "aaa1111")],
+                vec![],
             ),
         ];
         apply_catalog_sync(&mut nodes, &[]);
         assert!(nodes[0].sync_ok);
         assert!(!nodes[1].sync_ok);
         assert_eq!(nodes[1].drift[0].branch, "release");
+        assert_eq!(nodes[1].drift[0].kind, DriftKind::TipMismatch);
         assert_eq!(nodes[1].drift[0].expected_sha, "aaa1111");
         assert!(nodes[2].sync_ok);
     }
@@ -815,6 +1087,7 @@ mod tests {
                 &["park"],
                 &["park"],
                 vec![tip("park", "main", "aaa1111")],
+                vec![],
             ),
             up_node(
                 "b.example",
@@ -826,6 +1099,7 @@ mod tests {
                     refs: vec![],
                     error: Some("fatal: unable to connect".into()),
                 }],
+                vec![],
             ),
         ];
         apply_catalog_sync(&mut nodes, &[]);
@@ -877,6 +1151,7 @@ mod tests {
             status: 200,
             repos: vec![],
             authorized_repos: vec![],
+            catalog_repos: vec![],
         };
         merge_status_into_config(&mut cfg, &st);
         assert_eq!(cfg.repos, vec!["park"]);
@@ -885,7 +1160,7 @@ mod tests {
 
     #[test]
     fn next_probe_secs_is_fast_when_down_or_dns_empty() {
-        let up = up_node("a.example", &["park"], &["park"], vec![]);
+        let up = up_node("a.example", &["park"], &["park"], vec![], vec![]);
         assert_eq!(next_probe_secs(&[up.clone()], 300, 10), 300);
         let mut down = up.clone();
         down.healthy = false;
@@ -904,5 +1179,102 @@ mod tests {
         );
         assert_eq!(st.schema_version, 1);
         assert!(st.repos.is_empty());
+    }
+
+    #[test]
+    fn publisher_is_not_flagged_when_replicas_are_ahead() {
+        let site = catalog_row("clevertree-site", "release", "dfw1.example");
+        let mut nodes = vec![
+            up_node(
+                "dfw1.example",
+                &["clevertree-site"],
+                &["clevertree-site"],
+                vec![tip("clevertree-site", "release", "aaa1111")],
+                vec![site.clone()],
+            ),
+            up_node(
+                "iad1.example",
+                &["clevertree-site"],
+                &["clevertree-site"],
+                vec![tip("clevertree-site", "release", "bbb2222")],
+                vec![site.clone()],
+            ),
+            up_node(
+                "hkg1.example",
+                &["clevertree-site"],
+                &["clevertree-site"],
+                vec![tip("clevertree-site", "release", "bbb2222")],
+                vec![site],
+            ),
+        ];
+        apply_catalog_sync(&mut nodes, &[]);
+        assert!(nodes[0].sync_ok, "publisher should stay in sync");
+        assert!(nodes[0].drift.is_empty());
+        assert_eq!(nodes[0].sync_anomalies.len(), 1);
+        assert_eq!(nodes[0].sync_anomalies[0].kind, "publisher_behind_replica");
+        assert!(!nodes[1].sync_ok);
+        assert_eq!(nodes[1].drift[0].kind, DriftKind::ReplicaAhead);
+        assert!(!nodes[2].sync_ok);
+        assert_eq!(nodes[2].drift[0].kind, DriftKind::ReplicaAhead);
+    }
+
+    #[test]
+    fn replicas_behind_publisher_are_flagged_not_publisher() {
+        let site = catalog_row("paradigm-threat-web", "release", "dfw1.example");
+        let mut nodes = vec![
+            up_node(
+                "dfw1.example",
+                &["paradigm-threat-web"],
+                &["paradigm-threat-web"],
+                vec![tip("paradigm-threat-web", "release", "bbb2222")],
+                vec![site.clone()],
+            ),
+            up_node(
+                "iad1.example",
+                &[],
+                &["paradigm-threat-web"],
+                vec![],
+                vec![site.clone()],
+            ),
+            up_node(
+                "hkg1.example",
+                &["paradigm-threat-web"],
+                &["paradigm-threat-web"],
+                vec![tip("paradigm-threat-web", "release", "aaa1111")],
+                vec![site],
+            ),
+        ];
+        apply_catalog_sync(&mut nodes, &[]);
+        assert!(nodes[0].sync_ok);
+        assert!(nodes[0].drift.is_empty());
+        assert!(nodes[0].sync_anomalies.is_empty());
+        assert!(!nodes[1].sync_ok);
+        assert_eq!(nodes[1].missing_repos, vec!["paradigm-threat-web"]);
+        assert!(!nodes[2].sync_ok);
+        assert_eq!(nodes[2].drift[0].kind, DriftKind::ReplicaBehind);
+        assert_eq!(nodes[2].drift[0].expected_sha, "bbb2222");
+    }
+
+    #[test]
+    fn publisher_origin_match_is_case_insensitive() {
+        let site = catalog_row("clevertree-site", "release", "DFW1.example");
+        let mut nodes = vec![
+            up_node(
+                "dfw1.example",
+                &["clevertree-site"],
+                &["clevertree-site"],
+                vec![tip("clevertree-site", "release", "aaa1111")],
+                vec![site.clone()],
+            ),
+            up_node(
+                "iad1.example",
+                &["clevertree-site"],
+                &["clevertree-site"],
+                vec![tip("clevertree-site", "release", "bbb2222")],
+                vec![site],
+            ),
+        ];
+        apply_catalog_sync(&mut nodes, &[]);
+        assert!(nodes[0].drift.is_empty());
     }
 }

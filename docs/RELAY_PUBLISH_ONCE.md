@@ -3,7 +3,7 @@
 **Status:** client write fence is implemented (`enforce_publish_origin_fence` on `pre-receive` and HTTP PUT/DELETE). Replica skip (`enforce_push_range` on peer-fetch) is **not**. Gateways parse catalog `publish_origin` and reject client writes on non-publishers when the field is set. Empty/omitted = no fence (compat).  
 **Settled product model:** **update the SearchStore on commit**, not on QUERY. QUERY / MCP are **read-only**. If `docs_indexed_head` lags the git tip, they return rows with **`indexFresh: false`** — they never JIT-rebuild.
 
-**This fleet:** `publish_branch` is **`main`**. `publish_origin` is **`dfw1.relaygateway.net`** (a hostname, not a git branch). Authors `git push` `main` to dfw1; lon1/hkg1 fast-forward `main`. Do not add a second publish ref.
+**This fleet:** `publish_branch` is **`main`**. `publish_origin` is **`dfw1.relaygateway.net`** (a hostname, not a git branch). Authors `git push` `main` to dfw1; iad1/hkg1 fast-forward `main`. Do not add a second publish ref.
 
 This document analyzes a **publish-once** mesh: run the expensive full cycle **once** on the publishing node, advance `publish_branch` under an existing catalog signature, let replicas **take Git immediately**, and **warm each replica’s SearchStore in the background**. It does **not** propose a new server signing key.
 

@@ -13,7 +13,7 @@ This is the canonical DNS strategy for a Relay network whose masters may be repl
 
 Use three layers:
 
-1. **Node names:** `dfw1.relaygateway.net`, `lon1.relaygateway.net`, and `hkg1.relaygateway.net`.
+1. **Node names:** `dfw1.relaygateway.net`, `iad1.relaygateway.net`, and `hkg1.relaygateway.net`.
    Each name has the current A record for exactly one master. `relay-master-deploy.sh` updates the node A record after provisioning or replacing that node.
 2. **Network ingress:** `fleet.relaygateway.net`.
    Its A/AAAA set is the materialized set of healthy fleet-node addresses. A fleet DNS reconciler resolves the configured node names and replaces stale addresses. Node names remain the source; do not copy provider IPs into configuration or documentation.
@@ -30,10 +30,10 @@ Example network zone:
 
 ```text
 dfw1.relaygateway.net   A      <current dfw1 IPv4>
-lon1.relaygateway.net   A      <current lon1 IPv4>
+iad1.relaygateway.net   A      <current iad1 IPv4>
 hkg1.relaygateway.net   A      <current hkg1 IPv4>
 fleet.relaygateway.net  A      <resolved dfw1 IPv4>
-fleet.relaygateway.net  A      <resolved lon1 IPv4>
+fleet.relaygateway.net  A      <resolved iad1 IPv4>
 fleet.relaygateway.net  A      <resolved hkg1 IPv4>
 ```
 

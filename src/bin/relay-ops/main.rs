@@ -6,6 +6,7 @@ mod inventory;
 mod jobs;
 mod notify;
 mod probe;
+mod recommend;
 mod serve;
 mod spot;
 mod ssh;
@@ -78,6 +79,12 @@ enum Commands {
     Ssl,
     /// Compare catalog git HEAD across the fleet.
     Drift,
+    /// Catalog + peer fetch on a node (no wipe, no force-push).
+    Sync {
+        /// Healthy peer FQDN to fetch from after startup catalog sync.
+        #[arg(long)]
+        peer: Option<String>,
+    },
     /// Redeploy packed tarball per host (relay-linode-redeploy-seed).
     Update {
         #[arg(long)]
@@ -159,13 +166,14 @@ enum Commands {
         #[arg(long)]
         yes: bool,
     },
-    /// ssh-keygen -R for fqdn and optional IP.
+    /// ssh-keygen -R on ~/.ssh/known_hosts for fqdn and optional IPs (no sudo).
     #[command(name = "known-hosts-reset")]
     KnownHostsReset {
         #[arg(long)]
         fqdn: String,
+        /// Repeatable. DNS A / Spot IPv4 for the same node.
         #[arg(long)]
-        ip: Option<String>,
+        ip: Vec<String>,
     },
     /// Install login daemon (systemd --user or Windows Startup).
     #[command(name = "install-service")]
@@ -216,6 +224,14 @@ async fn main() -> Result<()> {
         Commands::Drift => {
             let (fleet, _) = load_fleet(&cfg, only).await?;
             print!("{}", fleet_cmd::drift(&cfg, &fleet, interactive)?);
+            Ok(())
+        }
+        Commands::Sync { peer } => {
+            let (fleet, _) = load_fleet(&cfg, only).await?;
+            print!(
+                "{}",
+                fleet_cmd::sync_node(&cfg, &fleet, interactive, peer.as_deref())?
+            );
             Ok(())
         }
         Commands::Update { build } | Commands::DeployAll { build } => {
@@ -340,7 +356,7 @@ async fn main() -> Result<()> {
         }
         Commands::Reclaim { fqdn, ip, yes } => cmd_reclaim(&cfg, fqdn, ip, yes).await,
         Commands::KnownHostsReset { fqdn, ip } => {
-            println!("{}", jobs::reset_known_hosts(&fqdn, ip.as_deref())?);
+            println!("{}", jobs::reset_known_hosts(&fqdn, &ip)?);
             Ok(())
         }
         Commands::InstallService => install_service(&cfg),
@@ -502,6 +518,7 @@ fn install_service(cfg: &OpsConfig) -> Result<()> {
                 "Environment=RELAY_OPS_CHECKOUT={}\n",
                 root.display()
             ));
+            env_lines.push_str("Environment=RELAY_OPS_PREFER_LOCAL_FLEET=1\n");
             workdir = format!("WorkingDirectory={}\n", root.display());
         }
         let body = format!(
@@ -570,6 +587,7 @@ mod tests {
             "health",
             "ssl",
             "drift",
+            "sync",
             "update",
             "deploy-all",
             "repair",

@@ -22,7 +22,7 @@ After a Spot node IP change (and after the node A record is updated):
 
 # Or directly:
 ./terraform/shared-dns/scripts/vercel-dns-fleet-reconcile.sh \
-  dfw1.relaygateway.net lon1.relaygateway.net hkg1.relaygateway.net
+  dfw1.relaygateway.net iad1.relaygateway.net hkg1.relaygateway.net
 ```
 
 `relay-master-deploy.sh` runs the same reconcile automatically after upserting the node + wildcard records (unless **`--skip-dns`**).

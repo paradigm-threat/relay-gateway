@@ -52,7 +52,7 @@ After Spot preemption: re-run **`relay-master-deploy.sh --target spot-dfw1`** (t
 | Piper off/on | `./scripts/relay-fleet.sh features-set --only=… --piper=1` |
 | Piper HTTPS `/voices` `/tts` | After enabling Piper, Caddy must proxy those paths to **:5590** — `install-caddy-tls.sh` (in tarball). Refresh fleet: `RELAY_SSH_USER=ubuntu ./scripts/relay-fleet-refresh-caddy-piper.sh` |
 
-Spot VMs SSH as **`ubuntu`** (not `ari`). Production fleet: **dfw1**, **lon1**, **hkg1**.
+Spot VMs SSH as **`ubuntu`** (not `ari`). Production fleet: **dfw1**, **iad1**, **hkg1**.
 
 See **[`RELAY_OPS.md`](./RELAY_OPS.md)**.
 

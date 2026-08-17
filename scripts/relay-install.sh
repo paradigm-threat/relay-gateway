@@ -44,7 +44,7 @@ IPFS_SWARM_PORT="${RELAY_IPFS_SWARM_PORT:-4001}"
 IPFS_PATH_DIR="${RELAY_IPFS_PATH:-$INSTALL/ipfs}"
 
 # Semicolon-separated FQDNs; used when RELAY_MASTER_PEER_LIST is unset (non-interactive) or when the operator accepts the interactive default (Enter).
-DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-dfw1.relaygateway.net;lon1.relaygateway.net;hkg1.relaygateway.net}"
+DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-dfw1.relaygateway.net;iad1.relaygateway.net;hkg1.relaygateway.net}"
 DEFAULT_RELAY_MASTER_CATALOG_PATH="${DEFAULT_RELAY_MASTER_CATALOG_PATH:-/opt/relay/src/relay-master}"
 DEFAULT_RELAY_MASTER_CATALOG_GIT_URL="${DEFAULT_RELAY_MASTER_CATALOG_GIT_URL:-https://gitlab.com/clevertree/relay-master.git}"
 

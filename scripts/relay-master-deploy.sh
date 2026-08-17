@@ -6,7 +6,7 @@
 #   ./scripts/relay-master-deploy.sh --target linode-atlanta2 --install-only
 #   ./scripts/relay-master-deploy.sh --target spot-dfw1 --install-only --build
 #
-# Targets: spot-dfw1 | spot-lon1 | spot-hkg1 | linode-atlanta2
+# Targets: spot-dfw1 | spot-iad1 | spot-hkg1 | linode-atlanta2
 #
 # Steps: terraform apply (unless --install-only) → SSH → pack tarball → install.sh →
 #        Vercel apex + wildcard DNS → install-caddy-tls → reconfigure-features (Piper) → peer-clone PT repos
@@ -30,7 +30,7 @@ TERRAFORM="${TERRAFORM:-terraform}"
 
 usage() {
   sed -n '1,35p' <<'EOF'
-Usage: ./scripts/relay-master-deploy.sh --target <spot-dfw1|spot-lon1|spot-hkg1|linode-atlanta2> [flags]
+Usage: ./scripts/relay-master-deploy.sh --target <spot-dfw1|spot-iad1|spot-hkg1|linode-atlanta2> [flags]
 
 Flags:
   --install-only     Skip terraform apply; read IP from terraform output / DNS
@@ -66,15 +66,15 @@ done
 
 stack_dir() {
   case "$1" in
-    spot-dfw1|spot-lon1|spot-hkg1) echo "$ROOT/terraform/rackspace-spot-vm" ;;
+    spot-dfw1|spot-iad1|spot-hkg1|spot-lon1) echo "$ROOT/terraform/rackspace-spot-vm" ;;
     linode-atlanta2) echo "$ROOT/terraform/linode-relay" ;;
-    *) echo "Unknown --target: $1 (use spot-dfw1|spot-lon1|spot-hkg1 or linode-atlanta2)" >&2; return 1 ;;
+    *) echo "Unknown --target: $1 (use spot-dfw1|spot-iad1|spot-hkg1 or linode-atlanta2)" >&2; return 1 ;;
   esac
 }
 
 default_ssh_user() {
   case "$1" in
-    spot-dfw1|spot-lon1|spot-hkg1) echo "ubuntu" ;;
+    spot-dfw1|spot-iad1|spot-hkg1|spot-lon1) echo "ubuntu" ;;
     linode-atlanta2) echo "ari" ;;
   esac
 }
@@ -82,8 +82,9 @@ default_ssh_user() {
 spot_node_slug() {
   case "$1" in
     spot-dfw1) echo "dfw1" ;;
-    spot-lon1) echo "lon1" ;;
+    spot-iad1) echo "iad1" ;;
     spot-hkg1) echo "hkg1" ;;
+    spot-lon1) echo "lon1" ;;
     *) echo "" ;;
   esac
 }
@@ -91,8 +92,9 @@ spot_node_slug() {
 spot_ip_override() {
   case "$1" in
     spot-dfw1) echo "${SPOT_DFW1_IP:-}" ;;
-    spot-lon1) echo "${SPOT_LON1_IP:-}" ;;
+    spot-iad1) echo "${SPOT_IAD1_IP:-}" ;;
     spot-hkg1) echo "${SPOT_HKG1_IP:-}" ;;
+    spot-lon1) echo "${SPOT_LON1_IP:-}" ;;
     *) echo "" ;;
   esac
 }
@@ -179,7 +181,7 @@ reconcile_fleet_dns() {
     echo "[deploy] Skip fleet DNS: no VERCEL_API_TOKEN" >&2
     return 0
   }
-  local peers="${RELAY_MASTER_PEER_LIST:-${RELAY_OPERATOR_FLEET:-dfw1.relaygateway.net;lon1.relaygateway.net;hkg1.relaygateway.net}}"
+  local peers="${RELAY_MASTER_PEER_LIST:-${RELAY_OPERATOR_FLEET:-dfw1.relaygateway.net;iad1.relaygateway.net;hkg1.relaygateway.net}}"
   # shellcheck disable=SC2086
   IFS=';' read -ra peer_arr <<<"$peers"
   echo "[deploy] reconcile fleet.relaygateway.net from ${peer_arr[*]}"
@@ -250,7 +252,7 @@ for v in RELAY_MASTER_MESH_SECRET RELAY_PEER_SECRET RELAY_MASTER_TRUST_ROOT \
   [[ -n "${!v:-}" ]] && MESH_VARS+=("$v=${!v}")
 done
 
-RELAY_MASTER_PEER_LIST="${RELAY_MASTER_PEER_LIST:-dfw1.relaygateway.net;lon1.relaygateway.net;hkg1.relaygateway.net}"
+RELAY_MASTER_PEER_LIST="${RELAY_MASTER_PEER_LIST:-dfw1.relaygateway.net;iad1.relaygateway.net;hkg1.relaygateway.net}"
 # Ensure this spot master is in the mesh list.
 if [[ "$TARGET" == spot-* ]]; then
   _mesh_self="${NODE_SLUG}.relaygateway.net"

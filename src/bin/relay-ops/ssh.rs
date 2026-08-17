@@ -5,6 +5,18 @@ use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
+enum HostKeyMode {
+    AcceptNew,
+    Strict,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SshDiag {
+    pub ssh_ok: Option<bool>,
+    pub host_key_changed: bool,
+    pub install_present: Option<bool>,
+}
+
 pub struct SshCtx<'a> {
     pub cfg: &'a OpsConfig,
     pub fleet: &'a FleetFile,
@@ -27,7 +39,12 @@ impl SshCtx<'_> {
             .or_else(|| self.cfg.identity_path())
     }
 
-    pub fn ssh_base(&self, fqdn: &str) -> Result<Command> {
+    fn ssh_base_opts(
+        &self,
+        fqdn: &str,
+        host_key: HostKeyMode,
+        connect_timeout: u32,
+    ) -> Result<Command> {
         self.require_admin()?;
         let user = self.fleet.ssh_user(fqdn, self.cfg.ssh_user.as_deref());
         let mut c = Command::new("ssh");
@@ -37,13 +54,55 @@ impl SshCtx<'_> {
                 c.arg("-o").arg("IdentitiesOnly=yes");
             }
         }
-        c.arg("-o").arg("ConnectTimeout=20");
+        c.arg("-o").arg(format!("ConnectTimeout={connect_timeout}"));
         if !self.interactive {
             c.arg("-o").arg("BatchMode=yes");
         }
-        c.arg("-o").arg("StrictHostKeyChecking=accept-new");
+        match host_key {
+            HostKeyMode::AcceptNew => {
+                c.arg("-o").arg("StrictHostKeyChecking=accept-new");
+            }
+            HostKeyMode::Strict => {
+                c.arg("-o").arg("StrictHostKeyChecking=yes");
+                c.arg("-o").arg("UpdateHostKeys=no");
+            }
+        }
         c.arg(format!("{user}@{fqdn}"));
         Ok(c)
+    }
+
+    pub fn ssh_base(&self, fqdn: &str) -> Result<Command> {
+        self.ssh_base_opts(fqdn, HostKeyMode::AcceptNew, 20)
+    }
+
+    /// Strict host-key check + `/opt/relay` presence. Used to pick Reclaim vs Repair vs Reset known_hosts.
+    pub fn diagnose(&self, fqdn: &str) -> SshDiag {
+        let mut diag = SshDiag::default();
+        let mut c = match self.ssh_base_opts(fqdn, HostKeyMode::Strict, 8) {
+            Ok(c) => c,
+            Err(_) => return diag,
+        };
+        c.arg("test -d /opt/relay && echo RELAY_INSTALL=1 || echo RELAY_INSTALL=0");
+        match c.output() {
+            Ok(out) => {
+                let text = output_text(&out);
+                if host_key_changed_from_ssh_text(&text) {
+                    diag.host_key_changed = true;
+                    diag.ssh_ok = Some(false);
+                    return diag;
+                }
+                if out.status.success() {
+                    diag.ssh_ok = Some(true);
+                    diag.install_present = Some(text.contains("RELAY_INSTALL=1"));
+                } else {
+                    diag.ssh_ok = Some(false);
+                }
+            }
+            Err(_) => {
+                diag.ssh_ok = Some(false);
+            }
+        }
+        diag
     }
 
     pub fn run(&self, fqdn: &str, remote: &str) -> Result<Output> {
@@ -109,4 +168,33 @@ pub fn output_text(out: &Output) -> String {
         s.push_str(&err);
     }
     s
+}
+
+/// True only for a *changed* key already in known_hosts (not a merely unknown host).
+pub fn host_key_changed_from_ssh_text(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    t.contains("remote host identification has changed")
+        || t.contains("someone could be eavesdropping")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_changed_host_key_not_unknown() {
+        let changed = "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\n\
+             IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!\n\
+             Host key verification failed.\n";
+        assert!(host_key_changed_from_ssh_text(changed));
+        assert!(host_key_changed_from_ssh_text(
+            "WARNING: Someone could be eavesdropping on you right now"
+        ));
+        assert!(!host_key_changed_from_ssh_text(
+            "Host key verification failed.\nNo ECDSA host key is known for lon1.example."
+        ));
+        assert!(!host_key_changed_from_ssh_text(
+            "Permission denied (publickey)."
+        ));
+    }
 }

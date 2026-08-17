@@ -50,7 +50,24 @@ impl GitlabProject {
     }
 }
 
+fn prefer_local_fleet() -> bool {
+    matches!(
+        std::env::var("RELAY_OPS_PREFER_LOCAL_FLEET")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes"
+    )
+}
+
 pub async fn load_topology(cfg: &OpsConfig, gitlab_url: &str) -> Result<(FleetFile, String)> {
+    // Unpublished local topology (e.g. lon1 → iad1 before GitLab push).
+    if prefer_local_fleet() {
+        if let Some(local) = local_checkout_fleet_json(cfg) {
+            return Ok(local);
+        }
+    }
+
     let git_ref = cfg.gitlab_ref.as_deref().unwrap_or("main");
     let project = GitlabProject::parse(gitlab_url)?;
     let client = reqwest::Client::builder()
@@ -210,5 +227,20 @@ mod tests {
         let p = GitlabProject::parse("https://git.example.net/acme/relay.git/").unwrap();
         assert_eq!(p.path, "acme/relay");
         assert_eq!(p.web_base, "https://git.example.net");
+    }
+
+    #[test]
+    fn prefer_local_fleet_reads_env() {
+        let prev = std::env::var("RELAY_OPS_PREFER_LOCAL_FLEET").ok();
+        std::env::remove_var("RELAY_OPS_PREFER_LOCAL_FLEET");
+        assert!(!prefer_local_fleet());
+        std::env::set_var("RELAY_OPS_PREFER_LOCAL_FLEET", "1");
+        assert!(prefer_local_fleet());
+        std::env::set_var("RELAY_OPS_PREFER_LOCAL_FLEET", "true");
+        assert!(prefer_local_fleet());
+        match prev {
+            Some(v) => std::env::set_var("RELAY_OPS_PREFER_LOCAL_FLEET", v),
+            None => std::env::remove_var("RELAY_OPS_PREFER_LOCAL_FLEET"),
+        }
     }
 }

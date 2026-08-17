@@ -6,7 +6,7 @@
 
 **`relay.env` permissions:** **`install.sh`** sets **`$INSTALL/relay.env`** to **`root:root`** **`chmod 600`**. Only root (installer, **`install.sh update`**, **`repair`**, or **`relay-bootstrap.sh`** run as root) should edit it; the **`relay`** user gets variables from systemd **`EnvironmentFile`**.
 
-**DNS / IPs:** For the current phase, **public IPs can be set manually**; automated DNS (Vercel API or other) remains optional via **`RELAY_SKIP_VERCEL_DNS=1`** or the existing Vercel flow below. **Wildcard** **`*.dfw1.relaygateway.net`** (and the same for **lon1** / **hkg1**) must point at that master; the apex **A** record must match the host’s **public IPv4**.
+**DNS / IPs:** For the current phase, **public IPs can be set manually**; automated DNS (Vercel API or other) remains optional via **`RELAY_SKIP_VERCEL_DNS=1`** or the existing Vercel flow below. **Wildcard** **`*.dfw1.relaygateway.net`** (and the same for **iad1** / **hkg1**) must point at that master; the apex **A** record must match the host’s **public IPv4**.
 
 **Operator SSH:** connect by **FQDN** (e.g. **`ssh ubuntu@dfw1.relaygateway.net`** with **`~/.ssh/id_ed25519_relay_gateway`**). Do not rely on **literal IPv4** values from old docs, chat, or screenshots—Spot/Linode reassignment changes them; **`~/.ssh/config`** should not pin **`HostName`** to a stale IP when the name resolves correctly.
 
@@ -82,24 +82,24 @@ After **`install.sh`** (or an equivalent tarball install) has created **`/opt/re
 | **HTTP routing** | **`RELAY_PUBLIC_HOSTNAME`**, **`RELAY_SERVER_ID`** | Wildcard DNS **`*.node`** → server IP for **`{repo}.{node}`** hosts. |
 | **Catalog clone** | **`RELAY_MASTER_CATALOG_GIT_URL`** (HTTPS), **`RELAY_MASTER_TRUST_ROOT`** (40 hex) | **`RELAY_MASTER_CATALOG_PATH`** defaults to **`/opt/relay/src/relay-master`** when the URL is set. Branch: **`RELAY_MASTER_CATALOG_BRANCH`** (default **`main`**). |
 | **Site apex** | **`RELAY_DEFAULT_REPO=relay-master`** | Optional but typical for catalog-as-homepage. |
-| **Masters** | **`RELAY_MASTER_PEER_LIST`** | Semicolon-separated FQDNs of **every** master (installer default **`dfw1.relaygateway.net;lon1.relaygateway.net;hkg1.relaygateway.net`**). **Listing this host is fine** — startup sync **skips self** for peer fetch. Align list + mesh secrets across masters per **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)**. |
+| **Masters** | **`RELAY_MASTER_PEER_LIST`** | Semicolon-separated FQDNs of **every** master (installer default **`dfw1.relaygateway.net;iad1.relaygateway.net;hkg1.relaygateway.net`**). **Listing this host is fine** — startup sync **skips self** for peer fetch. Align list + mesh secrets across masters per **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)**. |
 | **Network** | UFW / cloud firewall | **22**, **8080**, **9418**, **4001/tcp+udp** (Kubo swarm; API **5001** and gateway **8081** stay loopback), and **5590** if Piper. Masters must reach each other on **`RELAY_GIT_PORT`** (**9418**) for peer **`git fetch`**. |
 
 **Verify after first start:** `curl -sS 'http://127.0.0.1:8080/api/config'` → **`startup_catalog_sync.catalog_forge_sync_ok`** should be **`true`**; **`peer_fetch`** reports **`ok` / `failed`** counts (peer round is best-effort). If **`catalog_forge_sync_ok`** is **`false`**, fix forge/auth, then **`sudo systemctl restart relay-gateway`**.
 
-**Example deployed masters (default installer `RELAY_MASTER_PEER_LIST`):** **`dfw1.relaygateway.net`**, **`lon1.relaygateway.net`**, and **`hkg1.relaygateway.net`**. Use your real FQDNs if you override the list.
+**Example deployed masters (default installer `RELAY_MASTER_PEER_LIST`):** **`dfw1.relaygateway.net`**, **`iad1.relaygateway.net`**, and **`hkg1.relaygateway.net`**. Use your real FQDNs if you override the list.
 
 **`GET /api/config`** and **`GET /api/status`** (also **POST**/**HEAD**) are **node FQDN / loopback** operator APIs. Open **`https://{node}/api/status`** in a browser. Parked domains and **`{repo}.{node}`** keep `/api/*` as site files. HTML: `curl -sS 'https://dfw1.relaygateway.net/api/status?format=html'`.
 
 | Node | HTML status (`GET`, `?format=html`) | JSON status | JSON config |
 |------|--------------------------------------|-------------|-------------|
 | **dfw1** | `curl -sS 'https://dfw1.relaygateway.net/api/status?format=html'` | `curl -sS 'https://dfw1.relaygateway.net/api/status'` | `curl -sS 'https://dfw1.relaygateway.net/api/config'` |
-| **lon1** | `curl -sS 'https://lon1.relaygateway.net/api/status?format=html'` | `curl -sS 'https://lon1.relaygateway.net/api/status'` | `curl -sS 'https://lon1.relaygateway.net/api/config'` |
+| **iad1** | `curl -sS 'https://iad1.relaygateway.net/api/status?format=html'` | `curl -sS 'https://iad1.relaygateway.net/api/status'` | `curl -sS 'https://iad1.relaygateway.net/api/config'` |
 | **hkg1** | `curl -sS 'https://hkg1.relaygateway.net/api/status?format=html'` | `curl -sS 'https://hkg1.relaygateway.net/api/status'` | `curl -sS 'https://hkg1.relaygateway.net/api/config'` |
 
 **`/api/config`** returns **JSON only** (no HTML). **`GET /api/status`** defaults to JSON; use **`?format=html`** or **`Accept: text/html`** for the operator page (git repos + **IPFS seed**). For load checks, **`?strict=1`** returns HTTP **503** when any configured **git-mesh** peer probe fails (`repos_ok` and **`ipfs_ok`** are independent of `strict`).
 
-**Redeploy to masters (dfw1 / lon1 / hkg1):** build **`relay-linode-deploy.tgz`** on a trusted machine (**`./scripts/pack-linode-deploy.sh`**; see **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)**). The pack script **refuses a dirty/unpushed tree** unless **`RELAY_PACK_ALLOW_DIRTY=1`**. Copy to each host and run **`sudo ./install.sh update`** from the unpacked bundle (or replace **`/opt/relay/bin/relay-gateway`**, **`relay-hook-handler`**, and **`relay-git-proxy`**, then **`sudo systemctl restart relay-gateway relay-git-daemon relay-git-proxy`**). Confirm with **`curl -sS -X POST 'http://127.0.0.1:8080/api/config' | head -c 400`** on the VM. **`update`** also installs **Kubo** (`relay-ipfs.service`) unless **`RELAY_INSTALL_IPFS=0`**.
+**Redeploy to masters (dfw1 / iad1 / hkg1):** build **`relay-linode-deploy.tgz`** on a trusted machine (**`./scripts/pack-linode-deploy.sh`**; see **[`DEPLOY_SELF_HOSTED.md`](./DEPLOY_SELF_HOSTED.md)**). The pack script **refuses a dirty/unpushed tree** unless **`RELAY_PACK_ALLOW_DIRTY=1`**. Copy to each host and run **`sudo ./install.sh update`** from the unpacked bundle (or replace **`/opt/relay/bin/relay-gateway`**, **`relay-hook-handler`**, and **`relay-git-proxy`**, then **`sudo systemctl restart relay-gateway relay-git-daemon relay-git-proxy`**). Confirm with **`curl -sS -X POST 'http://127.0.0.1:8080/api/config' | head -c 400`** on the VM. **`update`** also installs **Kubo** (`relay-ipfs.service`) unless **`RELAY_INSTALL_IPFS=0`**.
 
 **Fleet shortcut:** **`./scripts/relay-fleet.sh --build deploy-all`** from **`relay-gateway/`** (after **`relay.env`**). Packs a **clean, pushed** tree by default; pass **`--allow-dirty`** only as an explicit override. If you skip **`--build`**, an existing **`target/relay-linode-deploy.tgz`** may be **old**; masters then keep an outdated **`relay-gateway`** even though your **working tree** is new — see **`docs/RELAY_OPS.md`** (stale tarball + **`--build` placement).
 
@@ -213,7 +213,7 @@ Optional: **`VERCEL_TEAM_ID=...`**, **`RELAY_VERCEL_DOMAIN=relaygateway.net`** (
 
 Skipping DNS (no token on host, or DNS managed manually):
 
-Set **`RELAY_PUBLIC_HOSTNAME`** to this node’s FQDN (required for **`Host: {repo}.{node}`** routing when Vercel did not append it). Set **`RELAY_SERVER_ID`**. **`RELAY_MASTER_PEER_LIST`** defaults in **`install.sh`** to the canonical mesh / **master** FQDNs (**`dfw1.relaygateway.net;lon1.relaygateway.net;hkg1.relaygateway.net`**); override only when you need a different set. Roadmap for mesh events, **internal** anti–over-ping (**SHA-first**, optional **`via` / hops**; **Slack-independent**), and subscriptions: **[`RELAY_MESH_NETWORKING_PLAN.md`](./RELAY_MESH_NETWORKING_PLAN.md)**. Optional operator Slack: **[`SLACK_MESH_NOTIFY.md`](./SLACK_MESH_NOTIFY.md)**.
+Set **`RELAY_PUBLIC_HOSTNAME`** to this node’s FQDN (required for **`Host: {repo}.{node}`** routing when Vercel did not append it). Set **`RELAY_SERVER_ID`**. **`RELAY_MASTER_PEER_LIST`** defaults in **`install.sh`** to the canonical mesh / **master** FQDNs (**`dfw1.relaygateway.net;iad1.relaygateway.net;hkg1.relaygateway.net`**); override only when you need a different set. Roadmap for mesh events, **internal** anti–over-ping (**SHA-first**, optional **`via` / hops**; **Slack-independent**), and subscriptions: **[`RELAY_MESH_NETWORKING_PLAN.md`](./RELAY_MESH_NETWORKING_PLAN.md)**. Optional operator Slack: **[`SLACK_MESH_NOTIFY.md`](./SLACK_MESH_NOTIFY.md)**.
 
 ```bash
 sudo RELAY_INSTALL_NONINTERACTIVE=1 RELAY_SKIP_VERCEL_DNS=1 \

@@ -321,6 +321,71 @@ pub fn drift(cfg: &OpsConfig, fleet: &FleetFile, interactive: bool) -> Result<St
     Ok(log)
 }
 
+/// Run catalog sync + optional peer fetch on each filtered host. Fetch only; never wipe or force-push.
+const SYNC_REMOTE: &str = r#"set -euo pipefail
+INSTALL=/opt/relay
+SCRIPT="$INSTALL/bin/relay-startup-catalog-sync.sh"
+PEER="${1:-}"
+PORT="${2:-9418}"
+DATA="${3:-/opt/relay/data}"
+if [[ ! -x "$SCRIPT" ]]; then
+  echo "NO_INSTALL: missing $SCRIPT — use Reclaim on an empty VM, not Synchronize"
+  exit 1
+fi
+echo "catalog-sync begin $(hostname -f 2>/dev/null || hostname)"
+if command -v systemd-run >/dev/null 2>&1; then
+  sudo systemd-run --quiet --wait --collect --pipe \
+    --property=User=relay \
+    --property=EnvironmentFile=-$INSTALL/relay.env \
+    "$SCRIPT"
+else
+  sudo -u relay "$SCRIPT"
+fi
+if [[ -n "$PEER" && -d "$DATA" ]]; then
+  echo "peer-fetch from $PEER"
+  shopt -s nullglob
+  for bare in "$DATA"/*.git; do
+    name=$(basename "$bare" .git)
+    if sudo -u relay git --git-dir="$bare" fetch "git://${PEER}:${PORT}/${name}.git" '+refs/heads/*:refs/heads/*' --prune; then
+      echo "fetched $name from $PEER"
+    else
+      echo "WARN fetch $name from $PEER failed"
+    fi
+  done
+fi
+echo "catalog-sync end"
+"#;
+
+pub fn sync_node(
+    cfg: &OpsConfig,
+    fleet: &FleetFile,
+    interactive: bool,
+    peer: Option<&str>,
+) -> Result<String> {
+    let ssh = SshCtx {
+        cfg,
+        fleet,
+        interactive,
+    };
+    ssh.require_admin()?;
+    let data = fleet.data_root();
+    let port = fleet.git_port().to_string();
+    let mut log = String::new();
+    for n in &fleet.nodes {
+        let peer = peer
+            .map(str::trim)
+            .filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case(&n.fqdn));
+        log.push_str(&format!("sync begin {}\n", n.fqdn));
+        let out = ssh.run_bash_s(&n.fqdn, SYNC_REMOTE, &[peer.unwrap_or(""), &port, data])?;
+        log.push_str(&output_text(&out));
+        if !out.status.success() {
+            anyhow::bail!("{log}sync failed on {}", n.fqdn);
+        }
+        log.push_str(&format!("sync end {}\n", n.fqdn));
+    }
+    Ok(log)
+}
+
 pub async fn fleet_dns(
     cfg: &OpsConfig,
     fleet: &FleetFile,
@@ -759,5 +824,15 @@ mod tests {
         assert!(s.contains("RELAY_FEAT_NPM_PKGS=a,b"));
         assert!(s.contains("RELAY_FEAT_TRANSLATION=1"));
         assert!(s.contains("RELAY_FEAT_LIBRETRANSLATE=0"));
+    }
+
+    #[test]
+    fn sync_remote_fetches_does_not_force_push() {
+        assert!(SYNC_REMOTE.contains("relay-startup-catalog-sync.sh"));
+        assert!(SYNC_REMOTE.contains("git --git-dir="));
+        assert!(SYNC_REMOTE.contains(" fetch "));
+        assert!(!SYNC_REMOTE.contains("push --force"));
+        assert!(!SYNC_REMOTE.contains("reset --hard"));
+        assert!(!SYNC_REMOTE.contains("rm -rf"));
     }
 }

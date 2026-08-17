@@ -27,6 +27,8 @@
     button:disabled { opacity:.45; cursor:not-allowed; }
     button.warn { background:#6b3a12; }
     button.ghost { background:#333; }
+    button.primary { background:#1f6b45; box-shadow: 0 0 0 2px var(--ok); font-weight: 650; }
+    .rec { margin-top:8px; padding:8px 10px; border-radius:8px; background:#3d2a12; border:1px solid #6b3a12; font-size:13px; }
     pre { background:#0b0b0b; padding:10px; overflow:auto; max-height:280px; font-size:12px; }
     pre.fileview { max-height:360px; white-space:pre-wrap; word-break:break-word; }
     input { background:#0b0b0b; color:#eee; border:1px solid #444; border-radius:6px; padding:6px 8px; }
@@ -59,17 +61,18 @@
     <div class="row"><span>Inventory</span><span id="inv" class="muted"></span></div>
     <h2>Observer</h2>
     <div class="actions">
-      <button onclick="refresh()">Refresh</button>
-      <button onclick="job({kind:'hosts'})">Hosts</button>
-      <button onclick="job({kind:'health'})">Health</button>
-      <button onclick="job({kind:'ssl'})">SSL</button>
+      <button title="Re-probe DNS, HTTPS, and git tips now." onclick="refresh()">Refresh</button>
+      <button title="Print fleet FQDNs, SSH user, and identity path." onclick="job({kind:'hosts'})">Hosts</button>
+      <button title="QUERY smoke (+ SSL) against each node." onclick="job({kind:'health'})">Health</button>
+      <button title="HTTPS report for node and parked domains." onclick="job({kind:'ssl'})">SSL</button>
     </div>
     <h2>Admin / DNS</h2>
     <div class="actions">
-      <button id="btnSsh" disabled onclick="job({kind:'ssh-check'})">SSH check</button>
-      <button id="btnDrift" disabled onclick="job({kind:'drift'})">Drift</button>
-      <button id="btnDrop" disabled onclick="act('/api/fleet-dns-drop')">Drop dead fleet A</button>
-      <button id="btnDnsDry" disabled onclick="job({kind:'fleet-dns', dry_run:true})">Fleet DNS dry-run</button>
+      <button id="btnSsh" disabled title="SSH true on every node (Admin)." onclick="job({kind:'ssh-check'})">SSH check</button>
+      <button id="btnDrift" disabled title="Compare catalog git HEAD across the fleet (report only; use Synchronize on a cell to fetch)." onclick="job({kind:'drift'})">Drift</button>
+      <button id="btnKh" disabled title="Resets SSH host keys for the whole fleet so Repair/Reclaim can connect after Spot replacement." onclick="resetFleetKnownHosts()">Reset known_hosts</button>
+      <button id="btnDrop" disabled title="Remove dead IPs from fleet ingress A records. Never empties the set." onclick="act('/api/fleet-dns-drop')">Drop dead fleet A</button>
+      <button id="btnDnsDry" disabled title="Show desired fleet ingress A set without writing Vercel DNS." onclick="job({kind:'fleet-dns', dry_run:true})">Fleet DNS dry-run</button>
     </div>
     <div id="syncBanner"></div>
   </section>
@@ -138,6 +141,7 @@ function restoreRepoUi(card) {
 
 function nodeCardHtml(n, d) {
   const inv = d.inventory || {};
+  const admin = !!inv.admin_ready;
   const spot = (d.spot || []).find(s => (n.spot_cloudspace && s.cloudspace === n.spot_cloudspace));
   const drift = spot && n.dns && n.dns.length && !n.dns.includes(spot.ip);
   const cfg = n.https_config || {};
@@ -145,15 +149,23 @@ function nodeCardHtml(n, d) {
   const auth = cfg.authorized_repos || [];
   const missing = n.missing_repos || [];
   const driftRows = n.drift || [];
+  const anomalies = n.sync_anomalies || [];
   const tips = n.git_tips || [];
   const names = [...new Set([...(repos), ...missing])];
+  const rec = n.recommendation || null;
+  const primary = rec && rec.primary_action ? rec.primary_action : '';
   const repoItems = names.map(name => {
     const tip = tips.find(t => t.repo === name);
     const sha = tip && tip.sha ? shortSha(tip.sha) : '';
     const err = tip && tip.error ? ' ' + tip.error : '';
     const isMissing = missing.includes(name);
     const drow = driftRows.find(x => x.repo === name);
-    const mark = isMissing ? ' <span class="bad">missing</span>' : (drow ? ' <span class="warn">drift ' + esc(drow.branch) + '</span>' : '');
+    const driftLabel = drow
+      ? (drow.kind === 'replica_ahead'
+          ? ' <span class="bad">ahead of publisher ' + esc(drow.branch) + '</span>'
+          : ' <span class="warn">drift ' + esc(drow.branch) + '</span>')
+      : '';
+    const mark = isMissing ? ' <span class="bad">missing</span>' : driftLabel;
     return `<li><span class="link" onclick="openBrowser('${esc(n.fqdn)}','${esc(name)}')">${esc(name)}</span>` +
       (sha ? ` <span class="sha">${esc(sha)}</span>` : '') +
       mark +
@@ -163,16 +175,43 @@ function nodeCardHtml(n, d) {
   const extraTips = tips.filter(t => !names.includes(t.repo)).map(t =>
     `<li class="muted">${esc(t.repo)} ${t.sha ? esc(shortSha(t.sha)) : esc(t.error || '')}</li>`
   ).join('');
-  const syncClass = !n.healthy ? 'bad' : (!n.sync_ok ? 'warn' : 'ok');
-  const syncLabel = !n.healthy ? 'down' : (!n.sync_ok ? 'sync' : 'up');
+  const syncClass = !n.healthy ? 'bad' : (anomalies.length ? 'bad' : (!n.sync_ok ? 'warn' : 'ok'));
+  const syncLabel = !n.healthy ? 'down' : (anomalies.length ? 'anomaly' : (!n.sync_ok ? 'sync' : 'up'));
   const repoCountLabel = repos.length
     ? (repos.length + ' repo' + (repos.length === 1 ? '' : 's'))
     : (tips.length ? (tips.length + ' repo' + (tips.length === 1 ? '' : 's')) : '0 repos');
   const syncDetail = !n.sync_ok
     ? `<div class="warn">${missing.length ? ('missing ' + missing.join(', ')) : ''}` +
       `${missing.length && driftRows.length ? ' · ' : ''}` +
-      `${driftRows.length ? ('drift ' + driftRows.map(x => x.repo + '@' + x.branch).join(', ')) : ''}</div>`
+      `${driftRows.length ? ('drift ' + driftRows.map(x => x.repo + '@' + x.branch + (x.kind === 'replica_ahead' ? ' (ahead)' : '')).join(', ')) : ''}</div>`
     : '';
+  const anomalyDetail = anomalies.length
+    ? `<div class="bad">${anomalies.map(a => esc(a.repo + '@' + a.branch + ': publisher ' + a.publisher_fqdn + ' behind ' + a.replica_fqdn)).join(' · ')}</div>`
+    : '';
+  const recHtml = rec && rec.message
+    ? `<div class="rec">${esc(rec.message)}</div>`
+    : '';
+  const btn = (action, label, extraClass, onclick) => {
+    const isPri = primary === action;
+    const cls = [extraClass, isPri ? 'primary' : ''].filter(Boolean).join(' ');
+    return `<button class="${cls}" data-action="${action}" title="${esc(ACTION_TITLES[action] || '')}" onclick="${onclick}">${label}</button>`;
+  };
+  const peer = healthyPeer(n.fqdn);
+  const vis = n.visible_actions || {};
+  const actions = [];
+  if (inv.vercel_token && vis['point-dns']) {
+    actions.push(btn('point-dns', 'Point DNS to Spot IP', '', `point('${esc(n.fqdn)}', '${spot ? esc(spot.ip) : ''}')`));
+  }
+  if (admin && vis.sync) {
+    actions.push(btn('sync', 'Synchronize', '', `confirmJob('Synchronize ' + '${esc(n.fqdn)}' + ' with catalog/peer tips', {kind:'sync', fqdn:'${esc(n.fqdn)}', peer:'${esc(peer)}'})`));
+  }
+  if (admin && vis.repair) {
+    actions.push(btn('repair', 'Repair', '', `confirmJob('Repair (install.sh) ' + '${esc(n.fqdn)}', {kind:'repair', fqdn:'${esc(n.fqdn)}'})`));
+  }
+  if (admin && vis.reclaim) {
+    const ip = spot ? esc(spot.ip) : esc((n.dns && n.dns[0]) || '');
+    actions.push(btn('reclaim', 'Reclaim', 'warn', `confirmJob('Reclaim (Spot install-only) ' + '${esc(n.fqdn)}', {kind:'reclaim', fqdn:'${esc(n.fqdn)}', ip: '${ip}'} )`));
+  }
   return `
       <div class="row"><strong>${esc(n.fqdn)}</strong><span class="${syncClass}">${syncLabel}</span></div>
       <div class="muted">DNS ${ (n.dns||[]).join(', ') || '—' }</div>
@@ -183,17 +222,14 @@ function nodeCardHtml(n, d) {
         <span class="link" onclick="openBrowser('${esc(n.fqdn)}')">${(repos.length || tips.length) ? 'Browse' : ''}</span>
       </div>
       ${syncDetail}
+      ${anomalyDetail}
       ${spot ? `<div class="${drift ? 'bad' : 'ok'}">Spot ${esc(spot.ip)}${drift ? ' (DNS mismatch)' : ''}</div>` : ''}
+      ${recHtml}
       <details class="repos">
         <summary class="muted">Repositories</summary>
         <ul>${repoItems || '<li class="muted">none from /api/config</li>'}${extraTips}</ul>
       </details>
-      <div class="actions">
-        <button ${inv.vercel_token && spot ? '' : 'disabled'} onclick="point('${esc(n.fqdn)}', '${spot ? esc(spot.ip) : ''}')">Point DNS to Spot IP</button>
-        <button ${inv.admin_ready ? '' : 'disabled'} onclick="confirmJob('Repair (install.sh) ' + '${esc(n.fqdn)}', {kind:'repair', fqdn:'${esc(n.fqdn)}'})">Repair</button>
-        <button class="warn" ${inv.admin_ready ? '' : 'disabled'} onclick="confirmJob('Reclaim (Spot install-only) ' + '${esc(n.fqdn)}', {kind:'reclaim', fqdn:'${esc(n.fqdn)}', ip: '${spot ? esc(spot.ip) : esc((n.dns&&n.dns[0])||'')}'} )">Reclaim</button>
-        <button ${inv.admin_ready ? '' : 'disabled'} onclick="kh('${esc(n.fqdn)}', '${esc((n.dns&&n.dns[0])||'')}')">Reset known_hosts</button>
-      </div>`;
+      ${actions.length ? `<div class="actions">${actions.join('')}</div>` : ''}`;
 }
 
 function paintNodes(d) {
@@ -248,13 +284,19 @@ async function snap() {
   document.getElementById('btnDnsDry').disabled = !inv.vercel_token;
   document.getElementById('btnSsh').disabled = !inv.admin_ready;
   document.getElementById('btnDrift').disabled = !inv.admin_ready;
+  const btnKh = document.getElementById('btnKh');
+  btnKh.disabled = !inv.admin_ready;
+  const khNeeded = (d.nodes || []).some(n => n.recommendation && n.recommendation.primary_action === 'known-hosts');
+  btnKh.classList.toggle('primary', !!(inv.admin_ready && khNeeded));
   const syncNodes = (d.nodes || []).filter(n => n.healthy && n.sync_ok === false);
+  const anomalyNodes = (d.nodes || []).filter(n => n.healthy && (n.sync_anomalies || []).length);
   const downNodes = (d.nodes || []).filter(n => !n.healthy);
   const banner = document.getElementById('syncBanner');
-  if (syncNodes.length || downNodes.length) {
+  if (syncNodes.length || anomalyNodes.length || downNodes.length) {
     const bits = [];
     if (downNodes.length) bits.push(downNodes.length + ' down');
-    if (syncNodes.length) bits.push(syncNodes.length + ' out of sync with catalog/git tips');
+    if (anomalyNodes.length) bits.push(anomalyNodes.length + ' publish-origin anomaly');
+    if (syncNodes.length) bits.push(syncNodes.length + ' out of sync with publish origin');
     banner.className = 'banner warn';
     banner.textContent = bits.join(' · ') + (d.catalog_repos && d.catalog_repos.length ? ' · catalog ' + d.catalog_repos.length + ' repos' : '');
   } else {
@@ -273,6 +315,19 @@ async function snap() {
 function nodeCfg(fqdn) {
   return (lastSnap && lastSnap.nodes || []).find(n => n.fqdn === fqdn);
 }
+
+function healthyPeer(exceptFqdn) {
+  const n = (lastSnap && lastSnap.nodes || []).find(x => x.fqdn !== exceptFqdn && x.healthy && x.sync_ok);
+  return n ? n.fqdn : '';
+}
+
+const ACTION_TITLES = {
+  'point-dns': 'Point this node FQDN A record at the current Spot IP. Use when DNS A ≠ Spot IP (SSH may hit the wrong box). Not for git tip drift.',
+  'sync': 'Click to synchronize this node with catalog/peer tips.',
+  'repair': 'Run install.sh repair on an existing /opt/relay install. Use when units are broken. Not for host-key change, empty VMs, or git tip drift.',
+  'reclaim': 'Spot install-only (relay-master-deploy.sh). Use when SSH works but /opt/relay is missing (new empty VM). Reinstalls; not for git tip drift.',
+  'known-hosts': 'Resets SSH host keys for the whole fleet so Repair/Reclaim can connect after Spot replacement.'
+};
 
 function paintBrowserShell() {
   const panel = document.getElementById('browser');
@@ -394,7 +449,9 @@ function confirmJob(label, body) {
   return job(body);
 }
 function point(fqdn, ip) { if (!ip) return; act('/api/point-dns', {fqdn, ip}); }
-function kh(fqdn, ip) { act('/api/known-hosts-reset', {fqdn, ip: ip || null}); }
+function resetFleetKnownHosts() {
+  act('/api/known-hosts-reset', {});
+}
 snap();
 setInterval(snap, 8000);
 </script>

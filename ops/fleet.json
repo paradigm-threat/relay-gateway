@@ -10,10 +10,10 @@
       "spotCloudspace": "relay-network"
     },
     {
-      "fqdn": "lon1.relaygateway.net",
+      "fqdn": "iad1.relaygateway.net",
       "sshUser": "ubuntu",
-      "deployTarget": "spot-lon1",
-      "spotCloudspace": "relay-network-lon"
+      "deployTarget": "spot-iad1",
+      "spotCloudspace": "relay-network-iad"
     },
     {
       "fqdn": "hkg1.relaygateway.net",

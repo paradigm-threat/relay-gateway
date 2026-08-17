@@ -50,7 +50,8 @@ Global flags (before or with clap long opts): `--gitlab`, `--env-file`, `--only=
 | `inventory` | — | Local capability JSON |
 | `serve` | GitLab URL | UI on `127.0.0.1:7780` |
 | `ssh-check` | Admin | Parallel `ssh true` |
-| `drift` | Admin | Catalog HEAD alignment |
+| `drift` | Admin | Catalog HEAD alignment (report only) |
+| `sync` | Admin | On-node `relay-startup-catalog-sync.sh` + optional peer `git fetch` (`--peer=FQDN`, `--only=`). No wipe, no force-push. UI **Synchronize** for `sync` / drift cells. |
 | `update` / `deploy-all` | Admin + checkout | Pack optional `--build`; tarball + restart. Pack **refuses a dirty/unpushed tree** unless **`--allow-dirty`**. |
 | `repair` | Admin + checkout | Remote `install.sh repair` on an **existing** node |
 | `reclaim` | Admin + checkout | Spot **install-only** via `relay-master-deploy.sh` (`--fqdn` `--yes`) |
@@ -66,19 +67,19 @@ Global flags (before or with clap long opts): `--gitlab`, `--env-file`, `--only=
 
 Safe auto (serve loop only): drop **dead** IPs from `fleetIngress` A set (never empty the set). Never auto-point node DNS, never auto reclaim, never wipe.
 
-## Spot node replaced (today: lon1)
+## Spot node replaced (example: iad1)
 
 If DNS still points at a dead IP and Spot gave you a **new empty Ubuntu** (SSH works, no `/opt/relay`), do **not** use Repair — that runs `install.sh repair` on an existing install.
 
-**UI:** tray → Open fleet UI → **Point DNS to Spot IP** (if the card shows DNS≠Spot) → **Reclaim** → **Drop dead fleet A**. Reset known_hosts if SSH host keys changed.
+**UI:** tray → Open fleet UI → **Point DNS to Spot IP** (shown only when DNS A ≠ Spot IP) → **Reclaim** (empty Spot with working SSH only) → **Drop dead fleet A**. **Reset known_hosts** is one Admin header button for the whole fleet (FQDN + DNS/Spot IPs) after Spot replacement.
 
 **CLI:**
 
 ```bash
-./target/release/relay-ops status --only=lon1.relaygateway.net
-./target/release/relay-ops known-hosts-reset --fqdn lon1.relaygateway.net --ip 134.213.138.108
-./target/release/relay-ops reclaim --fqdn lon1.relaygateway.net --ip 134.213.138.108 --yes
-./target/release/relay-ops point-dns --fqdn lon1.relaygateway.net --ip 134.213.138.108
+./target/release/relay-ops status --only=iad1.relaygateway.net
+./target/release/relay-ops known-hosts-reset --fqdn iad1.relaygateway.net --ip 104.239.250.44
+./target/release/relay-ops reclaim --fqdn iad1.relaygateway.net --ip 104.239.250.44 --yes
+./target/release/relay-ops point-dns --fqdn iad1.relaygateway.net --ip 104.239.250.44
 ./target/release/relay-ops fleet-dns --drop-unhealthy --yes
 ```
 
@@ -96,7 +97,7 @@ cp ops/config.toml.example ~/.config/relay-ops/config.toml
 
 Bind is loopback-only by default.
 
-UI **Repair** = remote `install.sh repair`. UI **Reclaim** = Spot install-only (confirm-gated). `bootstrap-ssh` and destructive `reinstall` stay CLI-only.
+UI **Synchronize** = catalog sync + peer fetch (shown only on drifted / `sync` cells). UI **Repair** = remote `install.sh repair` on an **existing** install that is down (hidden for empty VMs, foreign/stale IP, host-key change, or mere drift). UI **Reclaim** = Spot install-only when SSH works and `/opt/relay` is missing (hidden without a Spot IP). Invalid per-cell actions are **omitted**, not greyed out. **Reset known_hosts** is a single Admin header action (`ssh-keygen -R` on user `~/.ssh/known_hosts`, no sudo) for every fleet FQDN + DNS/Spot IP. Each cell shows a **recommendation** and highlights the one primary button that is visible. `bootstrap-ssh` and destructive `reinstall` stay CLI-only.
 
 Each node card shows the **bare repo count** and SHAs from that host’s **`GET`/`POST /api/status`** (`schema_version` ≥ 2: local git tips, no git-daemon; ≥ 3: **IPFS seed** `self.ipfs` / `ipfs_ok`). Operator APIs are the **node FQDN** only (parked Hosts keep `/api/*` as site files). Older nodes fall back to `POST /api/config` plus `git ls-remote --heads` with **4 concurrent connections per host** (under git daemon `--max-connections`, default **64**). **Missing** means a catalog name is not on disk. An `ls-remote` timeout is **not** treated as missing. SHA drift still marks `sync`. Tray lines look like `dfw1  up  12 repos` (or `missing` / `drift` when out of sync). **Quit** stops the user service (`systemctl --user stop relay-ops`) or exits a foreground `serve`. **Browse** lists files over **HTTPS** (`GET https://{repo}.{node}/` with **`X-Relay-Tree: 1`**, blob GET for file bodies). Older nodes fall back to `git://` partial clone (`blob:none`). Observer; no SSH.
 

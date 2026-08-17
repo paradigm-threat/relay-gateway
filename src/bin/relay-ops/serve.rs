@@ -61,7 +61,13 @@ struct NodeJson {
     healthy: bool,
     missing_repos: Vec<String>,
     drift: Vec<crate::probe::RepoDrift>,
+    sync_anomalies: Vec<crate::probe::SyncAnomaly>,
     sync_ok: bool,
+    ssh_ok: Option<bool>,
+    host_key_changed: bool,
+    install_present: Option<bool>,
+    recommendation: Option<crate::recommend::Recommendation>,
+    visible_actions: crate::recommend::VisibleActions,
     spot_cloudspace: Option<String>,
     deploy_target: Option<String>,
 }
@@ -71,7 +77,10 @@ pub async fn refresh_inner(app: &App) {
     let cfg = app.cfg.clone();
     match crate::gitlab::load_topology(&cfg, &gitlab).await {
         Ok((mut fleet, source)) => {
-            let (nodes, ingress, live_peers) = probe_fleet(&fleet).await;
+            let (mut nodes, ingress, live_peers) = probe_fleet(&fleet).await;
+            if Inventory::collect(&cfg).admin_ready {
+                attach_ssh_diags(&cfg, &fleet, &mut nodes).await;
+            }
             fleet.union_peers(&live_peers);
             let spot = if let Some(tok) = cfg.spot_token.as_deref() {
                 crate::spot::list_assignments(tok).await.unwrap_or_default()
@@ -156,6 +165,40 @@ pub async fn refresh_inner(app: &App) {
     }
 }
 
+async fn attach_ssh_diags(cfg: &OpsConfig, fleet: &FleetFile, nodes: &mut [NodeProbe]) {
+    let want: Vec<String> = nodes
+        .iter()
+        .filter(|n| !n.healthy && n.tcp22)
+        .map(|n| n.fqdn.clone())
+        .collect();
+    if want.is_empty() {
+        return;
+    }
+    let mut set = tokio::task::JoinSet::new();
+    for fqdn in want {
+        let cfg = cfg.clone();
+        let fleet = fleet.clone();
+        set.spawn_blocking(move || {
+            let ssh = crate::ssh::SshCtx {
+                cfg: &cfg,
+                fleet: &fleet,
+                interactive: false,
+            };
+            (fqdn.clone(), ssh.diagnose(&fqdn))
+        });
+    }
+    while let Some(res) = set.join_next().await {
+        let Ok((fqdn, diag)) = res else {
+            continue;
+        };
+        if let Some(n) = nodes.iter_mut().find(|n| n.fqdn == fqdn) {
+            n.ssh_ok = diag.ssh_ok;
+            n.host_key_changed = diag.host_key_changed;
+            n.install_present = diag.install_present;
+        }
+    }
+}
+
 pub async fn serve(app: App, bind: &str) -> anyhow::Result<()> {
     refresh_inner(&app).await;
     let bg = app.clone();
@@ -205,6 +248,15 @@ async fn snapshot(State(app): State<App>) -> Json<Snapshot> {
         .iter()
         .map(|n| {
             let meta = g.fleet.node(&n.fqdn);
+            let spot_ip = meta
+                .and_then(|m| m.spot_cloudspace.as_ref())
+                .and_then(|cs| {
+                    g.spot
+                        .iter()
+                        .find(|a| a.cloudspace == *cs)
+                        .map(|a| a.ip.as_str())
+                });
+            let (rec, vis) = crate::recommend::for_node(n, spot_ip);
             NodeJson {
                 fqdn: n.fqdn.clone(),
                 dns: n.dns.clone(),
@@ -216,7 +268,13 @@ async fn snapshot(State(app): State<App>) -> Json<Snapshot> {
                 healthy: n.healthy,
                 missing_repos: n.missing_repos.clone(),
                 drift: n.drift.clone(),
+                sync_anomalies: n.sync_anomalies.clone(),
                 sync_ok: n.sync_ok,
+                ssh_ok: n.ssh_ok,
+                host_key_changed: n.host_key_changed,
+                install_present: n.install_present,
+                recommendation: rec,
+                visible_actions: vis,
                 spot_cloudspace: meta.and_then(|m| m.spot_cloudspace.clone()),
                 deploy_target: meta.and_then(|m| m.deploy_target.clone()),
             }
@@ -244,8 +302,11 @@ async fn refresh(State(app): State<App>) -> impl IntoResponse {
 
 #[derive(Deserialize)]
 struct FqdnIp {
+    #[serde(default)]
     fqdn: String,
     ip: Option<String>,
+    #[serde(default)]
+    ips: Vec<String>,
 }
 
 async fn fleet_dns_drop(State(app): State<App>) -> impl IntoResponse {
@@ -406,6 +467,16 @@ async fn job(State(app): State<App>, Json(body): Json<JobReq>) -> impl IntoRespo
                 })
                 .await
         }
+        "sync" => {
+            let peer = body.peer.clone();
+            app.jobs
+                .start_blocking("sync", &target, {
+                    let cfg = cfg.clone();
+                    let fleet = fleet.clone();
+                    move || crate::fleet_cmd::sync_node(&cfg, &fleet, false, peer.as_deref())
+                })
+                .await
+        }
         "repair" => {
             app.jobs
                 .start_blocking("repair", &target, {
@@ -504,10 +575,76 @@ async fn known_hosts(State(app): State<App>, Json(body): Json<FqdnIp>) -> impl I
     if !Inventory::collect(&app.cfg).admin_ready {
         return (StatusCode::BAD_REQUEST, "needs ssh + identity".to_string());
     }
-    match crate::jobs::reset_known_hosts(&body.fqdn, body.ip.as_deref()) {
-        Ok(msg) => (StatusCode::OK, msg),
-        Err(e) => (StatusCode::BAD_REQUEST, format!("{e:#}")),
-    }
+    let (target, nodes) = {
+        let g = app.inner.lock().await;
+        if body.fqdn.trim().is_empty() {
+            (
+                "fleet".to_string(),
+                fleet_known_hosts_targets(&g.nodes, &g.fleet, &g.spot),
+            )
+        } else {
+            let mut ips = Vec::new();
+            if let Some(ip) = body.ip.filter(|s| !s.trim().is_empty()) {
+                ips.push(ip);
+            }
+            ips.extend(body.ips.into_iter().filter(|s| !s.trim().is_empty()));
+            if let Some(n) = g.nodes.iter().find(|n| n.fqdn == body.fqdn) {
+                ips.extend(n.dns.iter().cloned());
+            }
+            if let Some(meta) = g.fleet.node(&body.fqdn) {
+                if let Some(cs) = &meta.spot_cloudspace {
+                    if let Some(a) = g.spot.iter().find(|a| a.cloudspace == *cs) {
+                        ips.push(a.ip.clone());
+                    }
+                }
+            }
+            (body.fqdn.clone(), vec![(body.fqdn.clone(), ips)])
+        }
+    };
+    let result =
+        tokio::task::spawn_blocking(move || crate::jobs::reset_known_hosts_many(&nodes)).await;
+    let recorded = match result {
+        Ok(inner) => inner,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("join: {e}")),
+    };
+    let ok = recorded.is_ok();
+    let msg = match &recorded {
+        Ok(m) => m.clone(),
+        Err(e) => format!("{e:#}"),
+    };
+    let _ = app
+        .jobs
+        .record_finished("known-hosts-reset", &target, recorded)
+        .await;
+    (
+        if ok {
+            StatusCode::OK
+        } else {
+            StatusCode::BAD_REQUEST
+        },
+        msg,
+    )
+}
+
+fn fleet_known_hosts_targets(
+    nodes: &[crate::probe::NodeProbe],
+    fleet: &crate::topology::FleetFile,
+    spot: &[crate::spot::SpotAssignment],
+) -> Vec<(String, Vec<String>)> {
+    nodes
+        .iter()
+        .map(|n| {
+            let mut ips = n.dns.clone();
+            if let Some(meta) = fleet.node(&n.fqdn) {
+                if let Some(cs) = &meta.spot_cloudspace {
+                    if let Some(a) = spot.iter().find(|a| a.cloudspace == *cs) {
+                        ips.push(a.ip.clone());
+                    }
+                }
+            }
+            (n.fqdn.clone(), ips)
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
