@@ -1,9 +1,11 @@
 //! Axum router shared by the CLI gateway and embedded desktop server.
 
+use std::time::Duration;
+
 use axum::{
     body::Body,
     extract::{Path as AxPath, State},
-    http::{header, Request, StatusCode},
+    http::{header, Method, Request, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -17,11 +19,23 @@ use crate::{handlers, transpiler, AppState};
 pub fn build_router(state: AppState) -> Router {
     let acme_dir = std::env::var("RELAY_ACME_DIR").unwrap_or_else(|_| "/var/www/certbot".to_string());
 
+    // Open CORS for mesh browsers (Vercel SPA, parked sites, WASM QUERY).
+    // Do not enable credentials: Allow-Origin: * is invalid with cookies.
+    let query_method = Method::from_bytes(b"QUERY").expect("QUERY is a valid method token");
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods(Any)
+        .allow_methods([
+            Method::GET,
+            Method::HEAD,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+            query_method,
+        ])
         .allow_headers(Any)
-        .expose_headers(Any);
+        .expose_headers(Any)
+        .max_age(Duration::from_secs(86400));
 
     Router::new()
         .route("/openapi.yaml", get(handlers::get_openapi_yaml))
