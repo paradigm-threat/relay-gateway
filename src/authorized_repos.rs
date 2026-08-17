@@ -46,10 +46,17 @@ pub struct RepoAnchor {
     pub anchor_commit: String,
     #[serde(default = "default_branch")]
     pub branch: String,
+    /// Catalog public blurb; copied from `catalog/repos/*.json` `description`.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 fn default_branch() -> String {
     "main".to_string()
+}
+
+fn nonempty_description(d: Option<String>) -> Option<String> {
+    d.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 pub fn load_from_path(path: &Path) -> anyhow::Result<AuthorizedReposFile> {
@@ -121,6 +128,9 @@ pub fn load_from_master_catalog(
         RepoAnchor {
             anchor_commit: tip,
             branch: branch.clone(),
+            description: Some(
+                "Canonical catalog for Relay deployments: which repositories a node may mirror, where to clone them, and the trusted root commit for each.".into(),
+            ),
         },
     );
 
@@ -139,6 +149,7 @@ pub fn load_from_master_catalog(
                 RepoAnchor {
                     anchor_commit: root,
                     branch: entry.publish_branch,
+                    description: nonempty_description(entry.description),
                 },
             );
         }
@@ -172,6 +183,7 @@ pub fn load_from_master_catalog(
             RepoAnchor {
                 anchor_commit: root,
                 branch: entry.branch,
+                description: None,
             },
         );
     }
@@ -298,6 +310,7 @@ mod tests {
             RepoAnchor {
                 anchor_commit: c1.to_string(),
                 branch: "main".into(),
+                description: None,
             },
         );
         assert!(validate_anchor(&repo, "r", &cfg).is_ok());
@@ -391,7 +404,8 @@ mod tests {
   "relay_root_commit": "{head}",
   "publish_branch": "main",
   "publish_origin": "dfw1.relaygateway.net",
-  "signing_keys_source": "repo"
+  "signing_keys_source": "repo",
+  "description": "Sample allowlisted repo."
 }}"#
             ),
         )
@@ -402,5 +416,9 @@ mod tests {
         let sample = ar.repos.get("sample-repo").unwrap();
         assert_eq!(sample.anchor_commit, head.to_string());
         assert_eq!(sample.branch, "main");
+        assert_eq!(
+            sample.description.as_deref(),
+            Some("Sample allowlisted repo.")
+        );
     }
 }

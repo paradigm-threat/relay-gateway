@@ -24,6 +24,7 @@ relay-master/
 | Field | Purpose |
 |-------|---------|
 | `repo` | Bare mirror slug (`paradigm-threat-files`) |
+| `description` | Short public blurb for directory UIs and `/api/status` / `/api/config`. Empty/omitted = none. Independent of whether the bare is live on a node. |
 | `tier` | `primary` \| `hosted` |
 | `forge_url` | Upstream clone URL |
 | `relay_root_commit` | Trusted root (40 hex) |

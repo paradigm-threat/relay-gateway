@@ -11,8 +11,10 @@
 //! - Query **`strict=1`**: HTTP **503** if any peer is unreachable (otherwise **200** with `healthy: false`).
 //!   Missing catalog bares set `repos_ok: false` but do **not** change `healthy` / `strict`.
 //!   IPFS daemon-down sets `ipfs_ok: false` and does **not** affect `healthy` / `strict`.
+//! - Query **`light=1`** (or **`peers=0`**): skip remote peer probes and the IPFS daemon check so
+//!   clients can measure their own RTT. `healthy` is then `true` (no peers were probed).
 //! - Env **`RELAY_STATUS_PEER_URL_TEMPLATE`**: default **`https://{host}/api/config`** (probed with **POST**).
-//! - Env **`RELAY_STATUS_PROBE_TIMEOUT_SECS`**: default **3**.
+//! - Env **`RELAY_STATUS_PROBE_TIMEOUT_SECS`**: default **3**. Peer probes run **in parallel**.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -64,6 +66,44 @@ fn probe_timeout() -> Duration {
         .filter(|&n| n > 0 && n <= 120)
         .unwrap_or(3);
     Duration::from_secs(secs)
+}
+
+fn wants_light(query: &HashMap<String, String>) -> bool {
+    query
+        .get("light")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+        || query
+            .get("peers")
+            .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
+            .unwrap_or(false)
+}
+
+async fn probe_peers_parallel(
+    client: &reqwest::Client,
+    hosts: &[String],
+    self_fqdn: Option<&str>,
+) -> Vec<PeerProbe> {
+    if hosts.is_empty() {
+        return Vec::new();
+    }
+    let mut set = tokio::task::JoinSet::new();
+    for (i, h) in hosts.iter().cloned().enumerate() {
+        let c = client.clone();
+        let me = self_fqdn.map(str::to_string);
+        set.spawn(async move {
+            let p = probe_one_peer(&c, &h, me.as_deref()).await;
+            (i, p)
+        });
+    }
+    let mut indexed: Vec<(usize, PeerProbe)> = Vec::with_capacity(hosts.len());
+    while let Some(joined) = set.join_next().await {
+        if let Ok(pair) = joined {
+            indexed.push(pair);
+        }
+    }
+    indexed.sort_by_key(|(i, _)| *i);
+    indexed.into_iter().map(|(_, p)| p).collect()
 }
 
 pub(crate) fn wants_html(headers: &HeaderMap, query_format: Option<&str>) -> bool {
@@ -172,6 +212,9 @@ pub(crate) struct RepoStatus {
     pub publish_branch: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub publish_sha: Option<String>,
+    /// Catalog public blurb (`catalog/repos/*.json` `description`). Independent of on-disk state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub branch_count: usize,
     /// Present when the publish/HEAD tip references IPFS pointers or a manifest.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -233,13 +276,13 @@ fn tip_sha(repo: &git2::Repository, branch: &str) -> Option<String> {
 /// Union of on-disk bares and catalog `authorized_repos`, with HEAD / publish tips from libgit2.
 pub(crate) fn collect_repo_status(state: &AppState) -> Vec<RepoStatus> {
     let on_disk: BTreeSet<String> = git::repo_names_for_state(state).into_iter().collect();
-    let catalog: BTreeMap<String, String> = state
+    let catalog: BTreeMap<String, (String, Option<String>)> = state
         .authorized_repos
         .as_ref()
         .map(|a| {
             a.repos
                 .iter()
-                .map(|(k, v)| (k.clone(), v.branch.clone()))
+                .map(|(k, v)| (k.clone(), (v.branch.clone(), v.description.clone())))
                 .collect()
         })
         .unwrap_or_default();
@@ -254,7 +297,10 @@ pub(crate) fn collect_repo_status(state: &AppState) -> Vec<RepoStatus> {
         .map(|name| {
             let in_catalog = catalog.contains_key(&name);
             let present = on_disk.contains(&name);
-            let catalog_branch = catalog.get(&name).cloned();
+            let (catalog_branch, description) = match catalog.get(&name) {
+                Some((b, d)) => (Some(b.clone()), d.clone()),
+                None => (None, None),
+            };
 
             let (head_branch, head_sha, publish_sha, branch_count, ipfs) = if present {
                 if let Some(repo) = git::open_repo_for_state(state, &name) {
@@ -301,6 +347,7 @@ pub(crate) fn collect_repo_status(state: &AppState) -> Vec<RepoStatus> {
                 head_sha,
                 publish_branch,
                 publish_sha,
+                description,
                 branch_count,
                 ipfs,
             }
@@ -475,6 +522,26 @@ async fn collect_ipfs_self() -> IpfsSelfStatus {
         api_configured: enabled,
         api_reachable,
         peer_id,
+        gateway: git::ipfs::gateway_base_from_env(),
+        cache_root: git::ipfs::cache_root_from_env().display().to_string(),
+        cache_cid_count: git::ipfs::cache_cid_count(),
+        in_flight_count: git::ipfs::in_flight_count(),
+    }
+}
+
+/// No daemon round-trip. Used by `light=1` so client RTT is not the IPFS probe.
+fn collect_ipfs_self_skipped() -> IpfsSelfStatus {
+    let enabled = std::env::var("RELAY_IPFS_API")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .is_some();
+    IpfsSelfStatus {
+        enabled,
+        ok: true,
+        api_configured: enabled,
+        api_reachable: false,
+        peer_id: None,
         gateway: git::ipfs::gateway_base_from_env(),
         cache_root: git::ipfs::cache_root_from_env().display().to_string(),
         cache_cid_count: git::ipfs::cache_cid_count(),
@@ -765,6 +832,7 @@ pub async fn post_api_status(
         .get("strict")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+    let light = wants_light(&query);
 
     let peer_hosts = master_peer_hosts();
     let repo_rows = collect_repo_status(&state);
@@ -778,26 +846,28 @@ pub async fn post_api_status(
         .clone()
         .or_else(mesh_role::node_fqdn_normalized);
 
-    let client = match reqwest::Client::builder().timeout(probe_timeout()).build() {
-        Ok(c) => c,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-                format!("failed to build HTTP client: {}", e),
-            )
-                .into_response();
-        }
+    let (peers, ipfs_self) = if light {
+        (Vec::new(), collect_ipfs_self_skipped())
+    } else {
+        let client = match reqwest::Client::builder().timeout(probe_timeout()).build() {
+            Ok(c) => c,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                    format!("failed to build HTTP client: {}", e),
+                )
+                    .into_response();
+            }
+        };
+        tokio::join!(
+            probe_peers_parallel(&client, &peer_hosts, self_fqdn.as_deref()),
+            collect_ipfs_self()
+        )
     };
-
-    let mut peers = Vec::new();
-    for h in &peer_hosts {
-        peers.push(probe_one_peer(&client, h, self_fqdn.as_deref()).await);
-    }
 
     let healthy = peers.iter().all(|p| p.reachable);
     let status = if healthy { "ok" } else { "degraded" };
-    let ipfs_self = collect_ipfs_self().await;
     let ipfs_ok = ipfs_self.ok;
 
     let body = StatusBody {
@@ -891,6 +961,17 @@ mod tests {
         assert!(!wants_html(&hdr_accept("*/*"), None));
     }
 
+    #[test]
+    fn wants_light_query() {
+        let mut q = HashMap::new();
+        assert!(!wants_light(&q));
+        q.insert("light".into(), "1".into());
+        assert!(wants_light(&q));
+        q.clear();
+        q.insert("peers".into(), "0".into());
+        assert!(wants_light(&q));
+    }
+
     fn status_state(repo_path: std::path::PathBuf) -> AppState {
         AppState {
             repo_path,
@@ -945,6 +1026,7 @@ mod tests {
             RepoAnchor {
                 anchor_commit: "a".repeat(40),
                 branch: "main".into(),
+                description: Some("Present on disk.".into()),
             },
         );
         catalog.insert(
@@ -952,6 +1034,7 @@ mod tests {
             RepoAnchor {
                 anchor_commit: "b".repeat(40),
                 branch: "main".into(),
+                description: Some("Catalog only.".into()),
             },
         );
 
@@ -968,10 +1051,12 @@ mod tests {
         assert!(present.on_disk && present.in_catalog && present.ok);
         assert_eq!(present.publish_branch.as_deref(), Some("main"));
         assert_eq!(present.publish_sha.as_deref(), Some(sha.as_str()));
+        assert_eq!(present.description.as_deref(), Some("Present on disk."));
         assert_eq!(present.branch_count, 1);
 
         let missing = rows.iter().find(|r| r.name == "missing").unwrap();
         assert!(!missing.on_disk && missing.in_catalog && !missing.ok);
+        assert_eq!(missing.description.as_deref(), Some("Catalog only."));
 
         let extra = rows.iter().find(|r| r.name == "extra").unwrap();
         assert!(extra.on_disk && !extra.in_catalog && extra.ok);

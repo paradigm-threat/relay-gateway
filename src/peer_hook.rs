@@ -719,6 +719,7 @@ mod tests {
             authorized_repos::RepoAnchor {
                 anchor_commit: root,
                 branch: "main".into(),
+                description: None,
             },
         );
 

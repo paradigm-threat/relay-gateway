@@ -123,6 +123,9 @@ pub struct CatalogRepoRecord {
     #[serde(default)]
     pub schema: Option<String>,
     pub repo: String,
+    /// Short public blurb for directory UIs (`/api/status`, `/api/config`). Empty/omitted = none.
+    #[serde(default)]
+    pub description: Option<String>,
     pub tier: RepoTier,
     #[serde(default)]
     pub forge_url: Option<String>,
@@ -588,6 +591,7 @@ mod tests {
             branch_features: None,
             limits: None,
             last_history_reset: None,
+            description: None,
         };
         assert_eq!(rec.verify_key_lines().len(), 2);
         assert_eq!(rec.authorize_key_lines().len(), 1);
@@ -611,6 +615,7 @@ mod tests {
             branch_features: None,
             limits: None,
             last_history_reset: None,
+            description: None,
         }
     }
 
@@ -719,5 +724,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(empty.publish_origin.as_deref(), Some(""));
+
+        let described: CatalogRepoRecord = serde_json::from_str(
+            r#"{
+              "repo": "sample",
+              "tier": "primary",
+              "relay_root_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "description": "  A public blurb.  "
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            described.description.as_deref(),
+            Some("  A public blurb.  ")
+        );
+        assert_eq!(without.description, None);
     }
 }

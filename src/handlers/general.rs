@@ -84,6 +84,14 @@ pub(crate) fn read_startup_catalog_sync_status(
 /// POST /api/config — peers, repo list, optional `node_fqdn`, server id, authorized repo names
 pub async fn post_api_config(State(state): State<AppState>) -> impl IntoResponse {
     #[derive(Serialize)]
+    struct CatalogRepoSummary {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        publish_branch: String,
+    }
+
+    #[derive(Serialize)]
     struct Config {
         peers: Vec<String>,
         repos: Vec<String>,
@@ -94,6 +102,9 @@ pub async fn post_api_config(State(state): State<AppState>) -> impl IntoResponse
         relay_server_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         authorized_repos: Option<Vec<String>>,
+        /// Catalog allowlist with public blurbs (source of truth even when a bare is missing).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        catalog_repos: Option<Vec<CatalogRepoSummary>>,
         /// Install-time feature manifest (Piper, npm extensions, ports). See relay-install.sh.
         #[serde(skip_serializing_if = "Option::is_none")]
         installed_features: Option<serde_json::Value>,
@@ -122,6 +133,20 @@ pub async fn post_api_config(State(state): State<AppState>) -> impl IntoResponse
             .collect::<Vec<_>>()
     });
 
+    let catalog_repos = state.authorized_repos.as_ref().map(|a| {
+        let mut rows: Vec<CatalogRepoSummary> = a
+            .repos
+            .iter()
+            .map(|(name, anchor)| CatalogRepoSummary {
+                name: name.clone(),
+                description: anchor.description.clone(),
+                publish_branch: anchor.branch.clone(),
+            })
+            .collect();
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        rows
+    });
+
     let installed_features = state.features_manifest.as_ref().map(|m| {
         serde_json::json!({
             "manifest": m.as_ref(),
@@ -137,6 +162,7 @@ pub async fn post_api_config(State(state): State<AppState>) -> impl IntoResponse
         node_fqdn: state.node_fqdn.clone(),
         relay_server_id: state.relay_server_id.clone(),
         authorized_repos,
+        catalog_repos,
         installed_features,
         git_ensure_bare_enabled: state.git_ensure_bare_enabled,
         startup_catalog_sync,
@@ -550,8 +576,14 @@ pub async fn options_capabilities(
                     relay_config = git::read_relay_config(&repo, &branch);
                 }
             }
+            let description = state.authorized_repos.as_ref().and_then(|a| {
+                a.repos
+                    .get(name)
+                    .and_then(|r| r.description.clone())
+            });
             repos_json.push(serde_json::json!({
                 "name": name,
+                "description": description,
                 "branches": serde_json::Value::Object(heads_map),
             }));
         }

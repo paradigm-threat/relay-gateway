@@ -811,6 +811,7 @@ mod tests {
             branch_features: None,
             limits: None,
             last_history_reset: None,
+            description: None,
         }
     }
 
