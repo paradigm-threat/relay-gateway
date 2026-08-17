@@ -123,7 +123,7 @@ write_caddyfile() {
 		reverse_proxy 127.0.0.1:${PIPER_PORT}
 	}
 	handle {
-		reverse_proxy 127.0.0.1:${UPSTREAM}
+		redir https://{host}{uri} permanent
 	}
 }
 

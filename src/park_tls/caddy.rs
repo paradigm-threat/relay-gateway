@@ -44,6 +44,18 @@ pub fn write_parked_caddyfile(domains: &HashMap<String, String>) -> std::io::Res
             continue;
         }
         any = true;
+        if let Some(apex) = host.strip_prefix("www.") {
+            if !apex.is_empty() {
+                out.push_str(&format!(
+                    "{host} {{\n\ttls {chain} {key}\n\tredir https://{apex}{{uri}} permanent\n}}\n\n",
+                    host = host,
+                    chain = chain.display(),
+                    key = key.display(),
+                    apex = apex,
+                ));
+                continue;
+            }
+        }
         out.push_str(&format!(
             "{host} {{\n\ttls {chain} {key}\n\treverse_proxy 127.0.0.1:{upstream}\n}}\n\n",
             host = host,
