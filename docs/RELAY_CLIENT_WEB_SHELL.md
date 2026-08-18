@@ -12,6 +12,18 @@ The **relay-client-web** operator SPA (`relaygateway.net`) and **parked sites** 
 
 Repo tabs use **`ThemedHookRenderer`** → `mountRelayHookIntoElement` with **`initialPath`** from the tab URL. They do **not** navigate an iframe to the repo origin (no duplicate HTML stack).
 
+### CSR iframe isolation (operator SPA)
+
+The iframe is **`about:blank`** (same-origin so WASM in the parent window can write the DOM). Glue must treat **`container.ownerDocument`** as the site document:
+
+| Concern | Wrong (SPA `document`) | Right (iframe document) |
+|---------|------------------------|-------------------------|
+| Theme CSS `#relay-ssr-theme` | Operator `<head>` — site unstyled | `styleParentFor(mount)` → iframe `<head>` |
+| `html.dark` / `data-pt-hydrated` | Operator chrome | `themeTargetFor` / `syncHtmlHydratedAttr(live, mount)` |
+| Root-relative assets (`/site/header.png`) | `localhost:5173/site/…` (broken) | iframe `<base href="{parked origin}/">` via `parkedSiteBaseHref` |
+
+`RelayBootShell` overlay never reaches the iframe DOM on CSR: `renderHook` discards the first vnode, sets `set_client_live(true)`, then paints live children. **`ThemedHookRenderer`** therefore shows a host **Loading site…** overlay until `mountRelayHookIntoElement` finishes (`mode !== 'hydrate'` so parked SSR HTML is never covered).
+
 ## Boot phases
 
 `renderHook` publishes status on the mount element:
