@@ -1322,6 +1322,19 @@ append_relay_env_catalog_defaults() {
   fi
 }
 
+# Commit-pinned embed/WASM CDN (`docs/RELAY_WEB_ASSETS.md`). Write-if-missing so
+# reclaimed nodes get the same catalog as dfw1/hkg1 without clobbering overrides.
+append_relay_env_web_assets_defaults() {
+  local f="$INSTALL/relay.env"
+  touch "$f"
+  if ! grep -q '^RELAY_WEB_ASSETS_REPO=' "$f" 2>/dev/null; then
+    echo "RELAY_WEB_ASSETS_REPO=${RELAY_WEB_ASSETS_REPO:-relay-web-assets}" >>"$f"
+  fi
+  if ! grep -q '^RELAY_WEB_ASSETS_BRANCH=' "$f" 2>/dev/null; then
+    echo "RELAY_WEB_ASSETS_BRANCH=${RELAY_WEB_ASSETS_BRANCH:-release}" >>"$f"
+  fi
+}
+
 # Set or replace KEY=VALUE in relay.env.
 upsert_relay_env_var() {
   local f="$1" key="$2" val="$3"
@@ -1421,6 +1434,7 @@ do_install() {
   append_relay_env_peer_list
   append_relay_env_git_ensure_bare_default
   append_relay_env_catalog_defaults
+  append_relay_env_web_assets_defaults
   merge_relay_env_mesh_from_env
   lock_relay_env_permissions
   ensure_ipfs_kubo
@@ -1453,6 +1467,7 @@ do_update() {
   fi
   refresh_features_inventory
   append_relay_env_catalog_defaults
+  append_relay_env_web_assets_defaults
   merge_relay_env_mesh_from_env
   ensure_ipfs_kubo
   systemctl restart relay-git-daemon relay-git-proxy relay-gateway
@@ -1514,6 +1529,7 @@ do_repair() {
   fi
   refresh_features_inventory
   append_relay_env_catalog_defaults
+  append_relay_env_web_assets_defaults
   merge_relay_env_mesh_from_env
   lock_relay_env_permissions
   ensure_ipfs_kubo

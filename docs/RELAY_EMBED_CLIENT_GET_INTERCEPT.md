@@ -14,6 +14,20 @@ empty client-rendered embed shell (when `?embed=1`) or static `@relay/md` HTML (
 path is an entry route, not necessarily the blob rendered as the page. If SSR succeeds but client
 hydration fails, embed.js keeps the server DOM and prepends a light `.relay-hook-error` panel.
 
+## Boot phases + hook loading overlay
+
+`renderHook` (embed + relay-client-web) runs the same phased boot:
+
+1. **`wasm`** — runtime ready (WASM init is caller-side for embed).
+2. **`manifest`** — fetch `hooks.json`.
+3. **`modules`** — parallel prefetch of listed hook sources (progress `N/M`), then BFS of static local imports not listed in `hooks.json`.
+4. **`theme`** — fetch `theme.yaml` when not inlined.
+5. **`render`** — first `run_hook_with_host` pass (`isClientLive()` false).
+6. **`live`** — promote client live, re-render with interactive catalog/article paths.
+7. **`error`** — `renderHookErrorUI` + manifest `relayBootPhase=error`.
+
+Hooks may wrap UI in **`@relay/ui/RelayBootShell`** for a full-viewport loading overlay (status from `@hooks` manifest fields). Relay-client repo tabs use **`mode: csr`** (no SSR HTML); parked sites use **`mode: auto`** (hydrate when `#root[data-relay-ssr=1]`). See [`RELAY_CLIENT_WEB_SHELL.md`](./RELAY_CLIENT_WEB_SHELL.md).
+
 **Web/CDN assets:** framework bundles (`embed.js`, chunks, WASM) live in a dedicated signed
 git repo with **commit-pinned** URLs (`/assets/c/{oid}/…`) so one page load never mixes two tips.
 Sites opt in by importing **`@relay/web-assets`** in `server.hooks.get` — see [`RELAY_WEB_ASSETS.md`](RELAY_WEB_ASSETS.md).

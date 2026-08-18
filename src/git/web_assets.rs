@@ -258,10 +258,25 @@ pub fn try_pinned_web_asset(state: &AppState, request_path: &str) -> Option<Resp
     let pinned = parse_pinned_framework_path(request_path)?;
     let (root, slug, _branch) = assets_repo_config(state)?;
     let bytes = read_blob_at_commit(&root, &slug, pinned.commit_oid, &pinned.tree_path())?;
-    let ct = mime_guess::from_path(pinned.file_rel)
+    let guessed_ct = mime_guess::from_path(pinned.file_rel)
         .first_or_octet_stream()
         .essence_str()
         .to_string();
+    let (bytes, ct) = if let Some(ptr) = crate::git::ipfs::parse_pointer_bytes(&bytes) {
+        match crate::git::ipfs::resolve_pointer_blob(&ptr, 8) {
+            Ok(v) => v,
+            Err(e) => {
+                return Some(crate::git::ipfs::asset_error_response(
+                    &e,
+                    "",
+                    &slug,
+                    &pinned.tree_path(),
+                ));
+            }
+        }
+    } else {
+        (bytes, guessed_ct)
+    };
     let mut resp = (StatusCode::OK, [("Content-Type", ct)], bytes).into_response();
     let headers = resp.headers_mut();
     headers.insert(
@@ -310,6 +325,13 @@ mod tests {
         assert!(!source_imports_web_assets(
             "import { ssrClientHookFromGetContext } from '@relay/ssr';\n"
         ));
+    }
+
+    #[test]
+    fn wasm_ipfs_stub_is_recognized() {
+        let stub = b"relay-ipfs-v1\nbafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi\napplication/wasm\nsha256=abc\n";
+        let p = crate::git::ipfs::parse_pointer_bytes(stub).expect("pointer");
+        assert_eq!(p.content_type.as_deref(), Some("application/wasm"));
     }
 
     fn bare_content_with_get_cs(root: &Path, slug: &str, get_cs: &str) {

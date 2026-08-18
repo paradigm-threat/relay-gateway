@@ -391,6 +391,15 @@ pub fn collect_cids_from_repo(repo: &git2::Repository, branch: &str) -> Vec<Stri
             }
         }
     }
+    // Framework WASM in `relay-web-assets` is often an inline `relay-ipfs-v1` stub
+    // (pre-receive rejects raw `.wasm` blobs). Pin-catalog must still see the CID.
+    if let Ok(entry) = tree.get_path(std::path::Path::new("wasm")) {
+        if let Ok(obj) = entry.to_object(repo) {
+            if let Ok(t) = obj.peel_to_tree() {
+                walk_inline_pointer_blobs(repo, &t, &mut set);
+            }
+        }
+    }
     set.into_iter().collect()
 }
 
@@ -414,6 +423,36 @@ fn walk_ipfs_stubs(
                     continue;
                 }
                 if let Ok(blob) = repo.find_blob(entry.id()) {
+                    if let Some(p) = parse_pointer_bytes(blob.content()) {
+                        set.insert(p.cid);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn walk_inline_pointer_blobs(
+    repo: &git2::Repository,
+    tree: &git2::Tree,
+    set: &mut std::collections::BTreeSet<String>,
+) {
+    const MAX_POINTER_BLOB: usize = 4096;
+    for entry in tree.iter() {
+        match entry.kind() {
+            Some(git2::ObjectType::Tree) => {
+                if let Ok(obj) = entry.to_object(repo) {
+                    if let Ok(t) = obj.peel_to_tree() {
+                        walk_inline_pointer_blobs(repo, &t, set);
+                    }
+                }
+            }
+            Some(git2::ObjectType::Blob) => {
+                if let Ok(blob) = repo.find_blob(entry.id()) {
+                    if blob.size() > MAX_POINTER_BLOB {
+                        continue;
+                    }
                     if let Some(p) = parse_pointer_bytes(blob.content()) {
                         set.insert(p.cid);
                     }
