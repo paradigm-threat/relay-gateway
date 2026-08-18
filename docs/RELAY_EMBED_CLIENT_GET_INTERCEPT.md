@@ -26,7 +26,7 @@ hydration fails, embed.js keeps the server DOM and prepends a light `.relay-hook
 6. **`live`** — promote client live, re-render with interactive catalog/article paths.
 7. **`error`** — `renderHookErrorUI` + manifest `relayBootPhase=error`.
 
-Hooks may wrap UI in **`@relay/ui/RelayBootShell`** for a full-viewport loading overlay (status from `@hooks` manifest fields). Relay-client repo tabs use **`mode: csr`** (no SSR HTML); parked sites use **`mode: auto`** (hydrate when `#root[data-relay-ssr=1]`). See [`RELAY_CLIENT_WEB_SHELL.md`](./RELAY_CLIENT_WEB_SHELL.md).
+**`@relay/ui/RelayBootShell`** is a **CSR-only** loading overlay (`relayHostMode === 'csr'`). On parked hydrate it must not replace P0 HTML — keep the server DOM and disable interactive controls until `isClientLive()` (`html[data-pt-hydrated="0"]`). Relay-client repo tabs use **`mode: csr`** (no SSR HTML); parked sites use **`mode: auto`** (hydrate when `#root[data-relay-ssr=1]`). See [`RELAY_CLIENT_WEB_SHELL.md`](./RELAY_CLIENT_WEB_SHELL.md).
 
 **Web/CDN assets:** framework bundles (`embed.js`, chunks, WASM) live in a dedicated signed
 git repo with **commit-pinned** URLs (`/assets/c/{oid}/…`) so one page load never mixes two tips.

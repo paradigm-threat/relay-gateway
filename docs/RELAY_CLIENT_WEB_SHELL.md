@@ -24,13 +24,13 @@ Phases: `wasm` → `manifest` → `modules` → `theme` → `render` → `live` 
 
 API: `setBootStatus(container, { phase, message, detail?, progress? })`, `getBootStatus(container)`.
 
-## Hook-owned loading (no React Suspense)
+## Hook-owned loading (CSR only — not a hydrate Suspense)
 
-Sites wrap UI in **`@relay/ui/RelayBootShell`** (CleverScript). The overlay renders on the first hook pass (fetch-free brand + spinner) and hides when `isClientLive()` is true.
+SSR HTML and a full-viewport boot overlay contradict each other. **`@relay/ui/RelayBootShell`** shows the spinner **only** when `@hooks.relayHostMode === 'csr'` (empty iframe / Android). Parked hydrate (`relayHostMode === 'ssr'`, or missing — gateway SSR does not inject the field) **returns children** so P0 HTML stays on screen. Interactive chrome stays muted via `html[data-pt-hydrated="0"]` / `.pt-client-only` until `isClientLive()`.
 
 CSR `renderHook` also walks static local `from '…'` imports after the `hooks.json` prefetch (same closure as gateway SSR), so helpers like `propOr.jsx` do not need to be listed in the manifest. HTML fallback bodies are skipped; the walk caps at 256 modules.
 
-**`StyleContext`** (`@clevertree/style`) accepts **`fullScreen={false}`** when an outer boot shell owns the viewport.
+**`StyleContext`** (`@clevertree/style`) uses **`fullScreen={false}`** only on CSR (outer boot overlay owns the viewport). Parked SSR keeps `fullScreen`.
 
 Example (paradigm-threat-files):
 
