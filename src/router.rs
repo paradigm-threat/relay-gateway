@@ -10,6 +10,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -102,6 +103,8 @@ pub fn build_router(state: AppState) -> Router {
                 .fallback(relay_path_fallback),
         )
         .layer(cors)
+        // Compress QUERY catalogs + page.md for browsers (Accept-Encoding). No topology change.
+        .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
