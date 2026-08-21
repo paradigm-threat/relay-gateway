@@ -7,7 +7,7 @@ Pick by **job**. Do not start Android testing from this folder.
 | **Android / web tester** | Sibling [`../relay-runtime/docs/ANDROID_WEB_TEST.md`](../relay-runtime/docs/ANDROID_WEB_TEST.md) · glossary [`TERMINOLOGY.md`](../relay-runtime/docs/TERMINOLOGY.md) |
 | **Hook author** | [`SERVER_HOOKS.md`](SERVER_HOOKS.md) · [`CS_HOST_HELPERS.md`](CS_HOST_HELPERS.md) · runtime [`CLEVERSCRIPT.md`](../relay-runtime/docs/CLEVERSCRIPT.md) |
 | **Fleet operator** | [`RELAY_OPS.md`](RELAY_OPS.md) · [`DEPLOY_LINODE.md`](DEPLOY_LINODE.md) · [`RELAY_INFRA_OPS.md`](RELAY_INFRA_OPS.md) |
-| **Mesh / index performance (plan)** | [`RELAY_PUBLISH_ONCE.md`](RELAY_PUBLISH_ONCE.md) — on-commit SearchStore, `publish_branch` **`main`**, `publish_origin` **dfw1**; **client write fence** and **first-push provision** are live; replica skip is next |
+| **Mesh / index performance (plan)** | [`RELAY_PUBLISH_ONCE.md`](RELAY_PUBLISH_ONCE.md) — on-commit SearchStore, `publish_branch` **`main`**, `publish_origin` **iad1**; **client write fence** and **first-push provision** are live; replica skip is next |
 
 GitLab project: **`clevertree/relay-gateway`**. Archived monorepo: **`clevertree/relay`**.
 

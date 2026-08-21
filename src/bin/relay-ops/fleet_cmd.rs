@@ -346,7 +346,7 @@ if [[ -n "$PEER" && -d "$DATA" ]]; then
   shopt -s nullglob
   for bare in "$DATA"/*.git; do
     name=$(basename "$bare" .git)
-    if sudo -u relay git --git-dir="$bare" fetch "git://${PEER}:${PORT}/${name}.git" '+refs/heads/*:refs/heads/*' --prune; then
+    if sudo -u relay git --git-dir="$bare" fetch "git://${PEER}:${PORT}/${name}.git" 'refs/heads/*:refs/heads/*' --prune; then
       echo "fetched $name from $PEER"
     else
       echo "WARN fetch $name from $PEER failed"
@@ -832,6 +832,7 @@ mod tests {
         assert!(SYNC_REMOTE.contains("git --git-dir="));
         assert!(SYNC_REMOTE.contains(" fetch "));
         assert!(!SYNC_REMOTE.contains("push --force"));
+        assert!(!SYNC_REMOTE.contains("+refs/heads"));
         assert!(!SYNC_REMOTE.contains("reset --hard"));
         assert!(!SYNC_REMOTE.contains("rm -rf"));
     }

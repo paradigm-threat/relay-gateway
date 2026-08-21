@@ -44,7 +44,7 @@ IPFS_SWARM_PORT="${RELAY_IPFS_SWARM_PORT:-4001}"
 IPFS_PATH_DIR="${RELAY_IPFS_PATH:-$INSTALL/ipfs}"
 
 # Semicolon-separated FQDNs; used when RELAY_MASTER_PEER_LIST is unset (non-interactive) or when the operator accepts the interactive default (Enter).
-DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-dfw1.relaygateway.net;iad1.relaygateway.net;hkg1.relaygateway.net}"
+DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-iad1.relaygateway.net;sjc1.relaygateway.net;hkg1.relaygateway.net}"
 DEFAULT_RELAY_MASTER_CATALOG_PATH="${DEFAULT_RELAY_MASTER_CATALOG_PATH:-/opt/relay/src/relay-master}"
 DEFAULT_RELAY_MASTER_CATALOG_GIT_URL="${DEFAULT_RELAY_MASTER_CATALOG_GIT_URL:-https://gitlab.com/clevertree/relay-master.git}"
 
@@ -1323,7 +1323,7 @@ append_relay_env_catalog_defaults() {
 }
 
 # Commit-pinned embed/WASM CDN (`docs/RELAY_WEB_ASSETS.md`). Write-if-missing so
-# reclaimed nodes get the same catalog as dfw1/hkg1 without clobbering overrides.
+# reclaimed nodes get the same catalog as iad1/hkg1 without clobbering overrides.
 append_relay_env_web_assets_defaults() {
   local f="$INSTALL/relay.env"
   touch "$f"

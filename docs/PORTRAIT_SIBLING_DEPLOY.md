@@ -24,7 +24,7 @@ glab ci run -b main -R clevertree/relay-gateway
 ```
 
 `test:verify` / `package:linode-tgz` clone public `relay-runtime` + `md2ast` (and `relay-client-web` for pack) into the path-dep layout Cargo expects.4. **Push `paradigm-threat-files` to GitLab `main` only** when ready for forge SoT (content tip).  
-   **Go live (Relay remotes)** is a separate session: `git push dfw1/hkg1/lon1 HEAD:main` after gateway nodes are upgraded.
+   **Go live (Relay remotes)** is a separate session: `git push iad1/sjc1/hkg1 HEAD:main` after gateway nodes are upgraded.
 
 5. **Gateway node deploy** (Linode / fleet): use CI `package:linode-tgz` artifact or existing pack script after `test:verify` is green. Restart gateways so SSR cache / new binary pick up inject + HTTP 404 fix.
 

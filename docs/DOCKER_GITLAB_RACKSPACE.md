@@ -61,10 +61,10 @@ Optional overrides:
 
 ## Rackspace Spot (retired Kubernetes path)
 
-Kubernetes Spot manifests are **archived** under [`docs/archive/rackspace-spot-k8s/`](archive/rackspace-spot-k8s/). Production **dfw1** uses a **bare VM** + the same Linode tarball/Caddy flow:
+Kubernetes Spot manifests are **archived** under [`docs/archive/rackspace-spot-k8s/`](archive/rackspace-spot-k8s/). Production masters (**iad1** / **sjc1** / **hkg1**) use a **bare VM** + the same Linode tarball/Caddy flow:
 
 - **[`RELAY_INFRA_OPS.md`](./RELAY_INFRA_OPS.md)**
-- **`./scripts/relay-master-deploy.sh --target spot-dfw1`**
+- **`./scripts/relay-master-deploy.sh --target spot-iad1`**
 
 This document covers **GitLab CI → Container Registry** only. Do not deploy the Docker image to Spot K8s for new masters.
 

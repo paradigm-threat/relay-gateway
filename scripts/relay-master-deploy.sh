@@ -2,11 +2,11 @@
 # Provision (optional) and install a relay master on Linode or Rackspace Spot VM.
 #
 # Usage (from relay-gateway/):
-#   ./scripts/relay-master-deploy.sh --target spot-dfw1
+#   ./scripts/relay-master-deploy.sh --target spot-sjc1
 #   ./scripts/relay-master-deploy.sh --target linode-atlanta2 --install-only
-#   ./scripts/relay-master-deploy.sh --target spot-dfw1 --install-only --build
+#   ./scripts/relay-master-deploy.sh --target spot-iad1 --install-only --build
 #
-# Targets: spot-dfw1 | spot-iad1 | spot-hkg1 | linode-atlanta2
+# Targets: spot-iad1 | spot-sjc1 | spot-hkg1 | linode-atlanta2
 #
 # Steps: terraform apply (unless --install-only) → SSH → pack tarball → install.sh →
 #        Vercel apex + wildcard DNS → install-caddy-tls → reconfigure-features (Piper) → peer-clone PT repos
@@ -22,7 +22,7 @@ SKIP_TERRAFORM=0
 SKIP_DNS=0
 SKIP_CADDY=0
 SKIP_SEED=0
-PEER_SOURCE="${RELAY_PEER_CLONE_SOURCE:-dfw1.relaygateway.net}"
+PEER_SOURCE="${RELAY_PEER_CLONE_SOURCE:-iad1.relaygateway.net}"
 CADDY_EMAIL="${CADDY_EMAIL:-hostmaster@relaygateway.net}"
 ENV_FILE="${RELAY_FLEET_ENV_FILE:-$ROOT/relay.env}"
 DNS_DIR="$ROOT/terraform/shared-dns/scripts"
@@ -30,7 +30,7 @@ TERRAFORM="${TERRAFORM:-terraform}"
 
 usage() {
   sed -n '1,35p' <<'EOF'
-Usage: ./scripts/relay-master-deploy.sh --target <spot-dfw1|spot-iad1|spot-hkg1|linode-atlanta2> [flags]
+Usage: ./scripts/relay-master-deploy.sh --target <spot-iad1|spot-sjc1|spot-hkg1|linode-atlanta2> [flags]
 
 Flags:
   --install-only     Skip terraform apply; read IP from terraform output / DNS
@@ -66,35 +66,37 @@ done
 
 stack_dir() {
   case "$1" in
-    spot-dfw1|spot-iad1|spot-hkg1|spot-lon1) echo "$ROOT/terraform/rackspace-spot-vm" ;;
+    spot-iad1|spot-sjc1|spot-hkg1|spot-lon1|spot-dfw1) echo "$ROOT/terraform/rackspace-spot-vm" ;;
     linode-atlanta2) echo "$ROOT/terraform/linode-relay" ;;
-    *) echo "Unknown --target: $1 (use spot-dfw1|spot-iad1|spot-hkg1 or linode-atlanta2)" >&2; return 1 ;;
+    *) echo "Unknown --target: $1 (use spot-iad1|spot-sjc1|spot-hkg1 or linode-atlanta2)" >&2; return 1 ;;
   esac
 }
 
 default_ssh_user() {
   case "$1" in
-    spot-dfw1|spot-iad1|spot-hkg1|spot-lon1) echo "ubuntu" ;;
+    spot-iad1|spot-sjc1|spot-hkg1|spot-lon1|spot-dfw1) echo "ubuntu" ;;
     linode-atlanta2) echo "ari" ;;
   esac
 }
 
 spot_node_slug() {
   case "$1" in
-    spot-dfw1) echo "dfw1" ;;
+    spot-sjc1) echo "sjc1" ;;
     spot-iad1) echo "iad1" ;;
     spot-hkg1) echo "hkg1" ;;
     spot-lon1) echo "lon1" ;;
+    spot-dfw1) echo "dfw1" ;;
     *) echo "" ;;
   esac
 }
 
 spot_ip_override() {
   case "$1" in
-    spot-dfw1) echo "${SPOT_DFW1_IP:-}" ;;
+    spot-sjc1) echo "${SPOT_SJC1_IP:-}" ;;
     spot-iad1) echo "${SPOT_IAD1_IP:-}" ;;
     spot-hkg1) echo "${SPOT_HKG1_IP:-}" ;;
     spot-lon1) echo "${SPOT_LON1_IP:-}" ;;
+    spot-dfw1) echo "${SPOT_DFW1_IP:-}" ;;
     *) echo "" ;;
   esac
 }
@@ -136,7 +138,7 @@ resolve_node_meta() {
   [[ -n "$node_slug" ]] || node_slug="${fqdn%%.*}"
   [[ -n "$fqdn" ]] || fqdn="${node_slug}.relaygateway.net"
   [[ -n "$relay_id" ]] || relay_id="relay-${node_slug}"
-  # Per-target env wins over shared terraform.tfvars (one file holds dfw1 IP only).
+  # Per-target env wins over shared terraform.tfvars (legacy shared file may hold one node IP only).
   ip="$(spot_ip_override "$target")"
   [[ "$target" == linode-atlanta2 ]] && ip="${LINODE_ATLANTA2_IP:-$ip}"
   local tfvars
@@ -181,7 +183,7 @@ reconcile_fleet_dns() {
     echo "[deploy] Skip fleet DNS: no VERCEL_API_TOKEN" >&2
     return 0
   }
-  local peers="${RELAY_MASTER_PEER_LIST:-${RELAY_OPERATOR_FLEET:-dfw1.relaygateway.net;iad1.relaygateway.net;hkg1.relaygateway.net}}"
+  local peers="${RELAY_MASTER_PEER_LIST:-${RELAY_OPERATOR_FLEET:-iad1.relaygateway.net;sjc1.relaygateway.net;hkg1.relaygateway.net}}"
   # shellcheck disable=SC2086
   IFS=';' read -ra peer_arr <<<"$peers"
   echo "[deploy] reconcile fleet.relaygateway.net from ${peer_arr[*]}"
@@ -252,7 +254,7 @@ for v in RELAY_MASTER_MESH_SECRET RELAY_PEER_SECRET RELAY_MASTER_TRUST_ROOT \
   [[ -n "${!v:-}" ]] && MESH_VARS+=("$v=${!v}")
 done
 
-RELAY_MASTER_PEER_LIST="${RELAY_MASTER_PEER_LIST:-dfw1.relaygateway.net;iad1.relaygateway.net;hkg1.relaygateway.net}"
+RELAY_MASTER_PEER_LIST="${RELAY_MASTER_PEER_LIST:-iad1.relaygateway.net;sjc1.relaygateway.net;hkg1.relaygateway.net}"
 # Ensure this spot master is in the mesh list.
 if [[ "$TARGET" == spot-* ]]; then
   _mesh_self="${NODE_SLUG}.relaygateway.net"

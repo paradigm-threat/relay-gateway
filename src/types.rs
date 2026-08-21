@@ -117,7 +117,7 @@ impl RelayConfig {
     }
 }
 
-#[derive(Deserialize, Debug, Default, Serialize, Clone, PartialEq)]
+#[derive(Deserialize, Debug, Default, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum NotifyMode {
     #[default]

@@ -113,7 +113,8 @@ impl SshCtx<'_> {
 
     pub fn run_bash_s(&self, fqdn: &str, script: &str, args: &[&str]) -> Result<Output> {
         let mut c = self.ssh_base(fqdn)?;
-        c.arg("bash").arg("-s").args(args);
+        // `bash -s -- args` so extras land in $1…; without `--`, the first arg is $0.
+        c.arg("bash").arg("-s").arg("--").args(args);
         c.stdin(Stdio::piped());
         let mut child = c.spawn().with_context(|| format!("ssh {fqdn}"))?;
         use std::io::Write;

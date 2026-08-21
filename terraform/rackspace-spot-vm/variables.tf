@@ -1,31 +1,31 @@
 variable "relay_node" {
   type    = string
-  default = "dfw1"
+  default = "iad1"
 }
 
 variable "region" {
   type    = string
-  default = "us-central-dfw-1"
+  default = "us-east-iad-1"
 }
 
 variable "server_class" {
   type    = string
-  default = "gp.vs1.medium-dfw"
+  default = "gp.vs1.medium-iad"
 }
 
 variable "bid_price" {
   type    = number
-  default = 0.005
+  default = 0.01
 }
 
 variable "cloudspace_name" {
   type    = string
-  default = "relay-dfw1-vm"
+  default = "relay-network-iad"
 }
 
 variable "vm_pool_name" {
   type    = string
-  default = "dfw1-pool"
+  default = ""
 }
 
 variable "desired_vm_count" {

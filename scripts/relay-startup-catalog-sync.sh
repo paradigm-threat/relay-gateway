@@ -223,7 +223,8 @@ peer_fetch_other_masters() {
     fi
     for peer in "${peers[@]}"; do
       url="git://${peer}:${git_port}/${name}.git"
-      if timeout "${fetch_timeout}s" git --git-dir="$bare" fetch "$url" '+refs/heads/*:refs/heads/*' --prune 2>/dev/null; then
+      # Fast-forward only. A `+` refspec rewinds a publisher that is ahead of a lagging peer.
+      if timeout "${fetch_timeout}s" git --git-dir="$bare" fetch "$url" 'refs/heads/*:refs/heads/*' --prune 2>/dev/null; then
         echo "[relay-startup-catalog-sync] fetched $name from $peer" >&2
         ((summary_ok++)) || true
       else

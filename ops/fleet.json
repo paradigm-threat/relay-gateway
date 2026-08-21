@@ -4,16 +4,16 @@
   "gitPort": 9418,
   "nodes": [
     {
-      "fqdn": "dfw1.relaygateway.net",
-      "sshUser": "ubuntu",
-      "deployTarget": "spot-dfw1",
-      "spotCloudspace": "relay-network"
-    },
-    {
       "fqdn": "iad1.relaygateway.net",
       "sshUser": "ubuntu",
       "deployTarget": "spot-iad1",
       "spotCloudspace": "relay-network-iad"
+    },
+    {
+      "fqdn": "sjc1.relaygateway.net",
+      "sshUser": "ubuntu",
+      "deployTarget": "spot-sjc1",
+      "spotCloudspace": "relay-network-sjc"
     },
     {
       "fqdn": "hkg1.relaygateway.net",

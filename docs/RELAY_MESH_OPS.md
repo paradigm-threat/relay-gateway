@@ -29,17 +29,17 @@ Prefer **tip-notify** (`POST /hooks/peer`) over enabling **`git.autoPush`** unti
 2. If the client hangs: `git ls-remote <remote> refs/heads/main` — if the tip already moved, **kill the client**; the pack was accepted and `post-receive` side effects may still be running or a dead peer notify is timing out on an **old** binary.
 3. Do **not** assume GitLab tip == Relay tip; check all three Relays.
 
-## Dead peer (e.g. dfw1 Spot down)
+## Dead peer (e.g. sjc1 Spot down)
 
 Symptoms:
 
 - `peer notify HTTP failed` toward that FQDN
-- Laptop `git push dfw1` hangs / times out
+- Laptop `git push sjc1` hangs / times out
 - `POST /api/status?strict=1` → 503
 
 Actions:
 
-1. Push **`hkg1` / `lon1`** (and GitLab) so content is live elsewhere.
+1. Push **`iad1` / `hkg1`** (and GitLab) so content is live elsewhere.
 2. Exclude the dead Spot from **`fleet.relaygateway.net`** via `./scripts/relay-fleet.sh fleet-dns` (see [`RELAY_NETWORK_DNS.md`](./RELAY_NETWORK_DNS.md)).
 3. Repair or replace the node; redeploy with canary order below.
 4. Tip-notify `notifyMode: next` **retries next+1 once** when the first hop fails (gateway ≥ this doc’s date).
@@ -48,7 +48,7 @@ Actions:
 
 1. `./scripts/relay-fleet.sh ssh-check`
 2. `./scripts/relay-fleet.sh status` (optional: `curl -sS -X POST 'https://<host>/api/status?strict=1'`)
-3. Deploy **non-primary** peers first: e.g. `--only=lon1…` then `hkg1…`, smoke `health`, then **dfw1**
+3. Deploy **non-primary** peers first: e.g. `--only=sjc1…` then `hkg1…`, smoke `health`, then **iad1** (publisher)
 4. Or full `./scripts/relay-fleet.sh --build update` — after each host update+restart, the script runs a **post-host health gate** (`POST /api/config`) before continuing when **`RELAY_FLEET_UPDATE_HEALTH=1`** (default **on**). Pre/post **`ssl`** checks report park Host HTTPS (warn by default; **`RELAY_FLEET_SSL_GATE=1`** to hard-fail).
 
 Always **`--build`** after Rust changes so `relay-hook-handler` (push path) ships with `relay-gateway`.

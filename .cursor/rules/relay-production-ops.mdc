@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Relay production ops (SSH, autossh, deploy, debug)
 
-Use this when the user asks to deploy, restart, inspect logs, or debug **relay-gateway** on production masters (**dfw1**, **lon1**, **hkg1** Rackspace Spot VMs). Paths below are relative to this crate root (**`relay-gateway/`**).
+Use this when the user asks to deploy, restart, inspect logs, or debug **relay-gateway** on production masters (**iad1**, **sjc1**, **hkg1** Rackspace Spot VMs). Paths below are relative to this crate root (**`relay-gateway/`**).
 
 **Provision / first install:** **[`docs/RELAY_INFRA_OPS.md`](../docs/RELAY_INFRA_OPS.md)** + **`./scripts/relay-master-deploy.sh`**. **Ongoing updates:** **`./scripts/relay-fleet.sh`** (see **[`docs/RELAY_OPS.md`](../docs/RELAY_OPS.md)**).
 
@@ -13,7 +13,7 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
 
 - **User:** `ubuntu` (sudo on Spot hosts; see **`ops/fleet.json`** `sshUser`), unless the user says otherwise.
 - **Key:** `~/.ssh/id_ed25519_relay_gateway` with **`-o IdentitiesOnly=yes`** when not using a `Host` block that sets `IdentityFile`.
-- **`~/.ssh/config`:** Prefer existing `Host` entries (e.g. **dfw1.relaygateway.net**).
+- **`~/.ssh/config`:** Prefer existing `Host` entries (e.g. **iad1.relaygateway.net**).
 - **Batch / agent runs:** Use **`ssh -o BatchMode=yes`** so failures are immediate (no hang on password).
 
 ## autossh vs plain ssh
@@ -24,7 +24,7 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
   - **Local forward** (hit the node’s relay HTTP as if it were local):
 
     ```bash
-    autossh -M 0 -N -L 18080:127.0.0.1:8080 -i ~/.ssh/id_ed25519_relay_gateway -o IdentitiesOnly=yes ubuntu@dfw1.relaygateway.net
+    autossh -M 0 -N -L 18080:127.0.0.1:8080 -i ~/.ssh/id_ed25519_relay_gateway -o IdentitiesOnly=yes ubuntu@iad1.relaygateway.net
     ```
 
     Then: `curl -sS -X POST http://127.0.0.1:18080/api/config | head -c 400`
@@ -48,7 +48,7 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
 
    ```bash
    TGZ=target/relay-linode-deploy.tgz
-   HOST=dfw1.relaygateway.net   # or lon1 / hkg1
+   HOST=iad1.relaygateway.net   # or sjc1 / hkg1
    scp -i ~/.ssh/id_ed25519_relay_gateway -o IdentitiesOnly=yes -o BatchMode=yes "$TGZ" "ubuntu@${HOST}:/tmp/relay-linode-deploy.tgz"
    ssh -i ~/.ssh/id_ed25519_relay_gateway -o IdentitiesOnly=yes -o BatchMode=yes "ubuntu@${HOST}" 'sudo bash -s' <<'REMOTE'
    set -euo pipefail
@@ -62,7 +62,7 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
    REMOTE
    ```
 
-3. **All production masters (no seed):** **`./scripts/relay-fleet.sh --build deploy-all`** (or **`./scripts/deploy-all-masters.sh`**, which wraps fleet with **`--build`**). Tarball + `install.sh update` on **dfw1**, **lon1**, and **hkg1**, restart **`relay-gateway`** / **`relay-git-daemon`** / **`relay-git-proxy`**. **SSH and deploy scripts should use the hostname** (**`dfw1.relaygateway.net`**, etc.), not a literal IPv4 from old notes.
+3. **All production masters (no seed):** **`./scripts/relay-fleet.sh --build deploy-all`** (or **`./scripts/deploy-all-masters.sh`**, which wraps fleet with **`--build`**). Tarball + `install.sh update` on **iad1**, **sjc1**, and **hkg1**, restart **`relay-gateway`** / **`relay-git-daemon`** / **`relay-git-proxy`**. **SSH and deploy scripts should use the hostname** (**`iad1.relaygateway.net`**, etc.), not a literal IPv4 from old notes.
 
    ```bash
    ./scripts/relay-fleet.sh --build deploy-all
@@ -73,8 +73,8 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
 4. **Optional script** (upload + `install.sh update` + **POST** health check; **also** runs **`POST /api/git/ensure-bare/$RELAY_SEED_REPO`** unless skipped — avoid on production if that side effect is unwanted):
 
    ```bash
-   RELAY_REDEPLOY_SKIP_SEED=1 ./scripts/relay-linode-redeploy-seed.sh dfw1.relaygateway.net   # binary only
-   ./scripts/relay-linode-redeploy-seed.sh dfw1.relaygateway.net   # includes ensure-bare
+   RELAY_REDEPLOY_SKIP_SEED=1 ./scripts/relay-linode-redeploy-seed.sh iad1.relaygateway.net   # binary only
+   ./scripts/relay-linode-redeploy-seed.sh iad1.relaygateway.net   # includes ensure-bare
    ```
 
    Override **`RELAY_SSH_USER`**, **`RELAY_SSH_IDENTITY`**, **`RELAY_SEED_REPO`** as needed.
@@ -91,7 +91,7 @@ See **`docs/RELAY_OPS.md`**.
 
 - **`/api/config`** and **`/api/status`** on the **node FQDN** (and loopback) accept **GET/HEAD/POST**. On **parked** / **`{repo}.{node}`** Hosts they are site files — use **POST** or the node apex. Example:
 
-  `curl -sS -X POST "https://dfw1.relaygateway.net/api/status"`
+  `curl -sS -X POST "https://iad1.relaygateway.net/api/status"`
 
 - On the box: **`curl -sS -X POST http://127.0.0.1:8080/api/config`**
 
@@ -120,4 +120,4 @@ See **`docs/RELAY_OPS.md`**.
 - **`docs/DEPLOY_SELF_HOSTED.md`** — hosting the tarball, `RELAY_DEPLOY_TGZ_URL`, etc.
 - **`docs/OPERATOR_BARE_REPO_RESET.md`** — recloning bare mirrors, catalog sync / DNS failures, `ensure-bare` notes.
 
-When the user asks to “deploy the fleet” or “debug dfw1”, **run the commands** in the integrated terminal (do not only describe them), unless they explicitly forbid remote access.
+When the user asks to “deploy the fleet” or “debug iad1”, **run the commands** in the integrated terminal (do not only describe them), unless they explicitly forbid remote access.

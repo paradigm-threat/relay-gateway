@@ -109,7 +109,7 @@ After the ref is updated, **`relay-hook-handler`**:
 1. Runs **on-commit SearchStore index inline** (`ensure_indexed` with the real `old_commit` so ingest can be incremental). QUERY never JITs.
 2. Slack commit notify (thread; see `RELAY_SLACK_TIMEOUT_SECS`)
 3. **`autoPush`** in a thread with **`RELAY_AUTOPUSH_TIMEOUT_SECS`** per origin (`timeout(1)` + `git push`) — prefer tip-notify over autoPush
-4. Mesh tip-notify (`spawn_notify_after_push`) with **`RELAY_PEER_NOTIFY_TIMEOUT_SECS`**; `notifyMode: next` retries **next+1** once on failure
+4. Mesh tip-notify (**blocking** `notify_after_push`) with **`RELAY_PEER_NOTIFY_TIMEOUT_SECS`**. Repos without `git.origins` fan-out to **`RELAY_MASTER_PEER_LIST`**. YAML `notifyMode: next` retries **next+1** once on failure.
 
 See **[`RELAY_MESH_OPS.md`](./RELAY_MESH_OPS.md)** for hung-push runbook and deploy order. **Do not** put heavy corpus work in CleverScript `pre-receive` — only changed `ctx.files`. Whether origin ACK should wait on ingest, and whether replicas re-run this policy: **[`RELAY_PUBLISH_ONCE.md`](./RELAY_PUBLISH_ONCE.md)** (plan).
 

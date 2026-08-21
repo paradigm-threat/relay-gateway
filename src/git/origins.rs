@@ -22,6 +22,22 @@ pub fn relay_notify_hosts(git: &GitConfig) -> Vec<String> {
     out
 }
 
+/// True when `.relay.yaml` lists at least one relay origin for tip-notify.
+pub fn yaml_relay_origins_configured(git: &GitConfig) -> bool {
+    git.origins
+        .as_ref()
+        .is_some_and(|origins| origins.iter().any(origin_is_relay_notify))
+}
+
+/// Initial post-receive notify: fan-out to the master peer list when yaml has no ring.
+pub fn initial_notify_mode(git: &GitConfig) -> NotifyMode {
+    if yaml_relay_origins_configured(git) {
+        git.notify_mode
+    } else {
+        NotifyMode::All
+    }
+}
+
 fn origin_is_relay_notify(o: &GitOrigin) -> bool {
     let kind = o.kind.trim().to_ascii_lowercase();
     if kind != "relay" {
@@ -251,6 +267,22 @@ mod tests {
             let targets = tip_notify_targets(&git, Some("b.example"));
             assert_eq!(targets, vec!["c.example".to_string()]);
         });
+    }
+
+    #[test]
+    fn unset_yaml_origins_fans_out_on_initial_notify() {
+        assert!(!yaml_relay_origins_configured(&GitConfig::default()));
+        assert_eq!(
+            initial_notify_mode(&GitConfig::default()),
+            NotifyMode::All
+        );
+        let git = GitConfig {
+            notify_mode: NotifyMode::Next,
+            origins: Some(vec![relay_origin("a.example")]),
+            ..Default::default()
+        };
+        assert!(yaml_relay_origins_configured(&git));
+        assert_eq!(initial_notify_mode(&git), NotifyMode::Next);
     }
 
     #[test]

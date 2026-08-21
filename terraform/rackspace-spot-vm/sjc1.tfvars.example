@@ -1,0 +1,9 @@
+# Copy to sjc1.tfvars (gitignored) for spot-sjc1 deploys.
+
+relay_node         = "sjc1"
+region             = "us-west-sjc-1"
+cloudspace_name    = "relay-network-sjc"
+server_class       = "gp.vs2.medium-sjc"
+bid_price          = 0.02
+vm_pool_name       = ""
+public_ip_override = ""

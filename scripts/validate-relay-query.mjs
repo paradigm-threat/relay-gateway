@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Probe HTTP QUERY envelope: indexFresh, docCount, status.
- * Usage: node scripts/validate-relay-query.mjs https://dfw1.relaygateway.net paradigm-threat-files [query]
+ * Usage: node scripts/validate-relay-query.mjs https://iad1.relaygateway.net paradigm-threat-files [query]
  */
 const base = (process.argv[2] || "").replace(/\/$/, "");
 const repo = process.argv[3] || "paradigm-threat-files";

@@ -1,7 +1,8 @@
 # Per-target tfvars (copy *.tfvars.example → *.tfvars; gitignored):
-#   dfw1.tfvars  — spot-dfw1 (gp.vs1.medium-dfw)
-#   iad1.tfvars  — spot-iad1 (gp.vs1.medium-iad; Ashburn)
+#   iad1.tfvars  — spot-iad1 (gp.vs1.medium-iad / ch.vs1.medium-iad; Ashburn)
+#   sjc1.tfvars  — spot-sjc1 (gp.vs2.medium-sjc; San Jose)
 #   hkg1.tfvars  — spot-hkg1 (gp.vs1.medium-hkg)
+#   dfw1.tfvars  — retired (Dallas); kept only for historical reclaim
 #
 # rackspace_spot_token = "REPLACE"   # or export RXTSPOT_TOKEN
 #

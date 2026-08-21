@@ -13,14 +13,14 @@ This is the canonical DNS strategy for a Relay network whose masters may be repl
 
 Use three layers:
 
-1. **Node names:** `dfw1.relaygateway.net`, `iad1.relaygateway.net`, and `hkg1.relaygateway.net`.
+1. **Node names:** `iad1.relaygateway.net`, `sjc1.relaygateway.net`, and `hkg1.relaygateway.net`.
    Each name has the current A record for exactly one master. `relay-master-deploy.sh` updates the node A record after provisioning or replacing that node.
 2. **Network ingress:** `fleet.relaygateway.net`.
    Its A/AAAA set is the materialized set of healthy fleet-node addresses. A fleet DNS reconciler resolves the configured node names and replaces stale addresses. Node names remain the source; do not copy provider IPs into configuration or documentation.
 3. **Parked domains:** customer or project names point to the network ingress:
    - zone apex: `ALIAS fleet.relaygateway.net` when the authoritative DNS provider supports apex ALIAS/flattening;
    - subdomain such as `www`: `CNAME fleet.relaygateway.net`;
-   - single-node canary such as `relay.clevertree.net`: `CNAME dfw1.relaygateway.net`.
+   - single-node canary such as `relay.clevertree.net`: `CNAME iad1.relaygateway.net`.
 
 Vercel DNS supports `ALIAS` records. Do not assume that multiple ALIAS records at one owner provide portable multi-target behavior. Relay therefore treats `fleet.relaygateway.net` as an ordinary, explicitly reconciled A/AAAA set.
 
@@ -29,11 +29,11 @@ Vercel DNS supports `ALIAS` records. Do not assume that multiple ALIAS records a
 Example network zone:
 
 ```text
-dfw1.relaygateway.net   A      <current dfw1 IPv4>
 iad1.relaygateway.net   A      <current iad1 IPv4>
+sjc1.relaygateway.net   A      <current sjc1 IPv4>
 hkg1.relaygateway.net   A      <current hkg1 IPv4>
-fleet.relaygateway.net  A      <resolved dfw1 IPv4>
 fleet.relaygateway.net  A      <resolved iad1 IPv4>
+fleet.relaygateway.net  A      <resolved sjc1 IPv4>
 fleet.relaygateway.net  A      <resolved hkg1 IPv4>
 ```
 
@@ -47,7 +47,7 @@ www.clevertree.net  CNAME  fleet.relaygateway.net
 During a one-node canary or before multi-node TLS is ready:
 
 ```text
-relay.clevertree.net  CNAME  dfw1.relaygateway.net
+relay.clevertree.net  CNAME  iad1.relaygateway.net
 ```
 
 Keep TTL at 60 seconds during rollout and recovery. Raise it only after replacement, certificate renewal, and rollback paths are proven.
@@ -126,7 +126,7 @@ With multiple A records, an ACME HTTP-01 validation request may reach a differen
 
 Renewal must use the same coordinated path. A certificate on only one node is not multi-node readiness.
 
-A single-node CNAME/ALIAS to `dfw1.relaygateway.net` is safe with the existing per-node Caddy on-demand TLS path.
+A single-node CNAME/ALIAS to `iad1.relaygateway.net` is safe with the existing per-node Caddy on-demand TLS path.
 
 ## Parked-domain rollout
 
@@ -146,7 +146,8 @@ A single-node CNAME/ALIAS to `dfw1.relaygateway.net` is safe with the existing p
 ## Verification
 
 ```bash
-dig +short dfw1.relaygateway.net A
+dig +short iad1.relaygateway.net A
+dig +short sjc1.relaygateway.net A
 dig +short fleet.relaygateway.net A
 dig +short clevertree.net A
 dig +short www.clevertree.net CNAME
@@ -179,6 +180,6 @@ Expected ask results are `200` and `403`. Also verify the certificate SAN, issue
 
 ## Implementation status
 
-- Done: catalog `domains[]`, uniqueness checks, Host routing, unknown-Host rejection, generated Caddy allowlist, dfw1 canary path, and **`vercel-dns-fleet-reconcile.sh`** / **`relay-fleet.sh fleet-dns`** (wired into `relay-master-deploy.sh`).
+- Done: catalog `domains[]`, uniqueness checks, Host routing, unknown-Host rejection, generated Caddy allowlist, node canary path, and **`vercel-dns-fleet-reconcile.sh`** / **`relay-fleet.sh fleet-dns`** (wired into `relay-master-deploy.sh`).
 - Pending: committed/released gateway changes, signed catalog publication, full-fleet deployment, coordinated multi-node ACME/certificate distribution, renewal testing, and automatic Spot VM IP discovery without UI override.
 

@@ -108,7 +108,7 @@ Legacy **`redb`** remains available via `@relay/search/redb` or `plugin: "redb"`
 ## Probe
 
 ```bash
-node scripts/validate-relay-query.mjs https://dfw1.relaygateway.net paradigm-threat-files venus
+node scripts/validate-relay-query.mjs https://iad1.relaygateway.net paradigm-threat-files venus
 ```
 
 Asserts `status != not_indexed`, `docCount > 0`, and prints `indexFresh` / `tookMs`.
@@ -142,12 +142,12 @@ Both forms work after gateway **0.3.14+**:
 
 ```bash
 # Repo subdomain (QUERY on `/`)
-curl -X QUERY "https://paradigm-threat-files.dfw1.relaygateway.net/" \
+curl -X QUERY "https://paradigm-threat-files.iad1.relaygateway.net/" \
   -H 'Content-Type: application/json' -H 'Accept: application/json' \
   --data '{"collection":"index","query":"venus"}'
 
 # Node apex + /{repo} (same idea as /api/mcp/:repo)
-curl -X QUERY "https://dfw1.relaygateway.net/paradigm-threat-files" \
+curl -X QUERY "https://iad1.relaygateway.net/paradigm-threat-files" \
   -H 'Content-Type: application/json' -H 'Accept: application/json' \
   --data '{"collection":"index","query":"venus"}'
 ```
@@ -179,14 +179,14 @@ Unknown keys are ignored. Invalid `order` → HTTP 400. `order` is a closed toke
 
 ```bash
 # Curl-friendly: no body
-curl -X QUERY 'https://paradigm-threat-files.dfw1.relaygateway.net/?q=venus&limit=10&order=-path' \
+curl -X QUERY 'https://paradigm-threat-files.iad1.relaygateway.net/?q=venus&limit=10&order=-path' \
   -H 'Accept: application/json'
 
-curl -X QUERY 'https://paradigm-threat-files.dfw1.relaygateway.net/?collection=index&order=random&limit=1' \
+curl -X QUERY 'https://paradigm-threat-files.iad1.relaygateway.net/?collection=index&order=random&limit=1' \
   -H 'Accept: application/json'
 
 # Feeling Lucky-style: random articles only (JSON body)
-curl -X QUERY 'https://paradigm-threat-files.dfw1.relaygateway.net/' \
+curl -X QUERY 'https://paradigm-threat-files.iad1.relaygateway.net/' \
   -H 'Content-Type: application/json' -H 'Accept: application/json' \
   --data '{"collection":"index","order":"random","limit":40,"query":{"content_kind":["article","investigation","blog"]}}'
 ```

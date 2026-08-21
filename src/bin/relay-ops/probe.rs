@@ -640,21 +640,15 @@ pub fn apply_catalog_sync(nodes: &mut [NodeProbe], extra_expected: &[String]) {
                 }
                 let have = tip_sha_for_branch(tip, branch);
                 if have.as_deref() != Some(expected_sha.as_str()) {
-                    let majority = canonical.get(&key);
-                    let kind = if majority
-                        .filter(|m| m.as_str() != expected_sha.as_str())
-                        .is_some_and(|m| have.as_ref() == Some(m))
-                    {
-                        DriftKind::ReplicaAhead
-                    } else {
-                        DriftKind::ReplicaBehind
-                    };
+                    // Publisher tip is canonical. Majority vote treated two lagging
+                    // replicas as "ahead" and hid Synchronize. Divergence still
+                    // surfaces as ReplicaBehind; peer fetch is fast-forward only.
                     n.drift.push(RepoDrift {
                         repo: repo.clone(),
                         branch: branch.to_string(),
                         sha: have,
                         expected_sha: expected_sha.clone(),
-                        kind,
+                        kind: DriftKind::ReplicaBehind,
                     });
                 }
             } else {
@@ -683,72 +677,6 @@ pub fn apply_catalog_sync(nodes: &mut [NodeProbe], extra_expected: &[String]) {
         n.drift
             .sort_by(|a, b| (&a.repo, &a.branch).cmp(&(&b.repo, &b.branch)));
         n.sync_ok = n.missing_repos.is_empty() && n.drift.is_empty();
-    }
-
-    attach_publisher_behind_anomalies(nodes, &publisher_tips, &canonical);
-}
-
-fn attach_publisher_behind_anomalies(
-    nodes: &mut [NodeProbe],
-    publisher_tips: &std::collections::BTreeMap<(String, String), (String, String)>,
-    canonical: &std::collections::BTreeMap<(String, String), String>,
-) {
-    for ((repo, branch), (pub_sha, origin_fqdn)) in publisher_tips {
-        let majority = canonical.get(&(repo.clone(), branch.clone()));
-        let Some(majority_sha) = majority else {
-            continue;
-        };
-        if majority_sha == pub_sha {
-            continue;
-        }
-        let Some(_publisher) = nodes.iter().find(|n| n.healthy && fqdn_eq(&n.fqdn, origin_fqdn))
-        else {
-            continue;
-        };
-        let Some(replica) = nodes.iter().find(|n| {
-            n.healthy
-                && !fqdn_eq(&n.fqdn, origin_fqdn)
-                && n.git_tips.iter().any(|t| {
-                    t.repo == *repo
-                        && t.error.is_none()
-                        && tip_sha_for_branch(t, branch).as_deref() == Some(majority_sha.as_str())
-                })
-        }) else {
-            continue;
-        };
-        let replica_sha = replica
-            .git_tips
-            .iter()
-            .find(|t| t.repo == *repo)
-            .and_then(|t| tip_sha_for_branch(t, branch))
-            .unwrap_or_default();
-        let anomaly = SyncAnomaly {
-            kind: "publisher_behind_replica".into(),
-            repo: repo.clone(),
-            branch: branch.clone(),
-            publisher_fqdn: origin_fqdn.clone(),
-            publisher_sha: pub_sha.clone(),
-            replica_fqdn: replica.fqdn.clone(),
-            replica_sha,
-        };
-        if let Some(n) = nodes
-            .iter_mut()
-            .find(|n| fqdn_eq(&n.fqdn, origin_fqdn))
-        {
-            if !n.sync_anomalies.iter().any(|a| {
-                a.kind == anomaly.kind
-                    && a.repo == anomaly.repo
-                    && a.branch == anomaly.branch
-                    && a.replica_fqdn == anomaly.replica_fqdn
-            }) {
-                n.sync_anomalies.push(anomaly);
-            }
-        }
-    }
-    for n in nodes.iter_mut() {
-        n.sync_anomalies.sort_by(|a, b| {
-            (&a.repo, &a.branch, &a.replica_fqdn).cmp(&(&b.repo, &b.branch, &b.replica_fqdn))
-        });
     }
 }
 
@@ -1182,40 +1110,40 @@ mod tests {
     }
 
     #[test]
-    fn publisher_is_not_flagged_when_replicas_are_ahead() {
-        let site = catalog_row("clevertree-site", "release", "dfw1.example");
+    fn two_lagging_replicas_are_behind_publisher_not_ahead() {
+        let site = catalog_row("paradigm-threat-files", "main", "dfw1.example");
         let mut nodes = vec![
             up_node(
                 "dfw1.example",
-                &["clevertree-site"],
-                &["clevertree-site"],
-                vec![tip("clevertree-site", "release", "aaa1111")],
+                &["paradigm-threat-files"],
+                &["paradigm-threat-files"],
+                vec![tip("paradigm-threat-files", "main", "newsha1")],
                 vec![site.clone()],
             ),
             up_node(
                 "iad1.example",
-                &["clevertree-site"],
-                &["clevertree-site"],
-                vec![tip("clevertree-site", "release", "bbb2222")],
+                &["paradigm-threat-files"],
+                &["paradigm-threat-files"],
+                vec![tip("paradigm-threat-files", "main", "oldsha00")],
                 vec![site.clone()],
             ),
             up_node(
                 "hkg1.example",
-                &["clevertree-site"],
-                &["clevertree-site"],
-                vec![tip("clevertree-site", "release", "bbb2222")],
+                &["paradigm-threat-files"],
+                &["paradigm-threat-files"],
+                vec![tip("paradigm-threat-files", "main", "oldsha00")],
                 vec![site],
             ),
         ];
         apply_catalog_sync(&mut nodes, &[]);
         assert!(nodes[0].sync_ok, "publisher should stay in sync");
         assert!(nodes[0].drift.is_empty());
-        assert_eq!(nodes[0].sync_anomalies.len(), 1);
-        assert_eq!(nodes[0].sync_anomalies[0].kind, "publisher_behind_replica");
+        assert!(nodes[0].sync_anomalies.is_empty());
         assert!(!nodes[1].sync_ok);
-        assert_eq!(nodes[1].drift[0].kind, DriftKind::ReplicaAhead);
+        assert_eq!(nodes[1].drift[0].kind, DriftKind::ReplicaBehind);
+        assert_eq!(nodes[1].drift[0].expected_sha, "newsha1");
         assert!(!nodes[2].sync_ok);
-        assert_eq!(nodes[2].drift[0].kind, DriftKind::ReplicaAhead);
+        assert_eq!(nodes[2].drift[0].kind, DriftKind::ReplicaBehind);
     }
 
     #[test]

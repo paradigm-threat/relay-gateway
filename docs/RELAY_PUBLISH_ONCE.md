@@ -3,7 +3,7 @@
 **Status:** client write fence is implemented (`enforce_publish_origin_fence` on `pre-receive` and HTTP PUT/DELETE). Replica skip (`enforce_push_range` on peer-fetch) is **not**. Gateways parse catalog `publish_origin` and reject client writes on non-publishers when the field is set. Empty/omitted = no fence (compat).  
 **Settled product model:** **update the SearchStore on commit**, not on QUERY. QUERY / MCP are **read-only**. If `docs_indexed_head` lags the git tip, they return rows with **`indexFresh: false`** — they never JIT-rebuild.
 
-**This fleet:** `publish_branch` is **`main`**. `publish_origin` is **`dfw1.relaygateway.net`** (a hostname, not a git branch). Authors `git push` `main` to dfw1; iad1/hkg1 fast-forward `main`. Do not add a second publish ref.
+**This fleet:** `publish_branch` is **`main`**. `publish_origin` is **`iad1.relaygateway.net`** (a hostname, not a git branch). Authors `git push` `main` to iad1; sjc1/hkg1 fast-forward `main`. Do not add a second publish ref.
 
 This document analyzes a **publish-once** mesh: run the expensive full cycle **once** on the publishing node, advance `publish_branch` under an existing catalog signature, let replicas **take Git immediately**, and **warm each replica’s SearchStore in the background**. It does **not** propose a new server signing key.
 
@@ -156,7 +156,7 @@ flowchart TB
     P2[Publisher for repos hash 1]
   end
   subgraph replicas [Every master is a replica]
-    M1[dfw1]
+    M1[iad1]
     M2[lon1]
     M3[hkg1]
   end
@@ -263,7 +263,7 @@ If non-publishers also reject peer-fetch, the mesh cannot replicate. “Takes a 
 
 `enforce_publish_origin_fence` in [`branch_policy.rs`](../src/git/branch_policy.rs) compares catalog `publish_origin` to **`RELAY_PUBLIC_HOSTNAME`**. Called from [`relay-hook-handler`](../src/bin/relay-hook-handler.rs) **pre-receive** (before branch rules) and from HTTP PUT/DELETE. Peer-fetch (`POST /hooks/peer`) is **not** fenced.
 
-Reject text names the catalog `publish_origin` FQDN so authors push `git://dfw1.relaygateway.net:9418/{repo}.git` (or a later per-repo git CNAME), **not** `fleet.relaygateway.net`.
+Reject text names the catalog `publish_origin` FQDN so authors push `git://iad1.relaygateway.net:9418/{repo}.git` (or a later per-repo git CNAME), **not** `fleet.relaygateway.net`.
 
 **`git.autoPush.originList` to other masters is incompatible.** Auto-push is client `receive-pack` on the destination, so a replica with a `publish_origin` fence **rejects** it. Keep replica replication on **tip-notify + fetch** (`POST /hooks/peer`). Do not list other masters in `autoPush.originList` for catalog-fenced repos.
 
@@ -278,7 +278,7 @@ Git write DNS (`git.<repo>.relaygateway.net` CNAME → origin) is **not** requir
 Use a **per-repo** git hostname whose A/CNAME is **exactly** the current `publish_origin` node:
 
 ```text
-git.paradigm-threat-files.relaygateway.net  CNAME  dfw1.relaygateway.net
+git.paradigm-threat-files.relaygateway.net  CNAME  iad1.relaygateway.net
 ```
 
 Client remote stays:
@@ -380,7 +380,7 @@ Do **not** introduce per-commit SQLite files.
 
 ## Pushing to multiple remotes at once
 
-`git push dfw1 lon1 hkg1` (or a parallel `xargs -P` / `push.parallel`) does **not** go through the mesh. Each URL is a separate `receive-pack`. From Git’s point of view **every listed remote is a publisher**, not a replica. Publish-once only applies to nodes that **learn the tip via peer-fetch**, not via the client’s pack.
+`git push iad1 sjc1 hkg1` (or a parallel `xargs -P` / `push.parallel`) does **not** go through the mesh. Each URL is a separate `receive-pack`. From Git’s point of view **every listed remote is a publisher**, not a replica. Publish-once only applies to nodes that **learn the tip via peer-fetch**, not via the client’s pack.
 
 [`RELAY_MESH_OPS.md`](./RELAY_MESH_OPS.md) already says push **one Relay at a time** and let the mesh catch up. That becomes the **intended** client path under this plan, not just a hung-push workaround.
 
@@ -388,7 +388,7 @@ Do **not** introduce per-commit SQLite files.
 flowchart LR
   Laptop[Client]
   subgraph direct [Direct receive-pack: full policy]
-    A[dfw1]
+    A[iad1]
     B[lon1]
     C[hkg1]
   end
@@ -425,7 +425,7 @@ Pushing **different** commits to different remotes is the existing fast-forward 
 
 ### Draft vs `publish_branch`
 
-Multi-remote to **`dev`** is the same story: each direct push is a full check. There is no “I already pushed dfw1, so lon1 can skip.” For **`publish_branch`**, only `publish_origin` accepts client `receive-pack`; other remotes reject. Authors use the stable git hostname, not a list of masters, and not GitLab.
+Multi-remote to **`dev`** is the same story: each direct push is a full check. There is no “I already pushed iad1, so sjc1 can skip.” For **`publish_branch`**, only `publish_origin` accepts client `receive-pack`; other remotes reject. Authors use the stable git hostname, not a list of masters, and not GitLab.
 
 ### What not to do
 

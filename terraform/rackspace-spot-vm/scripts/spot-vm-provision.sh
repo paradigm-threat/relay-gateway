@@ -4,7 +4,7 @@ set -euo pipefail
 
 ACTION="${1:-apply}"
 STATE="${SPOT_VM_STATE_FILE:?SPOT_VM_STATE_FILE required}"
-NODE="${RELAY_NODE:-dfw1}"
+NODE="${RELAY_NODE:-iad1}"
 OVERRIDE="${SPOT_PUBLIC_IP_OVERRIDE:-}"
 
 resolve_ip() {

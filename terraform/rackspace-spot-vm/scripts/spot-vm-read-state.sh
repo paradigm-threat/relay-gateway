@@ -8,7 +8,7 @@ if [[ -f "$STATE" ]]; then
   ip="$(jq -r '.public_ip // empty' "$STATE")"
 fi
 if [[ -z "$ip" ]]; then
-  ip="$(dig +short dfw1.relaygateway.net 2>/dev/null | head -1 || true)"
+  ip="$(dig +short "${RELAY_NODE:-iad1}.relaygateway.net" 2>/dev/null | head -1 || true)"
 fi
 [[ -n "$ip" ]] || { echo '{"public_ip":""}' ; exit 0; }
 jq -n --arg ip "$ip" '{public_ip:$ip}'

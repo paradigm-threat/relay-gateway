@@ -102,14 +102,20 @@ fn post_peer_notify(
     {
         Ok(resp) if resp.status().is_success() => {
             info!(%url, repo, "peer notify delivered");
+            eprintln!("[relay-hook-handler] peer notify delivered {url} repo={repo}");
             true
         }
         Ok(resp) => {
             warn!(%url, status=%resp.status(), repo, "peer notify rejected");
+            eprintln!(
+                "[relay-hook-handler] peer notify rejected {url} status={} repo={repo}",
+                resp.status()
+            );
             false
         }
         Err(e) => {
             warn!(%url, error=%e, repo, "peer notify HTTP failed");
+            eprintln!("[relay-hook-handler] peer notify HTTP failed {url} repo={repo} error={e}");
             false
         }
     }
@@ -129,8 +135,13 @@ pub fn notify_peers_blocking(
         return;
     }
     let self_host = mesh_role::node_fqdn_normalized().unwrap_or_else(|| "localhost".to_string());
+    let notify_mode = if hops_remaining.is_none() {
+        origins::initial_notify_mode(git_cfg)
+    } else {
+        git_cfg.notify_mode
+    };
 
-    let ring_hops = if hops_remaining.is_none() && matches!(git_cfg.notify_mode, NotifyMode::Next) {
+    let ring_hops = if hops_remaining.is_none() && matches!(notify_mode, NotifyMode::Next) {
         let n = origins::relay_ring_hosts(git_cfg).len();
         if n > 1 {
             Some((n - 1) as u32)
@@ -203,9 +214,11 @@ pub fn notify_peers_blocking(
     }
 
     // Initial tip-notify after push.
-    match git_cfg.notify_mode {
+    match notify_mode {
         NotifyMode::All => {
-            let targets = origins::tip_notify_targets(git_cfg, Some(&self_host));
+            let mut cfg = git_cfg.clone();
+            cfg.notify_mode = NotifyMode::All;
+            let targets = origins::tip_notify_targets(&cfg, Some(&self_host));
             if targets.is_empty() {
                 debug!(repo, "peer notify: no targets");
                 return;

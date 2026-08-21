@@ -29,7 +29,7 @@ relay-master/
 | `forge_url` | Upstream clone URL |
 | `relay_root_commit` | Trusted root (40 hex) |
 | `publish_branch` | Branch served on Relay HTTPS / anchor checks (this fleet: **`main`**) |
-| `publish_origin` | Optional FQDN of the one Relay that should accept client `git push` (this fleet: **`dfw1.relaygateway.net`**). Hostname, not a git branch. Gateways parse it; the receive-pack fence is not implemented yet. |
+| `publish_origin` | Optional FQDN of the one Relay that should accept client `git push` (this fleet: **`iad1.relaygateway.net`**). Hostname, not a git branch. Gateways parse it; the receive-pack fence is not implemented yet. |
 | `signing_keys` | Append-only identity list (`active` / `disabled`) |
 | `signing_keys_source` | `repo` \| `catalog` \| `hybrid` |
 | `domains` | Optional globally unique parked apex/subdomain hosts served by this repo |
@@ -70,7 +70,7 @@ Example record (field is inert until the publish-once fence lands):
   "repo": "paradigm-threat-files",
   "tier": "primary",
   "publish_branch": "main",
-  "publish_origin": "dfw1.relaygateway.net"
+  "publish_origin": "iad1.relaygateway.net"
 }
 ```
 
@@ -79,7 +79,7 @@ See also [`examples/catalog-repo.v1.json`](./examples/catalog-repo.v1.json).
 Authors push:
 
 ```text
-git push git://dfw1.relaygateway.net:9418/paradigm-threat-files.git main
+git push git://iad1.relaygateway.net:9418/paradigm-threat-files.git main
 ```
 
 ## Identity keys

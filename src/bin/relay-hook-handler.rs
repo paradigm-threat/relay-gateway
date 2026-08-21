@@ -174,15 +174,24 @@ fn main() -> anyhow::Result<()> {
             if relay_server::git::catalog_apply::is_relay_master_slug(&repo_slug) {
                 // Catalog apply stays sync (reclone wiring); still prefer not to grow this.
                 relay_server::git::catalog_apply::handle_relay_master_post_receive(&ctx);
-            } else if let Ok(repo) = git2::Repository::open_bare(&ctx.repo_path) {
-                if let Some(cfg) = relay_server::git::read_relay_config(&repo, &ctx.new_commit) {
-                    relay_server::peer_notify::spawn_notify_after_push(
-                        repo_slug,
-                        ctx.branch.clone(),
-                        ctx.new_commit.clone(),
-                        cfg,
-                    );
-                }
+            } else {
+                // Blocking: a detached thread is killed when this hook process exits.
+                let cfg = git2::Repository::open_bare(&ctx.repo_path)
+                    .ok()
+                    .and_then(|repo| {
+                        relay_server::git::read_relay_config(&repo, &ctx.new_commit)
+                    })
+                    .unwrap_or_default();
+                eprintln!(
+                    "[relay-hook-handler] post-receive tip-notify {} {} {}",
+                    repo_slug, ctx.branch, ctx.new_commit
+                );
+                relay_server::peer_notify::notify_after_push(
+                    &repo_slug,
+                    &ctx.branch,
+                    &ctx.new_commit,
+                    &cfg,
+                );
             }
         }
     }
