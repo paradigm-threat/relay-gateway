@@ -137,6 +137,8 @@ https:// {
 			disable_http_challenge
 		}
 	}
+	# Compress markdown / QUERY JSON for browsers (no extra origin requests).
+	encode zstd gzip
 	handle /voices* {
 		reverse_proxy 127.0.0.1:${PIPER_PORT}
 	}
