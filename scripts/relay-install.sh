@@ -572,7 +572,7 @@ install_binaries() {
   rm -f "$INSTALL/bin/relay-server"
   chown -R relay:relay "$INSTALL"
   lock_relay_env_permissions
-  for h in pre-receive post-receive post-update; do
+  for h in pre-receive post-receive post-update update; do
     ln -sf "$INSTALL/bin/relay-hook-handler" "$INSTALL/hooks/$h"
   done
 }

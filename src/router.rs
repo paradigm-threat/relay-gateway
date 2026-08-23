@@ -69,6 +69,11 @@ pub fn build_router(state: AppState) -> Router {
             post(handlers::post_ensure_bare),
         )
         .route("/api/index/warm/:repo", post(handlers::post_index_warm))
+        .route(
+            "/api/sync/mesh/:repo",
+            get(handlers::api_mesh_sync)
+                .post(handlers::api_mesh_sync),
+        )
         .route("/git-pull", post(handlers::post_git_pull))
         .route("/hooks/peer", post(handlers::post_peer_hook))
         .route("/hooks/park-tls", post(crate::park_tls::post_park_tls_hook))

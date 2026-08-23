@@ -463,7 +463,7 @@ mod tests {
             kind: "publisher_behind_replica".into(),
             repo: "clevertree-site".into(),
             branch: "release".into(),
-            publisher_fqdn: "dfw1.example".into(),
+            publisher_fqdn: "iad1.example".into(),
             publisher_sha: "aaa".into(),
             replica_fqdn: "iad1.example".into(),
             replica_sha: "bbb".into(),

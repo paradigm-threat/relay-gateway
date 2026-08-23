@@ -1,8 +1,12 @@
 use base64::engine::general_purpose::STANDARD as B64_ENGINE;
 use base64::Engine;
-use relay_server::git::{execute_repo_hook, HookContext};
+use relay_server::git::{execute_repo_hook, publish_origin_push_gate, HookContext};
+use relay_server::post_push_sync::{
+    format_mesh_sync_failure, git_revert_ref, git_update_ref, wait_peers_match_tip, MeshSyncStatus,
+    ZERO_OID,
+};
 use std::io::{self, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
@@ -27,21 +31,23 @@ fn main() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .or_else(|_| std::env::current_dir())?;
 
-    // Git hooks like pre-receive and post-receive get input from stdin
-    // Format: <old-value> SP <new-value> SP <ref-name> LF
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
-
     let absolute_git_dir = if git_dir.is_absolute() {
         git_dir.clone()
     } else {
         std::env::current_dir()?.join(&git_dir)
     };
 
-    let _repo_name = absolute_git_dir
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown.git");
+    if hook_name == "update" {
+        handle_update_hook(&absolute_git_dir, &args);
+        return Ok(());
+    }
+
+    // Git hooks like pre-receive and post-receive get input from stdin
+    // Format: <old-value> SP <new-value> SP <ref-name> LF
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input)?;
+
+    let hostname = public_hostname();
 
     for line in input.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -74,9 +80,6 @@ fn main() -> anyhow::Result<()> {
 
         // Publish-origin fence, then branch rules, before execute_repo_hook.
         if hook_name == "pre-receive" {
-            let hostname = std::env::var("RELAY_PUBLIC_HOSTNAME")
-                .or_else(|_| std::env::var("RELAY_NODE_FQDN"))
-                .ok();
             if let Err(e) =
                 relay_server::git::enforce_publish_origin_fence(&ctx.repo_path, hostname.as_deref())
             {
@@ -140,9 +143,7 @@ fn main() -> anyhow::Result<()> {
                     .unwrap_or("unknown.git"),
             );
             let sid = std::env::var("RELAY_SERVER_ID").ok();
-            let node = std::env::var("RELAY_PUBLIC_HOSTNAME")
-                .or_else(|_| std::env::var("RELAY_NODE_FQDN"))
-                .ok();
+            let node = public_hostname();
             relay_server::notify::spawn_commit_update_notify_blocking(
                 "git_push",
                 &repo_slug,
@@ -174,8 +175,10 @@ fn main() -> anyhow::Result<()> {
             if relay_server::git::catalog_apply::is_relay_master_slug(&repo_slug) {
                 // Catalog apply stays sync (reclone wiring); still prefer not to grow this.
                 relay_server::git::catalog_apply::handle_relay_master_post_receive(&ctx);
-            } else {
-                // Blocking: a detached thread is killed when this hook process exits.
+            } else if publish_origin_push_gate(&ctx.repo_path, &ctx.branch, hostname.as_deref())
+                .is_none()
+            {
+                // Publish-origin mesh sync runs in the update hook; other nodes notify here.
                 let cfg = git2::Repository::open_bare(&ctx.repo_path)
                     .ok()
                     .and_then(|repo| {
@@ -197,6 +200,82 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn public_hostname() -> Option<String> {
+    std::env::var("RELAY_PUBLIC_HOSTNAME")
+        .or_else(|_| std::env::var("RELAY_NODE_FQDN"))
+        .ok()
+}
+
+/// Catalog publish-origin push: publish tip early, notify peers, wait for mesh match.
+/// Hard-fail (exit 1) on timeout so receive-pack returns `ng` to the client.
+fn handle_update_hook(git_dir: &Path, args: &[String]) {
+    if args.len() < 4 {
+        return;
+    }
+    let refname = args[1].as_str();
+    let old_commit = args[2].as_str();
+    let new_commit = args[3].as_str();
+
+    if !refname.starts_with("refs/heads/") {
+        return;
+    }
+    // Branch delete — no mesh gate.
+    if new_commit == ZERO_OID {
+        return;
+    }
+
+    let branch = refname
+        .strip_prefix("refs/heads/")
+        .unwrap_or(refname)
+        .to_string();
+    let hostname = public_hostname();
+
+    let Some(_rec) = publish_origin_push_gate(git_dir, &branch, hostname.as_deref()) else {
+        return;
+    };
+
+    let repo_slug = relay_server::notify::normalize_repo_slug(
+        git_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown.git"),
+    );
+
+    eprintln!(
+        "[relay-hook-handler] update mesh-sync {} {} {}",
+        repo_slug, branch, new_commit
+    );
+
+    if let Err(e) = git_update_ref(git_dir, refname, new_commit, old_commit) {
+        eprintln!("remote: mesh sync: failed to publish tip: {e}");
+        std::process::exit(1);
+    }
+
+    let cfg = git2::Repository::open_bare(git_dir)
+        .ok()
+        .and_then(|repo| relay_server::git::read_relay_config(&repo, new_commit))
+        .unwrap_or_default();
+    relay_server::peer_notify::notify_after_push(&repo_slug, &branch, new_commit, &cfg);
+
+    let wait = wait_peers_match_tip(&repo_slug, &branch, new_commit);
+    if wait.status == MeshSyncStatus::Success {
+        eprintln!(
+            "[relay-hook-handler] mesh sync ok {} {} ({} peers)",
+            repo_slug,
+            &new_commit[..7.min(new_commit.len())],
+            wait.peers.len()
+        );
+        return;
+    }
+
+    if let Err(e) = git_revert_ref(git_dir, refname, old_commit, new_commit) {
+        eprintln!("remote: mesh sync: revert failed: {e}");
+    }
+    let msg = format_mesh_sync_failure(&wait);
+    eprintln!("remote: mesh sync failed: {msg}");
+    std::process::exit(1);
 }
 
 fn enforce_branch_rules(ctx: &HookContext) -> anyhow::Result<()> {

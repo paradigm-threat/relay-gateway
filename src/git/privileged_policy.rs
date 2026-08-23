@@ -149,7 +149,7 @@ mod tests {
         let parent = git_cfg(None, NotifyMode::Next);
         let mut commit = parent.clone();
         commit.git.as_mut().unwrap().auto_push = Some(AutoPushConfig {
-            origin_list: vec!["dfw1.relaygateway.net".into()],
+            origin_list: vec!["iad1.relaygateway.net".into()],
             ..Default::default()
         });
         assert!(privileged_config_differs(&parent, &commit));

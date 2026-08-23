@@ -381,7 +381,7 @@ async fn cmd_status(cfg: &OpsConfig, only: Option<&str>) -> Result<()> {
     let url = gitlab_url(cfg)?;
     let (fleet, source) = load_fleet(cfg, only).await?;
     let inv = Inventory::collect(cfg);
-    let (nodes, ingress, live) = probe_fleet(&fleet).await;
+    let (nodes, ingress, live) = probe_fleet(&fleet, Some(&url)).await;
     let mut spot = Vec::new();
     if let Some(tok) = cfg.spot_token.as_deref() {
         spot = spot::list_assignments(tok).await.unwrap_or_default();

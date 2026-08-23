@@ -54,6 +54,7 @@ RUN mkdir -p /srv/relay/data /srv/relay/www /srv/relay/prebuilt /srv/relay/logs 
     && ln -sf /usr/local/bin/relay-hook-handler /srv/relay/hooks/pre-receive \
     && ln -sf /usr/local/bin/relay-hook-handler /srv/relay/hooks/post-receive \
     && ln -sf /usr/local/bin/relay-hook-handler /srv/relay/hooks/post-update \
+    && ln -sf /usr/local/bin/relay-hook-handler /srv/relay/hooks/update \
     && git config --system core.hooksPath /srv/relay/hooks
 
 COPY relay-gateway/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

@@ -71,7 +71,7 @@
       <button id="btnSsh" disabled title="SSH true on every node (Admin)." onclick="job({kind:'ssh-check'})">SSH check</button>
       <button id="btnDrift" disabled title="Compare catalog git HEAD across the fleet (report only; use Synchronize on a cell to fetch)." onclick="job({kind:'drift'})">Drift</button>
       <button id="btnKh" disabled title="Resets SSH host keys for the whole fleet so Repair/Reclaim can connect after Spot replacement." onclick="resetFleetKnownHosts()">Reset known_hosts</button>
-      <button id="btnDrop" disabled title="Remove dead IPs from fleet ingress A records. Never empties the set." onclick="act('/api/fleet-dns-drop')">Drop dead fleet A</button>
+      <button id="btnDrop" disabled title="Sync fleet.relaygateway.net A records to healthy node IPs (add missing, drop stale). Never empties the set." onclick="act('/api/fleet-dns-drop')">Sync fleet A</button>
       <button id="btnDnsDry" disabled title="Show desired fleet ingress A set without writing Vercel DNS." onclick="job({kind:'fleet-dns', dry_run:true})">Fleet DNS dry-run</button>
     </div>
     <div id="syncBanner"></div>

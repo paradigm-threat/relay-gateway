@@ -8,20 +8,47 @@
 | Phase | What runs | Client waits? |
 |-------|-----------|---------------|
 | **`pre-receive`** | Rust `branchRules` + optional CleverScript | **Yes** (must — can reject) |
-| **`post-receive`** | Schedules Slack, index warm, peer notify, autoPush | **No** (side effects are spawned / timed out) |
+| **`update`** (catalog **publish_origin** only) | Publish tip, tip-notify peers, poll until fleet matches or timeout | **Yes** — timeout or lagging peer → **`ng`** (push fails, tip reverted) |
+| **`post-receive`** | Index inline, Slack, optional autoPush | **Partial** (index blocks; notify skipped on publish_origin — done in `update`) |
 
-**Policy stays fail-closed on `pre-receive`.** Index warm, Slack, and mesh tip-notify are **best-effort after** the ref updates. First QUERY after a push may wait briefly on the branch index mutex until warm finishes — preferred over hung `git push`.
+**Policy stays fail-closed on `pre-receive` and publish-origin `update`.** Mesh sync timeout is a **hard publish failure**, not a warning after ACK.
 
 ### Env timeouts
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
+| **`RELAY_MESH_SYNC_WAIT_SECS`** | `45` | Max wait after tip-notify for all peers to show the pushed SHA (publish-origin `update` hook). |
+| **`RELAY_MESH_SYNC_POLL_MS`** | `1000` | Poll interval during mesh wait. |
 | **`RELAY_PEER_NOTIFY_TIMEOUT_SECS`** | `12` | Per-peer HTTP tip-notify. Ops often set **`3`**. |
 | **`RELAY_SLACK_TIMEOUT_SECS`** | `12` (webhook) / `10` (history) | Slack Incoming Webhook + dedup history. |
 | **`RELAY_AUTOPUSH_TIMEOUT_SECS`** | `60` | Per-origin `git push` under `timeout(1)`. |
 | **`RELAY_PEER_FETCH_TIMEOUT_SECS`** | `60` (Rust) / `30` (startup script) | Peer `git fetch` / startup catalog peer fetch. |
 
 Prefer **tip-notify** (`POST /hooks/peer`) over enabling **`git.autoPush`** until you accept bounded push timeouts.
+
+### Post-push mesh sync (agents / go-live)
+
+On catalog repos with **`publish_origin=iad1`**, **`git push iad1 HEAD:<branch>`** blocks in the **`update` hook** until **sjc1/hkg1** (from **`RELAY_MASTER_PEER_LIST`**) match the new tip, or the wait budget expires. **Success** = normal `git push` exit 0. **Timeout / partial** = push fails (`ng`) with `remote: mesh sync failed: …` on stderr.
+
+Then push **GitLab** (forge backup). No client polling script required for normal agent go-live.
+
+**Operator / debug** (after a failed push or when diagnosing lag):
+
+```bash
+relay-gateway/scripts/relay-push-and-wait.sh iad1 HEAD:main
+# optional — same checks as the server hook; exit 0/1/2
+```
+
+API snapshot (does not replace server gate on push):
+
+```bash
+curl -sS -X POST "https://iad1.relaygateway.net/api/sync/mesh/paradigm-threat-files?branch=main&sha=$(git rev-parse HEAD)" \
+  | jq '.mesh_sync.status, .mesh_sync.peers, .mesh_sync.last_notify'
+```
+
+Publisher state: **`/opt/relay/state/post_push_sync/<repo>.json`** (per-peer notify ok/fail + HTTP errors).
+
+Content-repo agent canon: **`paradigm-threat-files/AGENTS.md`** and **`docs/GIT_REMOTE_STRATEGY.md`**.
 
 ### Hung client push (operator)
 

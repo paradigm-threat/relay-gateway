@@ -388,7 +388,7 @@ mod tests {
         unsafe {
             std::env::set_var(
                 "RELAY_MASTER_PEER_LIST",
-                "dfw1.example;lon1.example;hkg1.example",
+                "iad1.example;lon1.example;hkg1.example",
             );
             std::env::set_var("RELAY_PUBLIC_HOSTNAME", "lon1.example");
         }

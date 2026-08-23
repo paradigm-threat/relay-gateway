@@ -22,7 +22,7 @@ Rackspace has stated Terraform/spotctl/API support for VM Cloudspaces is **plann
 
 Until API lands: create **VM Cloudspace** in Spot UI (e.g. 1× **`gp.vs1.medium-iad`**, bid **0.01**, **`ubuntu2404`**), set **`public_ip_override`** in per-node tfvars, then:
 
-**Per-target tfvars:** **`iad1.tfvars`**, **`sjc1.tfvars`**, **`hkg1.tfvars`** (see `*.tfvars.example`). Retired **`dfw1`** / **`lon1`** examples remain historical only.
+**Per-target tfvars:** **`iad1.tfvars`**, **`sjc1.tfvars`**, **`hkg1.tfvars`** (see `*.tfvars.example`). Retired **`iad1`** / **`lon1`** examples remain historical only.
 
 ```bash
 ./scripts/relay-master-deploy.sh --target spot-iad1 --install-only

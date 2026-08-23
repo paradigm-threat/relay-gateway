@@ -37,9 +37,9 @@ Do **not** run full **`relay-master-deploy.sh install`** on atlanta2 without exp
 
 Publisher for catalog repos is **`iad1.relaygateway.net`** (`publish_origin`). After Spot preemption on a replica: reclaim with **`--target spot-sjc1`** / **`spot-iad1`** / **`spot-hkg1`**.
 
-### Retired: Spot DFW / K8s interim
+### Retired: Spot Dallas / K8s interim
 
-Former publisher **`dfw1`** / cloudspace **`relay-network`** (Dallas) is retired. Historical K8s notes: [`docs/archive/rackspace-spot-k8s/`](archive/rackspace-spot-k8s/), [`terraform/k8s-interim-dfw1/`](../../terraform/k8s-interim-dfw1/).
+Former Dallas publisher / cloudspace **`relay-network`** is retired (replaced by **sjc1**). Historical notes: [`docs/archive/rackspace-spot-k8s/`](archive/rackspace-spot-k8s/) and interim TLS under `terraform/` (do not apply).
 
 ## Ongoing operations
 

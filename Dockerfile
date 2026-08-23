@@ -52,7 +52,8 @@ RUN mkdir -p /srv/relay/data /srv/relay/www /srv/relay/prebuilt /srv/relay/logs 
 # Symlink universal hooks
 RUN ln -s /usr/local/bin/relay-hook-handler /srv/relay/hooks/pre-receive \
     && ln -s /usr/local/bin/relay-hook-handler /srv/relay/hooks/post-receive \
-    && ln -s /usr/local/bin/relay-hook-handler /srv/relay/hooks/post-update
+    && ln -s /usr/local/bin/relay-hook-handler /srv/relay/hooks/post-update \
+    && ln -s /usr/local/bin/relay-hook-handler /srv/relay/hooks/update
 
 # Configure system-wide hooks
 RUN git config --system core.hooksPath /srv/relay/hooks

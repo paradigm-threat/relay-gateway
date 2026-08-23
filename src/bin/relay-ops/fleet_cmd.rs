@@ -402,7 +402,7 @@ pub async fn fleet_dns(
         .or_else(|| fleet.fleet_ingress.clone())
         .ok_or_else(|| anyhow!("no fleetIngress in topology"))?;
     let desired = if drop_unhealthy {
-        let (nodes, _, _) = probe_fleet(fleet).await;
+        let (nodes, _, _) = probe_fleet(fleet, None).await;
         let keep = healthy_node_ips(&nodes);
         if keep.is_empty() {
             anyhow::bail!("all nodes unhealthy; refusing to empty {ingress}");
@@ -425,7 +425,7 @@ pub async fn fleet_dns(
     let mut log = format!("desired {ingress} A {desired:?}\n");
     if dry_run {
         if drop_unhealthy {
-            let (_, ingress_p, _) = probe_fleet(fleet).await;
+            let (_, ingress_p, _) = probe_fleet(fleet, None).await;
             if let Some(ing) = ingress_p {
                 log.push_str(&format!("stale {:?}\n", dead_ingress_ips(&ing, &desired)));
             }

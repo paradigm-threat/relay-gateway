@@ -359,12 +359,12 @@ mod tests {
     #[test]
     fn parse_receive_pack_slug() {
         let req = parse_git_daemon_request(
-            b"git-receive-pack /new-repo.git\0host=dfw1.relaygateway.net\0",
+            b"git-receive-pack /new-repo.git\0host=iad1.relaygateway.net\0",
         )
         .unwrap();
         assert_eq!(req.service, GitService::ReceivePack);
         assert_eq!(req.slug, "new-repo");
-        assert_eq!(req.host.as_deref(), Some("dfw1.relaygateway.net"));
+        assert_eq!(req.host.as_deref(), Some("iad1.relaygateway.net"));
     }
 
     #[test]
@@ -411,7 +411,7 @@ mod tests {
                 GitService::UploadPack,
                 &dest,
                 true,
-                Some("dfw1.relaygateway.net")
+                Some("iad1.relaygateway.net")
             ),
             ProvisionDecision::Proxy
         );
@@ -439,7 +439,7 @@ mod tests {
                 GitService::ReceivePack,
                 &dest,
                 true,
-                Some("dfw1.relaygateway.net"),
+                Some("iad1.relaygateway.net"),
             ),
             ProvisionDecision::CreateThenProxy
         );
@@ -497,7 +497,7 @@ mod tests {
     #[test]
     #[serial(catalog_path_env)]
     fn decide_receive_pack_replica_does_not_create() {
-        let catalog = catalog_worktree("files", Some("dfw1.relaygateway.net"));
+        let catalog = catalog_worktree("files", Some("iad1.relaygateway.net"));
         let _guard = CatalogPathGuard::set(catalog.path());
         let d = tempdir().unwrap();
         let dest = d.path().join("files.git");
@@ -509,7 +509,7 @@ mod tests {
         ) {
             ProvisionDecision::Reject(msg) => {
                 assert!(msg.contains("publish_origin"), "{msg}");
-                assert!(msg.contains("dfw1.relaygateway.net"), "{msg}");
+                assert!(msg.contains("iad1.relaygateway.net"), "{msg}");
             }
             other => panic!("expected reject, got {other:?}"),
         }
@@ -519,7 +519,7 @@ mod tests {
     #[test]
     #[serial(catalog_path_env)]
     fn decide_receive_pack_origin_creates() {
-        let catalog = catalog_worktree("files", Some("dfw1.relaygateway.net"));
+        let catalog = catalog_worktree("files", Some("iad1.relaygateway.net"));
         let _guard = CatalogPathGuard::set(catalog.path());
         let d = tempdir().unwrap();
         let dest = d.path().join("files.git");
@@ -528,7 +528,7 @@ mod tests {
                 GitService::ReceivePack,
                 &dest,
                 true,
-                Some("dfw1.relaygateway.net"),
+                Some("iad1.relaygateway.net"),
             ),
             ProvisionDecision::CreateThenProxy
         );
@@ -546,7 +546,7 @@ mod tests {
             backend: backend_addr,
             repo_path: repos.path().to_path_buf(),
             ensure_bare_enabled: true,
-            public_hostname: Some("dfw1.relaygateway.net".into()),
+            public_hostname: Some("iad1.relaygateway.net".into()),
             max_connections: 4,
         };
 
@@ -564,7 +564,7 @@ mod tests {
         });
 
         let mut client = TcpStream::connect(proxy_addr).await.unwrap();
-        let payload = b"git-receive-pack /first-push-demo.git\0host=dfw1.relaygateway.net\0";
+        let payload = b"git-receive-pack /first-push-demo.git\0host=iad1.relaygateway.net\0";
         client.write_all(&encode_pkt_line(payload)).await.unwrap();
         client.shutdown().await.unwrap();
         let mut reply = Vec::new();
@@ -600,7 +600,7 @@ mod tests {
             backend: backend_addr,
             repo_path: repos.path().to_path_buf(),
             ensure_bare_enabled: true,
-            public_hostname: Some("dfw1.relaygateway.net".into()),
+            public_hostname: Some("iad1.relaygateway.net".into()),
             max_connections: 4,
         };
 
@@ -617,7 +617,7 @@ mod tests {
         });
 
         let mut client = TcpStream::connect(proxy_addr).await.unwrap();
-        let payload = b"git-upload-pack /ghost.git\0host=dfw1.relaygateway.net\0";
+        let payload = b"git-upload-pack /ghost.git\0host=iad1.relaygateway.net\0";
         client.write_all(&encode_pkt_line(payload)).await.unwrap();
         client.shutdown().await.unwrap();
         let mut reply = Vec::new();

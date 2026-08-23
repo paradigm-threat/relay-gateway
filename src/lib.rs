@@ -11,6 +11,7 @@ pub mod notify;
 pub mod park_tls;
 pub mod peer_hook;
 pub mod peer_notify;
+pub mod post_push_sync;
 pub mod router;
 pub mod transpiler;
 pub mod types;

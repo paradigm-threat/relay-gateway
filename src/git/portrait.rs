@@ -236,7 +236,7 @@ mod tests {
     fn repo_rel_strips_origin_and_query() {
         assert_eq!(
             repo_rel_from_media_src(
-                "https://paradigm-threat-files.dfw1.relaygateway.net/governance/war/x.png?w=800"
+                "https://paradigm-threat-files.iad1.relaygateway.net/governance/war/x.png?w=800"
             )
             .as_deref(),
             Some("governance/war/x.png")

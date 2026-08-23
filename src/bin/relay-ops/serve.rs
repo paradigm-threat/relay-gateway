@@ -77,7 +77,8 @@ pub async fn refresh_inner(app: &App) {
     let cfg = app.cfg.clone();
     match crate::gitlab::load_topology(&cfg, &gitlab).await {
         Ok((mut fleet, source)) => {
-            let (mut nodes, ingress, live_peers) = probe_fleet(&fleet).await;
+            let (mut nodes, ingress, live_peers) =
+                probe_fleet(&fleet, Some(gitlab.as_str())).await;
             if Inventory::collect(&cfg).admin_ready {
                 attach_ssh_diags(&cfg, &fleet, &mut nodes).await;
             }
@@ -91,18 +92,35 @@ pub async fn refresh_inner(app: &App) {
                 if let (Some(ing), Some(tok)) = (ingress.as_ref(), cfg.vercel_token.as_deref()) {
                     let keep = healthy_node_ips(&nodes);
                     let stale = dead_ingress_ips(ing, &keep);
-                    if !stale.is_empty() && !keep.is_empty() {
+                    let missing = keep
+                        .iter()
+                        .filter(|ip| !ing.dns.iter().any(|d| d == *ip))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let needs_reconcile = !keep.is_empty() && (!stale.is_empty() || !missing.is_empty());
+                    if needs_reconcile {
                         if let Ok(v) = Vercel::new(tok, cfg.vercel_team_id.as_deref()) {
                             match v.reconcile_fleet_a(&ing.fqdn, &keep).await {
                                 Ok(msg) => {
                                     tracing::info!("{msg}");
-                                    crate::notify::notify(
-                                        cfg.slack_webhook.as_deref(),
-                                        &format!(
-                                            "relay-ops dropped dead fleet A records: {stale:?}"
-                                        ),
-                                    )
-                                    .await;
+                                    if !stale.is_empty() {
+                                        crate::notify::notify(
+                                            cfg.slack_webhook.as_deref(),
+                                            &format!(
+                                                "relay-ops fleet ingress sync: dropped stale A {stale:?}"
+                                            ),
+                                        )
+                                        .await;
+                                    }
+                                    if !missing.is_empty() {
+                                        crate::notify::notify(
+                                            cfg.slack_webhook.as_deref(),
+                                            &format!(
+                                                "relay-ops fleet ingress sync: added missing A {missing:?}"
+                                            ),
+                                        )
+                                        .await;
+                                    }
                                 }
                                 Err(e) => tracing::warn!("auto fleet-dns: {e:#}"),
                             }

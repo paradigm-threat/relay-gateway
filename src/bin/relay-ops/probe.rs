@@ -156,7 +156,10 @@ pub struct IngressProbe {
     pub dns: Vec<String>,
 }
 
-pub async fn probe_fleet(fleet: &FleetFile) -> (Vec<NodeProbe>, Option<IngressProbe>, Vec<String>) {
+pub async fn probe_fleet(
+    fleet: &FleetFile,
+    gitlab_url: Option<&str>,
+) -> (Vec<NodeProbe>, Option<IngressProbe>, Vec<String>) {
     let git_port = fleet.git_port();
     let repos = fleet.git_repos.clone();
     let mut set = tokio::task::JoinSet::new();
@@ -171,7 +174,8 @@ pub async fn probe_fleet(fleet: &FleetFile) -> (Vec<NodeProbe>, Option<IngressPr
         }
     }
     nodes.sort_by(|a, b| a.fqdn.cmp(&b.fqdn));
-    apply_catalog_sync(&mut nodes, &repos);
+    let forge_tips = probe_forge_tips(gitlab_url, &repos).await;
+    apply_catalog_sync(&mut nodes, &repos, &forge_tips);
     let mut live_peers = Vec::new();
     for n in &nodes {
         if let Some(cfg) = &n.https_config {
@@ -585,7 +589,11 @@ pub fn expected_catalog_repos(nodes: &[NodeProbe], extra: &[String]) -> Vec<Stri
     set
 }
 
-pub fn apply_catalog_sync(nodes: &mut [NodeProbe], extra_expected: &[String]) {
+pub fn apply_catalog_sync(
+    nodes: &mut [NodeProbe],
+    extra_expected: &[String],
+    forge_tips: &std::collections::BTreeMap<(String, String), String>,
+) {
     let expected = expected_catalog_repos(nodes, extra_expected);
     let catalog_meta = collect_catalog_repos(nodes);
     let canonical = canonical_tips(nodes, &expected);
@@ -677,6 +685,160 @@ pub fn apply_catalog_sync(nodes: &mut [NodeProbe], extra_expected: &[String]) {
         n.drift
             .sort_by(|a, b| (&a.repo, &a.branch).cmp(&(&b.repo, &b.branch)));
         n.sync_ok = n.missing_repos.is_empty() && n.drift.is_empty();
+    }
+
+    attach_publisher_behind_anomalies(nodes, &publisher_tips, forge_tips);
+}
+
+/// When GitLab (forge) matches a replica but not the publish origin, the publisher
+/// was not pushed yet — do not treat lagging replicas as "ahead" via majority vote.
+fn attach_publisher_behind_anomalies(
+    nodes: &mut [NodeProbe],
+    publisher_tips: &std::collections::BTreeMap<(String, String), (String, String)>,
+    forge_tips: &std::collections::BTreeMap<(String, String), String>,
+) {
+    for ((repo, branch), (pub_sha, origin_fqdn)) in publisher_tips {
+        let key = (repo.clone(), branch.clone());
+        let Some(forge_sha) = forge_tips.get(&key) else {
+            continue;
+        };
+        if forge_sha == pub_sha {
+            continue;
+        }
+        let Some(replica) = nodes.iter().find(|n| {
+            n.healthy
+                && !fqdn_eq(&n.fqdn, origin_fqdn)
+                && n.git_tips.iter().any(|t| {
+                    t.repo == *repo
+                        && t.error.is_none()
+                        && tip_sha_for_branch(t, branch).as_deref() == Some(forge_sha.as_str())
+                })
+        }) else {
+            continue;
+        };
+        let replica_sha = replica
+            .git_tips
+            .iter()
+            .find(|t| t.repo == *repo)
+            .and_then(|t| tip_sha_for_branch(t, branch))
+            .unwrap_or_default();
+        let anomaly = SyncAnomaly {
+            kind: "publisher_behind_forge".into(),
+            repo: repo.clone(),
+            branch: branch.clone(),
+            publisher_fqdn: origin_fqdn.clone(),
+            publisher_sha: pub_sha.clone(),
+            replica_fqdn: replica.fqdn.clone(),
+            replica_sha,
+        };
+        if let Some(publisher) = nodes
+            .iter_mut()
+            .find(|n| n.healthy && fqdn_eq(&n.fqdn, origin_fqdn))
+        {
+            publisher.sync_anomalies.push(anomaly);
+            publisher.sync_ok = false;
+        }
+    }
+}
+
+async fn probe_forge_tips(
+    gitlab_url: Option<&str>,
+    expected: &[String],
+) -> std::collections::BTreeMap<(String, String), String> {
+    use std::collections::BTreeMap;
+    let mut out = BTreeMap::new();
+    let Some(base) = gitlab_url.and_then(forge_repo_base_from_gitlab_url) else {
+        return out;
+    };
+    let mut set = tokio::task::JoinSet::new();
+    for repo in expected {
+        let url = format!("{base}/{repo}.git");
+        let repo = repo.clone();
+        set.spawn(async move {
+            let tip = git_ls_remote_url(&url, &repo).await;
+            (repo, tip)
+        });
+    }
+    while let Some(res) = set.join_next().await {
+        if let Ok((repo, tip)) = res {
+            if tip.error.is_some() {
+                continue;
+            }
+            for r in &tip.refs {
+                out.insert((repo.clone(), r.name.clone()), r.sha.clone());
+            }
+            if let Some(sha) = tip.sha {
+                out.entry((repo, "main".into())).or_insert(sha);
+            }
+        }
+    }
+    out
+}
+
+/// `https://gitlab.com/clevertree/relay-master` → `https://gitlab.com/clevertree`
+fn forge_repo_base_from_gitlab_url(url: &str) -> Option<String> {
+    let s = url.trim().trim_end_matches('/').trim_end_matches(".git");
+    if let Some(rest) = s.strip_prefix("git@") {
+        if let Some((host, path)) = rest.split_once(':') {
+            let ns = path.rsplit_once('/')?.0;
+            return Some(format!("git@{host}:{ns}"));
+        }
+    }
+    let rest = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))?;
+    let (host, path) = rest.split_once('/')?;
+    let ns = path.rsplit_once('/')?.0;
+    Some(format!("https://{host}/{ns}"))
+}
+
+async fn git_ls_remote_url(url: &str, repo: &str) -> GitTip {
+    if which_git().is_none() {
+        return GitTip {
+            repo: repo.into(),
+            sha: None,
+            refs: Vec::new(),
+            error: Some("git not installed".into()),
+        };
+    }
+    let mut cmd = Command::new("git");
+    cmd.args(["ls-remote", "--heads", url]);
+    match timeout(Duration::from_secs(12), cmd.output()).await {
+        Ok(Ok(out)) if out.status.success() => {
+            let refs = crate::browse::parse_ls_remote_heads(&String::from_utf8_lossy(&out.stdout));
+            let refs: Vec<GitRef> = refs
+                .into_iter()
+                .map(|b| GitRef {
+                    name: b.name,
+                    sha: b.sha,
+                })
+                .collect();
+            let sha = preferred_sha(&refs);
+            GitTip {
+                repo: repo.into(),
+                sha,
+                refs,
+                error: None,
+            }
+        }
+        Ok(Ok(out)) => GitTip {
+            repo: repo.into(),
+            sha: None,
+            refs: Vec::new(),
+            error: Some(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+        },
+        Ok(Err(e)) => GitTip {
+            repo: repo.into(),
+            sha: None,
+            refs: Vec::new(),
+            error: Some(e.to_string()),
+        },
+        Err(_) => GitTip {
+            repo: repo.into(),
+            sha: None,
+            refs: Vec::new(),
+            error: Some("git ls-remote timeout".into()),
+        },
     }
 }
 
@@ -878,7 +1040,7 @@ mod tests {
     #[test]
     fn config_probe_reads_repos() {
         let body: serde_json::Value = serde_json::json!({
-            "relay_server_id": "relay-dfw1",
+            "relay_server_id": "relay-iad1",
             "peers": ["lon1.relaygateway.net"],
             "repos": ["relay-master", "paradigm-threat-files"],
             "authorized_repos": ["relay-master"]
@@ -965,7 +1127,7 @@ mod tests {
                 vec![],
             ),
         ];
-        apply_catalog_sync(&mut nodes, &[]);
+        apply_catalog_sync(&mut nodes, &[], &std::collections::BTreeMap::new());
         assert!(nodes[0].sync_ok);
         assert!(!nodes[1].sync_ok);
         assert_eq!(nodes[1].missing_repos, vec!["park"]);
@@ -998,7 +1160,7 @@ mod tests {
                 vec![],
             ),
         ];
-        apply_catalog_sync(&mut nodes, &[]);
+        apply_catalog_sync(&mut nodes, &[], &std::collections::BTreeMap::new());
         assert!(nodes[0].sync_ok);
         assert!(!nodes[1].sync_ok);
         assert_eq!(nodes[1].drift[0].branch, "release");
@@ -1030,7 +1192,7 @@ mod tests {
                 vec![],
             ),
         ];
-        apply_catalog_sync(&mut nodes, &[]);
+        apply_catalog_sync(&mut nodes, &[], &std::collections::BTreeMap::new());
         assert!(nodes[1].missing_repos.is_empty());
         assert!(nodes[1].drift.is_empty());
         assert!(nodes[1].sync_ok);
@@ -1111,10 +1273,10 @@ mod tests {
 
     #[test]
     fn two_lagging_replicas_are_behind_publisher_not_ahead() {
-        let site = catalog_row("paradigm-threat-files", "main", "dfw1.example");
+        let site = catalog_row("paradigm-threat-files", "main", "iad1.example");
         let mut nodes = vec![
             up_node(
-                "dfw1.example",
+                "iad1.example",
                 &["paradigm-threat-files"],
                 &["paradigm-threat-files"],
                 vec![tip("paradigm-threat-files", "main", "newsha1")],
@@ -1135,7 +1297,7 @@ mod tests {
                 vec![site],
             ),
         ];
-        apply_catalog_sync(&mut nodes, &[]);
+        apply_catalog_sync(&mut nodes, &[], &std::collections::BTreeMap::new());
         assert!(nodes[0].sync_ok, "publisher should stay in sync");
         assert!(nodes[0].drift.is_empty());
         assert!(nodes[0].sync_anomalies.is_empty());
@@ -1148,10 +1310,10 @@ mod tests {
 
     #[test]
     fn replicas_behind_publisher_are_flagged_not_publisher() {
-        let site = catalog_row("paradigm-threat-web", "release", "dfw1.example");
+        let site = catalog_row("paradigm-threat-web", "release", "iad1.example");
         let mut nodes = vec![
             up_node(
-                "dfw1.example",
+                "iad1.example",
                 &["paradigm-threat-web"],
                 &["paradigm-threat-web"],
                 vec![tip("paradigm-threat-web", "release", "bbb2222")],
@@ -1172,7 +1334,7 @@ mod tests {
                 vec![site],
             ),
         ];
-        apply_catalog_sync(&mut nodes, &[]);
+        apply_catalog_sync(&mut nodes, &[], &std::collections::BTreeMap::new());
         assert!(nodes[0].sync_ok);
         assert!(nodes[0].drift.is_empty());
         assert!(nodes[0].sync_anomalies.is_empty());
@@ -1188,7 +1350,7 @@ mod tests {
         let site = catalog_row("clevertree-site", "release", "DFW1.example");
         let mut nodes = vec![
             up_node(
-                "dfw1.example",
+                "iad1.example",
                 &["clevertree-site"],
                 &["clevertree-site"],
                 vec![tip("clevertree-site", "release", "aaa1111")],
@@ -1202,7 +1364,45 @@ mod tests {
                 vec![site],
             ),
         ];
-        apply_catalog_sync(&mut nodes, &[]);
+        apply_catalog_sync(&mut nodes, &[], &std::collections::BTreeMap::new());
         assert!(nodes[0].drift.is_empty());
+    }
+
+    #[test]
+    fn publisher_behind_forge_flags_anomaly_not_replica_ahead() {
+        let site = catalog_row("paradigm-threat-files", "main", "iad1.example");
+        let mut nodes = vec![
+            up_node(
+                "iad1.example",
+                &["paradigm-threat-files"],
+                &["paradigm-threat-files"],
+                vec![tip("paradigm-threat-files", "main", "pub00001")],
+                vec![site.clone()],
+            ),
+            up_node(
+                "hkg1.example",
+                &["paradigm-threat-files"],
+                &["paradigm-threat-files"],
+                vec![tip("paradigm-threat-files", "main", "forge000")],
+                vec![site.clone()],
+            ),
+            up_node(
+                "sjc1.example",
+                &["paradigm-threat-files"],
+                &["paradigm-threat-files"],
+                vec![tip("paradigm-threat-files", "main", "forge000")],
+                vec![site],
+            ),
+        ];
+        let mut forge = std::collections::BTreeMap::new();
+        forge.insert(
+            ("paradigm-threat-files".into(), "main".into()),
+            "forge000".into(),
+        );
+        apply_catalog_sync(&mut nodes, &[], &forge);
+        assert!(nodes[0].sync_anomalies.len() == 1);
+        assert_eq!(nodes[0].sync_anomalies[0].kind, "publisher_behind_forge");
+        assert_eq!(nodes[1].drift[0].kind, DriftKind::ReplicaBehind);
+        assert_ne!(nodes[1].drift[0].kind, DriftKind::ReplicaAhead);
     }
 }

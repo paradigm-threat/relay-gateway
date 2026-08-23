@@ -8,6 +8,7 @@ use tracing::{debug, info, warn};
 use crate::git::origins;
 use crate::mesh_events;
 use crate::mesh_role;
+use crate::post_push_sync::{write_post_push_sync, PeerNotifyOutcome, PostPushSyncRecord};
 use crate::types::{GitConfig, NotifyMode, RelayConfig};
 
 #[derive(Debug, Clone, Serialize)]
@@ -80,11 +81,16 @@ fn post_peer_notify(
     new_sha: &str,
     via: &[String],
     hops_remaining: Option<u32>,
-) -> bool {
+) -> PeerNotifyOutcome {
     let url = peer_notify_url(target);
     let Some(sec) = outbound_secret(&url) else {
         warn!(%url, "peer notify: no outbound secret");
-        return false;
+        return PeerNotifyOutcome {
+            target: target.to_string(),
+            ok: false,
+            http_status: None,
+            error: Some("no outbound mesh secret configured".into()),
+        };
     };
     let body = PeerNotifyBody {
         repo: repo.to_string(),
@@ -103,20 +109,41 @@ fn post_peer_notify(
         Ok(resp) if resp.status().is_success() => {
             info!(%url, repo, "peer notify delivered");
             eprintln!("[relay-hook-handler] peer notify delivered {url} repo={repo}");
-            true
+            PeerNotifyOutcome {
+                target: target.to_string(),
+                ok: true,
+                http_status: Some(resp.status().as_u16()),
+                error: None,
+            }
         }
         Ok(resp) => {
-            warn!(%url, status=%resp.status(), repo, "peer notify rejected");
+            let status = resp.status().as_u16();
+            let detail = resp.text().unwrap_or_default();
+            let err = if detail.is_empty() {
+                format!("HTTP {status}")
+            } else {
+                format!("HTTP {status}: {}", detail.chars().take(500).collect::<String>())
+            };
+            warn!(%url, status, repo, "peer notify rejected");
             eprintln!(
-                "[relay-hook-handler] peer notify rejected {url} status={} repo={repo}",
-                resp.status()
+                "[relay-hook-handler] peer notify rejected {url} status={status} repo={repo} {err}"
             );
-            false
+            PeerNotifyOutcome {
+                target: target.to_string(),
+                ok: false,
+                http_status: Some(status),
+                error: Some(err),
+            }
         }
         Err(e) => {
             warn!(%url, error=%e, repo, "peer notify HTTP failed");
             eprintln!("[relay-hook-handler] peer notify HTTP failed {url} repo={repo} error={e}");
-            false
+            PeerNotifyOutcome {
+                target: target.to_string(),
+                ok: false,
+                http_status: None,
+                error: Some(e.to_string()),
+            }
         }
     }
 }
@@ -129,10 +156,10 @@ pub fn notify_peers_blocking(
     git_cfg: &GitConfig,
     via: &[String],
     hops_remaining: Option<u32>,
-) {
+) -> Vec<PeerNotifyOutcome> {
     if std::env::var("RELAY_SYNC_IN_PROGRESS").is_ok() {
         debug!("peer notify skipped: RELAY_SYNC_IN_PROGRESS");
-        return;
+        return Vec::new();
     }
     let self_host = mesh_role::node_fqdn_normalized().unwrap_or_else(|| "localhost".to_string());
     let notify_mode = if hops_remaining.is_none() {
@@ -161,21 +188,23 @@ pub fn notify_peers_blocking(
         Ok(c) => c,
         Err(e) => {
             warn!(error=%e, "peer notify: client build failed");
-            return;
+            return Vec::new();
         }
     };
+
+    let mut outcomes: Vec<PeerNotifyOutcome> = Vec::new();
 
     // Hop-forward path: single next target from hop_forward_target.
     if let Some(hops) = hops_remaining {
         if hops == 0 {
-            return;
+            return outcomes;
         }
         let Some((next, next_hops)) =
             origins::hop_forward_target(git_cfg, Some(&self_host), via, Some(hops))
         else {
-            return;
+            return outcomes;
         };
-        if post_peer_notify(
+        let o = post_peer_notify(
             &client,
             &self_host,
             &next,
@@ -184,9 +213,13 @@ pub fn notify_peers_blocking(
             new_sha,
             via,
             Some(next_hops),
-        ) {
-            return;
+        );
+        if o.ok {
+            outcomes.push(o);
+            persist_notify_outcomes(repo, branch, new_sha, &self_host, &outcomes);
+            return outcomes;
         }
+        outcomes.push(o);
         // Dead next hop: try next+1 once (exclude failed host).
         let mut via2 = via.to_vec();
         via2.push(next.clone());
@@ -199,7 +232,7 @@ pub fn notify_peers_blocking(
                 "peer notify: next hop failed; trying next+1"
             );
             let alt_hops = hops.saturating_sub(1);
-            let _ = post_peer_notify(
+            outcomes.push(post_peer_notify(
                 &client,
                 &self_host,
                 &alt,
@@ -208,9 +241,10 @@ pub fn notify_peers_blocking(
                 new_sha,
                 &via2,
                 Some(alt_hops),
-            );
+            ));
         }
-        return;
+        persist_notify_outcomes(repo, branch, new_sha, &self_host, &outcomes);
+        return outcomes;
     }
 
     // Initial tip-notify after push.
@@ -221,25 +255,31 @@ pub fn notify_peers_blocking(
             let targets = origins::tip_notify_targets(&cfg, Some(&self_host));
             if targets.is_empty() {
                 debug!(repo, "peer notify: no targets");
-                return;
+                persist_notify_outcomes(repo, branch, new_sha, &self_host, &outcomes);
+                return outcomes;
             }
             for target in targets {
-                let _ = post_peer_notify(
+                outcomes.push(post_peer_notify(
                     &client, &self_host, &target, repo, branch, new_sha, via, ring_hops,
-                );
+                ));
             }
         }
         NotifyMode::Next => {
             let ring = origins::relay_ring_hosts(git_cfg);
             let Some(first) = origins::next_hop_after(&ring, &self_host) else {
                 debug!(repo, "peer notify: no targets");
-                return;
+                persist_notify_outcomes(repo, branch, new_sha, &self_host, &outcomes);
+                return outcomes;
             };
-            if post_peer_notify(
+            let o = post_peer_notify(
                 &client, &self_host, &first, repo, branch, new_sha, via, ring_hops,
-            ) {
-                return;
+            );
+            if o.ok {
+                outcomes.push(o);
+                persist_notify_outcomes(repo, branch, new_sha, &self_host, &outcomes);
+                return outcomes;
             }
+            outcomes.push(o);
             // One dead Spot must not stall the ring — try next+1 once.
             let exclude = [first.clone()];
             if let Some(alt) = origins::next_hop_after_excluding(&ring, &self_host, &exclude) {
@@ -250,21 +290,60 @@ pub fn notify_peers_blocking(
                     "peer notify: next hop failed; trying next+1"
                 );
                 let via2 = vec![first];
-                let _ = post_peer_notify(
+                outcomes.push(post_peer_notify(
                     &client, &self_host, &alt, repo, branch, new_sha, &via2, ring_hops,
-                );
+                ));
             }
         }
+    }
+    persist_notify_outcomes(repo, branch, new_sha, &self_host, &outcomes);
+    outcomes
+}
+
+fn persist_notify_outcomes(
+    repo: &str,
+    branch: &str,
+    new_sha: &str,
+    publisher_fqdn: &str,
+    outcomes: &[PeerNotifyOutcome],
+) {
+    let repo_path = std::env::var("RELAY_REPO_PATH")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/opt/relay/data"));
+    let ok_count = outcomes.iter().filter(|o| o.ok).count() as u32;
+    let fail_count = outcomes.len() as u32 - ok_count;
+    let finished_at_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    write_post_push_sync(
+        &repo_path,
+        &PostPushSyncRecord {
+            repo: repo.to_string(),
+            branch: branch.to_string(),
+            pushed_sha: new_sha.to_string(),
+            publisher_fqdn: publisher_fqdn.to_string(),
+            finished_at_unix,
+            notify_ok_count: ok_count,
+            notify_fail_count: fail_count,
+            peers: outcomes.to_vec(),
+        },
+    );
+    if fail_count > 0 {
+        eprintln!(
+            "[relay-hook-handler] mesh notify partial/fail repo={repo} ok={ok_count} fail={fail_count} (see state/post_push_sync/{repo}.json)"
+        );
     }
 }
 
 /// After validated push: read tip `.relay.yaml` and notify mesh peers.
 pub fn notify_after_push(repo_slug: &str, branch: &str, new_sha: &str, relay_cfg: &RelayConfig) {
     let Some(ref git) = relay_cfg.git else {
-        notify_peers_blocking(repo_slug, branch, new_sha, &Default::default(), &[], None);
+        let _ = notify_peers_blocking(repo_slug, branch, new_sha, &Default::default(), &[], None);
         return;
     };
-    notify_peers_blocking(repo_slug, branch, new_sha, git, &[], None);
+    let _ = notify_peers_blocking(repo_slug, branch, new_sha, git, &[], None);
 }
 
 /// Non-blocking tip-notify for `post-receive` (hook-handler has no Tokio runtime).
@@ -289,7 +368,7 @@ pub fn spawn_hop_forward(
     hops_remaining: Option<u32>,
 ) {
     std::thread::spawn(move || {
-        notify_peers_blocking(
+        let _ = notify_peers_blocking(
             &repo_slug,
             &branch,
             &new_sha,

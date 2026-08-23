@@ -129,6 +129,8 @@ impl OpsConfig {
     }
 
     pub fn auto_drop(&self) -> bool {
+        // When true, Observer syncs fleet.relaygateway.net A records to healthy node IPs
+        // (add missing + drop stale). Vercel DNS today; swap reconcile backend later.
         self.auto_drop_dead_fleet_a.unwrap_or(true)
     }
 }

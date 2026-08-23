@@ -693,14 +693,14 @@ mod tests {
               "tier": "primary",
               "relay_root_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "publish_branch": "main",
-              "publish_origin": "dfw1.relaygateway.net"
+              "publish_origin": "iad1.relaygateway.net"
             }"#,
         )
         .unwrap();
         assert_eq!(with.publish_branch, "main");
         assert_eq!(
             with.publish_origin.as_deref(),
-            Some("dfw1.relaygateway.net")
+            Some("iad1.relaygateway.net")
         );
 
         let without: CatalogRepoRecord = serde_json::from_str(

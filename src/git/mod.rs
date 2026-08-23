@@ -43,7 +43,7 @@ mod tests;
 pub use branch_policy::{
     branch_requires_signature, enforce_all_commits_on_branch, enforce_publish_origin_fence,
     enforce_push_range, enforce_push_range_with_catalog, enforce_single_commit,
-    enforce_unsigned_http_allowed, resolve_branch_rule,
+    enforce_unsigned_http_allowed, publish_origin_push_gate, resolve_branch_rule,
 };
 pub use get_hook_http::get_hook_json_to_response;
 pub use hooks::{execute_repo_hook, HookContext};

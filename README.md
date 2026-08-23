@@ -264,7 +264,7 @@ docker run -p 80:80 -p 443:443 \
   relay-gateway
 ```
 
-The server will be accessible at `https://node-dfw1.relaynet.online` with automatic HTTP to HTTPS redirection.
+The server will be accessible at `https://iad1.relaygateway.net` with automatic HTTP to HTTPS redirection.
 
 ## Developing and deploying a UI for repositories
 

@@ -66,7 +66,7 @@ done
 
 stack_dir() {
   case "$1" in
-    spot-iad1|spot-sjc1|spot-hkg1|spot-lon1|spot-dfw1) echo "$ROOT/terraform/rackspace-spot-vm" ;;
+    spot-iad1|spot-sjc1|spot-hkg1) echo "$ROOT/terraform/rackspace-spot-vm" ;;
     linode-atlanta2) echo "$ROOT/terraform/linode-relay" ;;
     *) echo "Unknown --target: $1 (use spot-iad1|spot-sjc1|spot-hkg1 or linode-atlanta2)" >&2; return 1 ;;
   esac
@@ -74,7 +74,7 @@ stack_dir() {
 
 default_ssh_user() {
   case "$1" in
-    spot-iad1|spot-sjc1|spot-hkg1|spot-lon1|spot-dfw1) echo "ubuntu" ;;
+    spot-iad1|spot-sjc1|spot-hkg1) echo "ubuntu" ;;
     linode-atlanta2) echo "ari" ;;
   esac
 }
@@ -84,8 +84,6 @@ spot_node_slug() {
     spot-sjc1) echo "sjc1" ;;
     spot-iad1) echo "iad1" ;;
     spot-hkg1) echo "hkg1" ;;
-    spot-lon1) echo "lon1" ;;
-    spot-dfw1) echo "dfw1" ;;
     *) echo "" ;;
   esac
 }
@@ -95,8 +93,6 @@ spot_ip_override() {
     spot-sjc1) echo "${SPOT_SJC1_IP:-}" ;;
     spot-iad1) echo "${SPOT_IAD1_IP:-}" ;;
     spot-hkg1) echo "${SPOT_HKG1_IP:-}" ;;
-    spot-lon1) echo "${SPOT_LON1_IP:-}" ;;
-    spot-dfw1) echo "${SPOT_DFW1_IP:-}" ;;
     *) echo "" ;;
   esac
 }

@@ -101,6 +101,30 @@ pub fn enforce_publish_origin_fence_for_record(
     ))
 }
 
+/// When this node is catalog **publish_origin** and `branch` is the catalog publish branch,
+/// return the record so the update hook can gate mesh sync before receive-pack ACK.
+pub fn publish_origin_push_gate(
+    repo_path: &Path,
+    branch: &str,
+    public_hostname: Option<&str>,
+) -> Option<CatalogRepoRecord> {
+    let rec = catalog_record_for_repo(repo_path)?;
+    let origin = rec.publish_origin.as_deref()?.trim();
+    if origin.is_empty() {
+        return None;
+    }
+    enforce_publish_origin_fence_for_record(
+        Some(&rec),
+        public_hostname,
+        &repo_slug_from_path(repo_path),
+    )
+    .ok()?;
+    if branch != rec.publish_branch {
+        return None;
+    }
+    Some(rec)
+}
+
 const ZERO_OID: &str = "0000000000000000000000000000000000000000";
 
 /// Resolve rule for `branch`: exact name in `branches`, then `name == "*"`, then `default`.
@@ -817,16 +841,16 @@ mod tests {
 
     #[test]
     fn publish_origin_match_allows() {
-        let rec = rec_with_origin(Some("dfw1.relaygateway.net"));
+        let rec = rec_with_origin(Some("iad1.relaygateway.net"));
         assert!(enforce_publish_origin_fence_for_record(
             Some(&rec),
-            Some("dfw1.relaygateway.net"),
+            Some("iad1.relaygateway.net"),
             "demo-repo",
         )
         .is_ok());
         assert!(enforce_publish_origin_fence_for_record(
             Some(&rec),
-            Some("DFW1.relaygateway.net."),
+            Some("IAD1.relaygateway.net."),
             "demo-repo",
         )
         .is_ok());
@@ -834,16 +858,16 @@ mod tests {
 
     #[test]
     fn publish_origin_mismatch_rejects_and_names_fqdn() {
-        let rec = rec_with_origin(Some("dfw1.relaygateway.net"));
+        let rec = rec_with_origin(Some("iad1.relaygateway.net"));
         let err = enforce_publish_origin_fence_for_record(
             Some(&rec),
             Some("lon1.relaygateway.net"),
             "demo-repo",
         )
         .expect_err("mismatch must reject");
-        assert!(err.contains("dfw1.relaygateway.net"), "{err}");
+        assert!(err.contains("iad1.relaygateway.net"), "{err}");
         assert!(
-            err.contains("git://dfw1.relaygateway.net:9418/demo-repo.git"),
+            err.contains("git://iad1.relaygateway.net:9418/demo-repo.git"),
             "{err}"
         );
         assert!(err.contains("lon1.relaygateway.net"), "{err}");
@@ -876,11 +900,11 @@ mod tests {
 
     #[test]
     fn publish_origin_unset_hostname_rejects_when_origin_set() {
-        let rec = rec_with_origin(Some("dfw1.relaygateway.net"));
+        let rec = rec_with_origin(Some("iad1.relaygateway.net"));
         let err = enforce_publish_origin_fence_for_record(Some(&rec), None, "demo-repo")
             .expect_err("no hostname must fail closed");
         assert!(err.contains("unset RELAY_PUBLIC_HOSTNAME"), "{err}");
-        assert!(err.contains("dfw1.relaygateway.net"), "{err}");
+        assert!(err.contains("iad1.relaygateway.net"), "{err}");
         let err = enforce_publish_origin_fence_for_record(Some(&rec), Some("  "), "files")
             .expect_err("blank hostname must fail closed");
         assert!(err.contains("unset RELAY_PUBLIC_HOSTNAME"), "{err}");
@@ -889,16 +913,16 @@ mod tests {
 
     #[test]
     fn publish_origin_strips_port_and_case() {
-        let rec = rec_with_origin(Some("DFW1.relaygateway.net:9418"));
+        let rec = rec_with_origin(Some("iad1.relaygateway.net:9418"));
         assert!(enforce_publish_origin_fence_for_record(
             Some(&rec),
-            Some("dfw1.relaygateway.net"),
+            Some("IAD1.relaygateway.net"),
             "demo-repo",
         )
         .is_ok());
         assert!(enforce_publish_origin_fence_for_record(
             Some(&rec),
-            Some("dfw1.relaygateway.net:443"),
+            Some("iad1.relaygateway.net:443"),
             "demo-repo",
         )
         .is_ok());

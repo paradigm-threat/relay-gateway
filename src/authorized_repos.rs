@@ -403,7 +403,7 @@ mod tests {
   "forge_url": "https://example.com/sample.git",
   "relay_root_commit": "{head}",
   "publish_branch": "main",
-  "publish_origin": "dfw1.relaygateway.net",
+  "publish_origin": "iad1.relaygateway.net",
   "signing_keys_source": "repo",
   "description": "Sample allowlisted repo."
 }}"#

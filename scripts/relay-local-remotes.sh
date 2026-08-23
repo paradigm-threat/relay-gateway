@@ -16,7 +16,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MAP="${RELAY_LOCAL_REPOS_MAP:-$ROOT/scripts/relay-local-repos.map}"
 GIT_PORT="${RELAY_GIT_PORT:-9418}"
 NODES=(iad1 sjc1 hkg1)
-STALE_NODES=(lon1 dfw1)
+STALE_NODES=(lon1)
 PRIMARY_NODE="${RELAY_PRIMARY_ORIGIN:-iad1}"
 GITLAB_REMOTE="${RELAY_GITLAB_REMOTE_NAME:-gitlab}"
 

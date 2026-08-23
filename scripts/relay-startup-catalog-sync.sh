@@ -243,11 +243,42 @@ peer_fetch_other_masters() {
   PEER_FETCH_FAIL=$summary_fail
 }
 
-slack ":rocket: *Relay startup sync* — \`${node_label:-unknown}\` — starting (catalog → forge mirrors, then peers)"
+# On replicas: fast-forward from catalog publish_origin before GitLab forge sync
+# so a lagging peer fetch does not leave the bare stuck while forge later jumps ahead.
+fetch_publish_origin_catalog_repos() {
+  local catalog="${RELAY_MASTER_CATALOG_PATH:-}"
+  [[ -n "$catalog" && -d "$catalog/catalog/repos" ]] || return 0
+  [[ -n "$self" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local fetch_timeout="${RELAY_PEER_FETCH_TIMEOUT_SECS:-30}"
+  local f repo origin branch bare url
+  for f in "$catalog/catalog/repos"/*.json; do
+    [[ -f "$f" ]] || continue
+    repo="$(jq -r '.repo // empty' "$f")"
+    origin="$(jq -r '.publish_origin // empty' "$f")"
+    branch="$(jq -r '.publish_branch // "main"' "$f")"
+    [[ -z "$repo" || -z "$origin" ]] && continue
+    origin="${origin%%:*}"
+    if [[ "${origin,,}" == "${self,,}" ]]; then
+      continue
+    fi
+    bare="${repo_path}/${repo}.git"
+    [[ -d "$bare" ]] || continue
+    url="git://${origin}:${git_port}/${repo}.git"
+    echo "[relay-startup-catalog-sync] publish-origin prefetch $repo from $origin" >&2
+    if ! timeout "${fetch_timeout}s" git --git-dir="$bare" fetch "$url" \
+      "refs/heads/${branch}:refs/heads/${branch}" --prune 2>/dev/null; then
+      echo "[relay-startup-catalog-sync] WARN: publish-origin prefetch $repo from $origin failed" >&2
+    fi
+  done
+}
+
+slack ":rocket: *Relay startup sync* — \`${node_label:-unknown}\` — starting (publish-origin prefetch, catalog forge, then peers)"
 
 export RELAY_REPO_PATH="$repo_path"
 PEER_FETCH_OK=0
 PEER_FETCH_FAIL=0
+fetch_publish_origin_catalog_repos
 if ! out="$(bash "$sync_script" 2>&1)"; then
   echo "$out" >&2
   slack ":warning: *Relay startup sync* — \`${node_label:-unknown}\` — *catalog forge sync failed* (HTTP still starts). Fix catalog/GitLab, then \`systemctl restart relay-gateway\`.\n\`\`\`${out:0:1500}\`\`\`"

@@ -2362,7 +2362,7 @@ git:
     #[tokio::test]
     #[serial(catalog_path_env)]
     async fn put_delete_rejected_when_publish_origin_mismatches() {
-        let catalog = catalog_worktree("files", Some("dfw1.relaygateway.net"));
+        let catalog = catalog_worktree("files", Some("iad1.relaygateway.net"));
         let _guard = CatalogPathGuard::set(catalog.path());
         let repo_dir = tempdir().unwrap();
         unsigned_write_fixture(repo_dir.path(), "files");
@@ -2388,9 +2388,9 @@ git:
                 .to_vec(),
         )
         .unwrap();
-        assert!(text.contains("dfw1.relaygateway.net"), "{text}");
+        assert!(text.contains("iad1.relaygateway.net"), "{text}");
         assert!(
-            text.contains("git://dfw1.relaygateway.net:9418/files.git"),
+            text.contains("git://iad1.relaygateway.net:9418/files.git"),
             "{text}"
         );
         assert!(!text.contains("unsigned"), "{text}");
@@ -2408,7 +2408,7 @@ git:
         )
         .unwrap();
         assert!(
-            text.contains("publish_origin=dfw1.relaygateway.net"),
+            text.contains("publish_origin=iad1.relaygateway.net"),
             "{text}"
         );
     }
@@ -2416,13 +2416,13 @@ git:
     #[tokio::test]
     #[serial(catalog_path_env)]
     async fn put_allowed_when_publish_origin_matches() {
-        let catalog = catalog_worktree("files", Some("dfw1.relaygateway.net"));
+        let catalog = catalog_worktree("files", Some("iad1.relaygateway.net"));
         let _guard = CatalogPathGuard::set(catalog.path());
         let repo_dir = tempdir().unwrap();
         unsigned_write_fixture(repo_dir.path(), "files");
         let mut state = test_state(repo_dir.path().to_path_buf());
-        state.node_fqdn = Some("dfw1.relaygateway.net".into());
-        let headers = host_on("files", "dfw1.relaygateway.net");
+        state.node_fqdn = Some("iad1.relaygateway.net".into());
+        let headers = host_on("files", "iad1.relaygateway.net");
         let put = handlers::put_file(
             State(state),
             headers,

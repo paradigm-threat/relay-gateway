@@ -246,8 +246,8 @@ mod tests {
     #[test]
     fn host_without_port_strips_ipv4_and_bracket_v6() {
         assert_eq!(
-            host_without_port("dfw1.relaygateway.net:8080"),
-            "dfw1.relaygateway.net"
+            host_without_port("iad1.relaygateway.net:8080"),
+            "iad1.relaygateway.net"
         );
         assert_eq!(host_without_port("127.0.0.1:8080"), "127.0.0.1");
         assert_eq!(host_without_port("[::1]:8080"), "::1");
@@ -256,11 +256,11 @@ mod tests {
 
     #[test]
     fn node_ops_api_allows_apex_and_loopback() {
-        let node = Some("dfw1.relaygateway.net");
-        assert!(host_is_node_ops_api(node, &host("dfw1.relaygateway.net")));
+        let node = Some("iad1.relaygateway.net");
+        assert!(host_is_node_ops_api(node, &host("iad1.relaygateway.net")));
         assert!(host_is_node_ops_api(
             node,
-            &host("dfw1.relaygateway.net:8080")
+            &host("iad1.relaygateway.net:8080")
         ));
         assert!(host_is_node_ops_api(node, &host("127.0.0.1:8080")));
         assert!(host_is_node_ops_api(node, &host("localhost")));
@@ -270,11 +270,11 @@ mod tests {
 
     #[test]
     fn node_ops_api_rejects_parked_and_repo_subdomain() {
-        let node = Some("dfw1.relaygateway.net");
+        let node = Some("iad1.relaygateway.net");
         assert!(!host_is_node_ops_api(node, &host("clevertree.net")));
         assert!(!host_is_node_ops_api(
             node,
-            &host("clevertree-site.dfw1.relaygateway.net")
+            &host("clevertree-site.iad1.relaygateway.net")
         ));
     }
 }
