@@ -112,12 +112,25 @@ fn ensure_indexed_impl(ctx: &HookContext, force: bool) -> anyhow::Result<()> {
         if plugin == PLUGIN_CHAT {
             // Tip may already be marked indexed from path_tree; still ensure chat_comments.
             chat_index::ensure_chat_indexed(ctx, chat_root)?;
+            debug!(
+                "Branch {} is up to date (head: {})",
+                ctx.branch, ctx.new_commit
+            );
+            return Ok(());
         }
-        debug!(
-            "Branch {} is up to date (head: {})",
-            ctx.branch, ctx.new_commit
+        // Head may match tip while SQLite rows were wiped (empty replace, failed ingest).
+        let doc_count = store.count_docs(&key, "index").unwrap_or(0);
+        if doc_count > 0 {
+            debug!(
+                "Branch {} is up to date (head: {}, docs={})",
+                ctx.branch, ctx.new_commit, doc_count
+            );
+            return Ok(());
+        }
+        info!(
+            "Branch {} head matches tip but SearchStore index is empty — rebuilding",
+            ctx.branch
         );
-        return Ok(());
     }
 
     if force {
@@ -298,6 +311,23 @@ server:
         assert!(
             store.count_docs(&key, "index").unwrap() > 0,
             "SearchStore must ingest meta.yaml even when JSON already has this tip"
+        );
+    }
+
+    #[test]
+    fn ensure_indexed_rebuilds_when_head_matches_but_store_empty() {
+        let (_dir, repo_path, commit, ctx) = meta_index_bare_fixture();
+        let store = store_for_bare_repo(&repo_path).unwrap();
+        let key = store_key_for_bare(&repo_path, "main");
+        ensure_indexed(&ctx).unwrap();
+        store
+            .replace_collection(&key, "index", &[], None, None, None)
+            .unwrap();
+        assert_eq!(store.count_docs(&key, "index").unwrap(), 0);
+        ensure_indexed(&ctx).unwrap();
+        assert!(
+            store.count_docs(&key, "index").unwrap() > 0,
+            "matching head with empty store must rebuild"
         );
     }
 

@@ -147,6 +147,10 @@ pub fn sync_meta_yaml_index(ctx: &HookContext) -> anyhow::Result<()> {
                 Value::Array(a) => a.clone(),
                 _ => continue,
             };
+            // Empty meta_yaml JSON must not wipe path_tree rows before catalog ingest runs.
+            if docs.is_empty() {
+                continue;
+            }
             store.replace_collection(&key, name, &docs, None, None, None)?;
         }
     }
