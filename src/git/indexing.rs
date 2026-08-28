@@ -1,7 +1,8 @@
 use crate::git::chat_index;
 use crate::git::hooks::{execute_repo_hook, HookContext};
+use crate::git::index_policy;
 use crate::git::index_store;
-use crate::git::repo::read_relay_config;
+use crate::git::repo::{bare_repo_names, default_branch_from_bare_head, read_relay_config};
 use crate::git::search_config;
 use crate::git::search_plugins::{self, PLUGIN_CHAT};
 use crate::git::search_store::{store_for_bare_repo, store_key_for_bare, SearchStore};
@@ -182,6 +183,56 @@ fn path_wal_sidecar(db: &Path, suffix: &str) -> PathBuf {
     let mut s = db.as_os_str().to_os_string();
     s.push(suffix);
     PathBuf::from(s)
+}
+
+/// After startup catalog sync or peer `git fetch`, bare tips can advance without post-receive
+/// hooks. Scan catalog bare repos and warm any branch whose SearchStore head lags git tip.
+pub fn spawn_reconcile_stale_indexes(repo_root: PathBuf) {
+    std::thread::spawn(move || {
+        if let Err(e) = reconcile_stale_indexes(&repo_root) {
+            tracing::warn!(error = %e, "reconcile_stale_indexes failed");
+        }
+    });
+}
+
+pub fn reconcile_stale_indexes(repo_root: &Path) -> anyhow::Result<()> {
+    let root = repo_root.to_path_buf();
+    let names = bare_repo_names(&root);
+    for name in names {
+        let bare = root.join(format!("{name}.git"));
+        let branch = match default_branch_from_bare_head(&root, &name) {
+            Some(b) => b,
+            None => continue,
+        };
+        let repo = match git2::Repository::open_bare(&bare) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let refname = format!("refs/heads/{branch}");
+        let tip = match repo.refname_to_id(&refname) {
+            Ok(id) => id.to_string(),
+            Err(_) => continue,
+        };
+        let relay = read_relay_config(&repo, &tip).unwrap_or_default();
+        if !index_policy::branch_allowed_for_index(&relay, &branch) {
+            continue;
+        }
+        let store = store_for_bare_repo(&bare)?;
+        let key = store_key_for_bare(&bare, &branch);
+        let indexed_head = store.docs_indexed_head(&key)?.unwrap_or_default();
+        if indexed_head == tip {
+            continue;
+        }
+        info!(
+            repo = %name,
+            branch = %branch,
+            indexed_head = %indexed_head,
+            tip = %tip,
+            "SearchStore lags git tip — scheduling index warm"
+        );
+        spawn_ensure_indexed(bare, branch, indexed_head, tip);
+    }
+    Ok(())
 }
 
 /// Async index warm after peer-fetch / catalog apply (errors logged only).

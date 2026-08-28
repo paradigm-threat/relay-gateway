@@ -63,6 +63,8 @@ struct NodeJson {
     drift: Vec<crate::probe::RepoDrift>,
     sync_anomalies: Vec<crate::probe::SyncAnomaly>,
     sync_ok: bool,
+    index_ok: bool,
+    index_stale_repos: Vec<crate::probe::IndexStaleRepo>,
     ssh_ok: Option<bool>,
     host_key_changed: bool,
     install_present: Option<bool>,
@@ -132,6 +134,7 @@ pub async fn refresh_inner(app: &App) {
             let nlen = nodes.len();
             let down = crate::probe::down_nodes(&nodes);
             let sync = crate::probe::sync_issue_nodes(&nodes);
+            let index_stale = crate::probe::index_stale_nodes(&nodes);
             let summary = nodes
                 .iter()
                 .map(|n| {
@@ -139,6 +142,8 @@ pub async fn refresh_inner(app: &App) {
                         "down"
                     } else if !n.sync_ok {
                         "sync"
+                    } else if !n.index_ok {
+                        "index"
                     } else {
                         "up"
                     };
@@ -153,6 +158,7 @@ pub async fn refresh_inner(app: &App) {
                     unhealthy,
                     down,
                     sync,
+                    index_stale,
                     nodes: nlen,
                     summary: summary.clone(),
                     mode: if inv.admin_ready {
@@ -288,6 +294,8 @@ async fn snapshot(State(app): State<App>) -> Json<Snapshot> {
                 drift: n.drift.clone(),
                 sync_anomalies: n.sync_anomalies.clone(),
                 sync_ok: n.sync_ok,
+                index_ok: n.index_ok,
+                index_stale_repos: n.index_stale_repos.clone(),
                 ssh_ok: n.ssh_ok,
                 host_key_changed: n.host_key_changed,
                 install_present: n.install_present,
@@ -558,6 +566,23 @@ async fn job(State(app): State<App>, Json(body): Json<JobReq>) -> impl IntoRespo
                     let cfg = cfg.clone();
                     let fleet = fleet.clone();
                     move || crate::fleet_cmd::fix_bare_head(&cfg, &fleet, false)
+                })
+                .await
+        }
+        "index-warm" => {
+            let fqdn = body.fqdn.clone();
+            let repo = body.repo.clone();
+            app.jobs
+                .start_async("index-warm", &target, {
+                    let fleet = fleet.clone();
+                    move || async move {
+                        crate::fleet_cmd::warm_stale_indexes(
+                            &fleet,
+                            fqdn.as_deref(),
+                            repo.as_deref(),
+                        )
+                        .await
+                    }
                 })
                 .await
         }

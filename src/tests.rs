@@ -2143,8 +2143,9 @@ server:
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(v["schema_version"], 3);
+        assert_eq!(v["schema_version"], 4);
         assert!(v.get("ipfs_ok").is_some());
+        assert!(v.get("indexes_ok").is_some());
         assert!(v["self"].get("ipfs").is_some());
         assert_eq!(v["healthy"], true);
     }

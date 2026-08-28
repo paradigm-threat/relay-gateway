@@ -65,6 +65,7 @@
       <button title="Print fleet FQDNs, SSH user, and identity path." onclick="job({kind:'hosts'})">Hosts</button>
       <button title="QUERY smoke (+ SSL) against each node." onclick="job({kind:'health'})">Health</button>
       <button title="HTTPS report for node and parked domains." onclick="job({kind:'ssl'})">SSL</button>
+      <button id="btnIndexWarm" disabled title="Warm SearchStore indexes on nodes where git tip is ahead of indexed_head (post-fetch / startup gap)." onclick="confirmJob('Warm stale SearchStore indexes across the fleet', {kind:'index-warm'})">Warm indexes</button>
     </div>
     <h2>Admin / DNS</h2>
     <div class="actions">
@@ -149,6 +150,7 @@ function nodeCardHtml(n, d) {
   const auth = cfg.authorized_repos || [];
   const missing = n.missing_repos || [];
   const driftRows = n.drift || [];
+  const indexStale = n.index_stale_repos || [];
   const anomalies = n.sync_anomalies || [];
   const tips = n.git_tips || [];
   const names = [...new Set([...(repos), ...missing])];
@@ -160,12 +162,16 @@ function nodeCardHtml(n, d) {
     const err = tip && tip.error ? ' ' + tip.error : '';
     const isMissing = missing.includes(name);
     const drow = driftRows.find(x => x.repo === name);
+    const staleRow = indexStale.find(x => x.repo === name);
     const driftLabel = drow
       ? (drow.kind === 'replica_ahead'
           ? ' <span class="bad">ahead of publisher ' + esc(drow.branch) + '</span>'
           : ' <span class="warn">drift ' + esc(drow.branch) + '</span>')
       : '';
-    const mark = isMissing ? ' <span class="bad">missing</span>' : driftLabel;
+    const indexLabel = staleRow
+      ? ' <span class="warn">index stale</span>'
+      : '';
+    const mark = isMissing ? ' <span class="bad">missing</span>' : driftLabel + indexLabel;
     return `<li><span class="link" onclick="openBrowser('${esc(n.fqdn)}','${esc(name)}')">${esc(name)}</span>` +
       (sha ? ` <span class="sha">${esc(sha)}</span>` : '') +
       mark +
@@ -175,8 +181,8 @@ function nodeCardHtml(n, d) {
   const extraTips = tips.filter(t => !names.includes(t.repo)).map(t =>
     `<li class="muted">${esc(t.repo)} ${t.sha ? esc(shortSha(t.sha)) : esc(t.error || '')}</li>`
   ).join('');
-  const syncClass = !n.healthy ? 'bad' : (anomalies.length ? 'bad' : (!n.sync_ok ? 'warn' : 'ok'));
-  const syncLabel = !n.healthy ? 'down' : (anomalies.length ? 'anomaly' : (!n.sync_ok ? 'sync' : 'up'));
+  const syncClass = !n.healthy ? 'bad' : (anomalies.length ? 'bad' : (!n.sync_ok ? 'warn' : (!n.index_ok ? 'warn' : 'ok')));
+  const syncLabel = !n.healthy ? 'down' : (anomalies.length ? 'anomaly' : (!n.sync_ok ? 'sync' : (!n.index_ok ? 'index' : 'up')));
   const repoCountLabel = repos.length
     ? (repos.length + ' repo' + (repos.length === 1 ? '' : 's'))
     : (tips.length ? (tips.length + ' repo' + (tips.length === 1 ? '' : 's')) : '0 repos');
@@ -187,6 +193,9 @@ function nodeCardHtml(n, d) {
     : '';
   const anomalyDetail = anomalies.length
     ? `<div class="bad">${anomalies.map(a => esc(a.repo + '@' + a.branch + ': publisher ' + a.publisher_fqdn + ' behind ' + a.replica_fqdn)).join(' · ')}</div>`
+    : '';
+  const indexDetail = indexStale.length
+    ? `<div class="warn">index stale: ${indexStale.map(s => esc(s.repo + '@' + shortSha(s.tip_sha))).join(', ')}</div>`
     : '';
   const recHtml = rec && rec.message
     ? `<div class="rec">${esc(rec.message)}</div>`
@@ -204,6 +213,9 @@ function nodeCardHtml(n, d) {
   }
   if (admin && vis.sync) {
     actions.push(btn('sync', 'Synchronize', '', `confirmJob('Synchronize ' + '${esc(n.fqdn)}' + ' with catalog/peer tips', {kind:'sync', fqdn:'${esc(n.fqdn)}', peer:'${esc(peer)}'})`));
+  }
+  if (admin && vis['index-warm']) {
+    actions.push(btn('index-warm', 'Warm indexes', '', `confirmJob('Warm stale indexes on ' + '${esc(n.fqdn)}', {kind:'index-warm', fqdn:'${esc(n.fqdn)}'})`));
   }
   if (admin && vis.repair) {
     actions.push(btn('repair', 'Repair', '', `confirmJob('Repair (install.sh) ' + '${esc(n.fqdn)}', {kind:'repair', fqdn:'${esc(n.fqdn)}'})`));
@@ -223,6 +235,7 @@ function nodeCardHtml(n, d) {
       </div>
       ${syncDetail}
       ${anomalyDetail}
+      ${indexDetail}
       ${spot ? `<div class="${drift ? 'bad' : 'ok'}">Spot ${esc(spot.ip)}${drift ? ' (DNS mismatch)' : ''}</div>` : ''}
       ${recHtml}
       <details class="repos">
@@ -284,19 +297,22 @@ async function snap() {
   document.getElementById('btnDnsDry').disabled = !inv.vercel_token;
   document.getElementById('btnSsh').disabled = !inv.admin_ready;
   document.getElementById('btnDrift').disabled = !inv.admin_ready;
+  document.getElementById('btnIndexWarm').disabled = !inv.admin_ready;
   const btnKh = document.getElementById('btnKh');
   btnKh.disabled = !inv.admin_ready;
   const khNeeded = (d.nodes || []).some(n => n.recommendation && n.recommendation.primary_action === 'known-hosts');
   btnKh.classList.toggle('primary', !!(inv.admin_ready && khNeeded));
   const syncNodes = (d.nodes || []).filter(n => n.healthy && n.sync_ok === false);
+  const indexNodes = (d.nodes || []).filter(n => n.healthy && n.index_ok === false);
   const anomalyNodes = (d.nodes || []).filter(n => n.healthy && (n.sync_anomalies || []).length);
   const downNodes = (d.nodes || []).filter(n => !n.healthy);
   const banner = document.getElementById('syncBanner');
-  if (syncNodes.length || anomalyNodes.length || downNodes.length) {
+  if (syncNodes.length || indexNodes.length || anomalyNodes.length || downNodes.length) {
     const bits = [];
     if (downNodes.length) bits.push(downNodes.length + ' down');
     if (anomalyNodes.length) bits.push(anomalyNodes.length + ' publish-origin anomaly');
     if (syncNodes.length) bits.push(syncNodes.length + ' out of sync with publish origin');
+    if (indexNodes.length) bits.push(indexNodes.length + ' index stale');
     banner.className = 'banner warn';
     banner.textContent = bits.join(' · ') + (d.catalog_repos && d.catalog_repos.length ? ' · catalog ' + d.catalog_repos.length + ' repos' : '');
   } else {
@@ -324,6 +340,7 @@ function healthyPeer(exceptFqdn) {
 const ACTION_TITLES = {
   'point-dns': 'Point this node FQDN A record at the current Spot IP. Use when DNS A ≠ Spot IP (SSH may hit the wrong box). Not for git tip drift.',
   'sync': 'Click to synchronize this node with catalog/peer tips.',
+  'index-warm': 'Rebuild SearchStore for repos whose indexed_head lags git tip (after peer fetch without post-receive).',
   'repair': 'Run install.sh repair on an existing /opt/relay install. Use when units are broken. Not for host-key change, empty VMs, or git tip drift.',
   'reclaim': 'Spot install-only (relay-master-deploy.sh). Use when SSH works but /opt/relay is missing (new empty VM). Reinstalls; not for git tip drift.',
   'known-hosts': 'Resets SSH host keys for the whole fleet so Repair/Reclaim can connect after Spot replacement.'

@@ -31,6 +31,11 @@ pub struct NodeProbe {
     /// False when this up node is missing catalog repos or git tips disagree with the fleet.
     #[serde(default = "sync_ok_default")]
     pub sync_ok: bool,
+    /// False when SearchStore heads lag git tips on any probed repo (schema ≥ 4 status).
+    #[serde(default = "sync_ok_default")]
+    pub index_ok: bool,
+    #[serde(default)]
+    pub index_stale_repos: Vec<IndexStaleRepo>,
     /// Admin SSH probe (Observer leaves this unset).
     #[serde(default)]
     pub ssh_ok: Option<bool>,
@@ -131,6 +136,12 @@ pub struct StatusRepo {
     pub publish_sha: Option<String>,
     #[serde(default)]
     pub branch_count: usize,
+    #[serde(default)]
+    pub indexed_head_sha: Option<String>,
+    #[serde(default)]
+    pub index_fresh: Option<bool>,
+    #[serde(default)]
+    pub index_doc_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -139,6 +150,16 @@ pub struct StatusProbe {
     pub schema_version: u32,
     pub repos_ok: Option<bool>,
     pub repos: Vec<StatusRepo>,
+}
+
+/// SearchStore indexed head lags git tip for this repo on the node.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct IndexStaleRepo {
+    pub repo: String,
+    pub branch: String,
+    pub tip_sha: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indexed_head_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -230,6 +251,8 @@ fn unreachable_probe(
         drift: Vec::new(),
         sync_anomalies: Vec::new(),
         sync_ok: true,
+        index_ok: true,
+        index_stale_repos: Vec::new(),
         ssh_ok: None,
         host_key_changed: false,
         install_present: None,
@@ -267,6 +290,10 @@ async fn probe_node(node: &FleetNode, git_port: u16, repos: &[String]) -> NodePr
         _ => Vec::new(),
     };
     let healthy = https_config.as_ref().map(|c| c.ok).unwrap_or(false) && tcp_git;
+    let (index_stale_repos, index_ok) = https_status
+        .as_ref()
+        .map(|st| index_stale_from_status(st))
+        .unwrap_or((Vec::new(), true));
     NodeProbe {
         fqdn,
         dns,
@@ -281,6 +308,8 @@ async fn probe_node(node: &FleetNode, git_port: u16, repos: &[String]) -> NodePr
         drift: Vec::new(),
         sync_anomalies: Vec::new(),
         sync_ok: true,
+        index_ok,
+        index_stale_repos,
         ssh_ok: None,
         host_key_changed: false,
         install_present: None,
@@ -353,6 +382,39 @@ fn push_ref(refs: &mut Vec<GitRef>, branch: Option<&str>, sha: Option<&str>) {
         name: name.to_string(),
         sha: sha.to_string(),
     });
+}
+
+pub(crate) fn index_stale_from_status(st: &StatusProbe) -> (Vec<IndexStaleRepo>, bool) {
+    if st.schema_version < 4 {
+        return (Vec::new(), true);
+    }
+    let mut stale = Vec::new();
+    for r in &st.repos {
+        if !r.on_disk || r.index_fresh != Some(false) {
+            continue;
+        }
+        let tip = r
+            .publish_sha
+            .clone()
+            .or_else(|| r.head_sha.clone())
+            .unwrap_or_default();
+        if tip.is_empty() {
+            continue;
+        }
+        stale.push(IndexStaleRepo {
+            repo: r.name.clone(),
+            branch: r
+                .publish_branch
+                .clone()
+                .or_else(|| r.head_branch.clone())
+                .unwrap_or_else(|| "main".into()),
+            tip_sha: tip,
+            indexed_head_sha: r.indexed_head_sha.clone(),
+        });
+    }
+    stale.sort_by(|a, b| a.repo.cmp(&b.repo));
+    let ok = stale.is_empty();
+    (stale, ok)
 }
 
 async fn ls_remote_tips(
@@ -962,7 +1024,12 @@ fn canonical_tips(
 pub fn attention_nodes(nodes: &[NodeProbe]) -> usize {
     nodes
         .iter()
-        .filter(|n| !n.healthy || !n.sync_ok || !n.sync_anomalies.is_empty())
+        .filter(|n| {
+            !n.healthy
+                || !n.sync_ok
+                || !n.index_ok
+                || !n.sync_anomalies.is_empty()
+        })
         .count()
 }
 
@@ -972,6 +1039,10 @@ pub fn down_nodes(nodes: &[NodeProbe]) -> usize {
 
 pub fn sync_issue_nodes(nodes: &[NodeProbe]) -> usize {
     nodes.iter().filter(|n| n.healthy && !n.sync_ok).count()
+}
+
+pub fn index_stale_nodes(nodes: &[NodeProbe]) -> usize {
+    nodes.iter().filter(|n| n.healthy && !n.index_ok).count()
 }
 
 fn which_git() -> Option<()> {
@@ -1080,6 +1151,8 @@ mod tests {
             drift: vec![],
             sync_anomalies: vec![],
             sync_ok: true,
+            index_ok: true,
+            index_stale_repos: vec![],
             ssh_ok: None,
             host_key_changed: false,
             install_present: None,
@@ -1259,6 +1332,28 @@ mod tests {
         no_dns.dns.clear();
         assert_eq!(next_probe_secs(&[no_dns], 300, 10), 10);
         assert_eq!(next_probe_secs(&[], 300, 10), 10);
+    }
+
+    #[test]
+    fn index_stale_from_status_v4_detects_lag() {
+        let body = serde_json::json!({
+            "schema_version": 4,
+            "repos": [{
+                "name": "paradigm-threat-files",
+                "on_disk": true,
+                "in_catalog": true,
+                "ok": true,
+                "publish_branch": "main",
+                "publish_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "indexed_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "index_fresh": false
+            }]
+        });
+        let st = parse_status_probe(true, &body);
+        let (stale, ok) = index_stale_from_status(&st);
+        assert!(!ok);
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].repo, "paradigm-threat-files");
     }
 
     #[test]

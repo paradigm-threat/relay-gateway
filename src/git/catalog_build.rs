@@ -148,10 +148,95 @@ fn chrono_from_git_time(secs: i64) -> Option<String> {
     ))
 }
 
-/// Last commit touching a path: committer ISO date + full hash (tip commit for on-commit ingest).
+/// Last commit touching a path: committer ISO date + full hash.
+#[derive(Clone)]
 struct PathCommitMeta {
     updated: String,
     commit: String,
+}
+
+/// Newest-first walk: first time a path appears in a commit diff is its last update.
+fn path_last_commit_map(
+    repo: &Path,
+    commit: &str,
+    paths: &[String],
+) -> HashMap<String, PathCommitMeta> {
+    let Ok(r) = Repository::open(repo) else {
+        return HashMap::new();
+    };
+    let Ok(tip) = git2::Oid::from_str(commit) else {
+        return HashMap::new();
+    };
+    let want: std::collections::HashSet<&str> = paths.iter().map(|s| s.as_str()).collect();
+    let mut found = HashMap::new();
+    let Ok(mut revwalk) = r.revwalk() else {
+        return found;
+    };
+    if revwalk.push(tip).is_err() {
+        return found;
+    }
+    while found.len() < want.len() {
+        let Some(Ok(oid)) = revwalk.next() else {
+            break;
+        };
+        let Ok(c) = r.find_commit(oid) else {
+            continue;
+        };
+        let Some(updated) = chrono_from_git_time(c.time().seconds()) else {
+            continue;
+        };
+        let meta = PathCommitMeta {
+            updated,
+            commit: oid.to_string(),
+        };
+        if c.parent_count() == 0 {
+            if let Ok(tree) = c.tree() {
+                tree.walk(TreeWalkMode::PreOrder, |dir, entry| {
+                    if entry.kind() != Some(ObjectType::Blob) {
+                        return 0;
+                    }
+                    let name = entry.name().unwrap_or("");
+                    let p = format!("{dir}{name}");
+                    if want.contains(p.as_str()) && !found.contains_key(&p) {
+                        found.insert(p, PathCommitMeta {
+                            updated: meta.updated.clone(),
+                            commit: meta.commit.clone(),
+                        });
+                    }
+                    0
+                })
+                .ok();
+            }
+            continue;
+        }
+        let Ok(parent) = c.parent(0) else {
+            continue;
+        };
+        let Ok(parent_tree) = parent.tree() else {
+            continue;
+        };
+        let Ok(commit_tree) = c.tree() else {
+            continue;
+        };
+        let Ok(diff) = r.diff_tree_to_tree(Some(&parent_tree), Some(&commit_tree), None) else {
+            continue;
+        };
+        for delta in diff.deltas() {
+            let Some(p) = delta.new_file().path().and_then(|p| p.to_str()) else {
+                continue;
+            };
+            if want.contains(p) && !found.contains_key(p) {
+                found.insert(
+                    p.to_string(),
+                    PathCommitMeta {
+                        updated: meta.updated.clone(),
+                        commit: meta.commit.clone(),
+                    },
+                );
+            }
+        }
+    }
+    found
 }
 
 fn path_excluded(path: &str, scoped_root: Option<&str>) -> bool {
@@ -249,6 +334,7 @@ pub fn build_path_tree_docs_scoped(
 ) -> Result<Vec<Value>, String> {
     let scoped_root = root.map(|r| r.trim_matches('/').to_string());
     let paths = git_ls_tree(repo, commit)?;
+    let meta_map = path_last_commit_map(repo, commit, &paths);
     let tip_iso = git2_commit_iso(repo, commit);
     let tip_meta = tip_iso.map(|iso| PathCommitMeta {
         updated: iso,
@@ -256,12 +342,15 @@ pub fn build_path_tree_docs_scoped(
     });
     let mut docs = Vec::new();
     for path in paths {
+        let path_meta = meta_map
+            .get(&path)
+            .or(tip_meta.as_ref());
         if let Some(doc) = path_tree_doc_for(
             repo,
             commit,
             &path,
             scoped_root.as_deref(),
-            tip_meta.as_ref(),
+            path_meta,
         ) {
             docs.push(doc);
         }
@@ -282,14 +371,17 @@ pub fn build_path_tree_docs_for_paths(
         updated: iso,
         commit: commit.to_string(),
     });
+    let path_list: Vec<String> = paths.iter().cloned().collect();
+    let meta_map = path_last_commit_map(repo, commit, &path_list);
     let mut docs = Vec::new();
     for path in paths {
+        let path_meta = meta_map.get(path).or(tip_meta.as_ref());
         if let Some(doc) = path_tree_doc_for(
             repo,
             commit,
             path,
             scoped_root.as_deref(),
-            tip_meta.as_ref(),
+            path_meta,
         ) {
             docs.push(doc);
         }
@@ -920,6 +1012,13 @@ mod tests {
     use tempfile::tempdir;
 
     fn commit_files(files: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf, String) {
+        commit_files_on_parent(files, None)
+    }
+
+    fn commit_files_on_parent(
+        files: &[(&str, &str)],
+        parent: Option<&str>,
+    ) -> (tempfile::TempDir, std::path::PathBuf, String) {
         let dir = tempdir().unwrap();
         let repo_path = dir.path().join("r.git");
         let repo = Repository::init_bare(&repo_path).unwrap();
@@ -946,10 +1045,88 @@ mod tests {
         }
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
+        let parents: Vec<git2::Commit> = parent
+            .and_then(|p| repo.find_commit(git2::Oid::from_str(p).ok()?).ok())
+            .into_iter()
+            .collect();
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
         let oid = repo
-            .commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .commit(
+                Some("refs/heads/main"),
+                &sig,
+                &sig,
+                "commit",
+                &tree,
+                &parent_refs,
+            )
             .unwrap();
         (dir, repo_path, oid.to_string())
+    }
+
+    fn commit_tree(
+        repo: &Repository,
+        files: &[(&str, &str)],
+        parent: Option<&str>,
+    ) -> String {
+        let sig = Signature::now("t", "t@t").unwrap();
+        let mut index = repo.index().unwrap();
+        index.clear().unwrap();
+        for (path, body) in files {
+            let oid = repo.blob(body.as_bytes()).unwrap();
+            index
+                .add(&git2::IndexEntry {
+                    ctime: git2::IndexTime::new(0, 0),
+                    mtime: git2::IndexTime::new(0, 0),
+                    dev: 0,
+                    ino: 0,
+                    mode: 0o100644,
+                    uid: 0,
+                    gid: 0,
+                    file_size: body.len() as u32,
+                    id: oid,
+                    flags: 0,
+                    flags_extended: 0,
+                    path: path.as_bytes().to_vec(),
+                })
+                .unwrap();
+        }
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let parents: Vec<git2::Commit> = parent
+            .and_then(|p| repo.find_commit(git2::Oid::from_str(p).ok()?).ok())
+            .into_iter()
+            .collect();
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+        repo.commit(
+            Some("refs/heads/main"),
+            &sig,
+            &sig,
+            "commit",
+            &tree,
+            &parent_refs,
+        )
+        .unwrap()
+        .to_string()
+    }
+
+    #[test]
+    fn path_tree_uses_per_path_last_commit_not_tip() {
+        let dir = tempdir().unwrap();
+        let repo_path = dir.path().join("r.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let commit1 = commit_tree(&repo, &[("a.md", "# A\n")], None);
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let commit2 = commit_tree(
+            &repo,
+            &[("a.md", "# A\n"), ("b.md", "# B\n")],
+            Some(&commit1),
+        );
+        let docs = build_path_tree_docs(&repo_path, &commit2).unwrap();
+        let a = docs.iter().find(|d| d["path"] == "a.md").unwrap();
+        let b = docs.iter().find(|d| d["path"] == "b.md").unwrap();
+        assert_eq!(a["_commit"].as_str().unwrap(), commit1);
+        assert_eq!(b["_commit"].as_str().unwrap(), commit2);
+        assert_ne!(a["_updated"], b["_updated"]);
     }
 
     #[test]

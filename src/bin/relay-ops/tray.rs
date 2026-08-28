@@ -8,6 +8,7 @@ pub struct OpsTray {
     pub unhealthy: usize,
     pub down: usize,
     pub sync: usize,
+    pub index_stale: usize,
     pub nodes: usize,
     pub summary: String,
     pub mode: String,
@@ -24,6 +25,7 @@ impl OpsTray {
             unhealthy: 0,
             down: 0,
             sync: 0,
+            index_stale: 0,
             nodes: 0,
             summary: "starting…".into(),
             mode: "Observer".into(),
@@ -96,7 +98,7 @@ impl ksni::Tray for OpsTray {
             .into(),
             MenuItem::Separator,
             StandardItem {
-                label: headline(self.down, self.nodes, self.sync, &self.mode),
+                label: headline(self.down, self.nodes, self.sync, self.index_stale, &self.mode),
                 enabled: false,
                 ..Default::default()
             }
@@ -294,23 +296,41 @@ pub struct TrayView {
     pub unhealthy: usize,
     pub down: usize,
     pub sync: usize,
+    pub index_stale: usize,
     pub nodes: usize,
     pub summary: String,
     pub mode: String,
     pub lines: Vec<String>,
 }
 
-pub fn headline(down: usize, nodes: usize, sync: usize, mode: &str) -> String {
+pub fn headline(down: usize, nodes: usize, sync: usize, index_stale: usize, mode: &str) -> String {
     if nodes == 0 {
         format!("{mode}  starting…")
-    } else if down == 0 && sync == 0 {
+    } else if down == 0 && sync == 0 && index_stale == 0 {
         format!("{mode}  {nodes} up")
     } else if down == 0 {
-        format!("{mode}  {nodes} up  ·  {sync} sync")
-    } else if sync == 0 {
+        let mut bits = Vec::new();
+        if sync > 0 {
+            bits.push(format!("{sync} sync"));
+        }
+        if index_stale > 0 {
+            bits.push(format!("{index_stale} index"));
+        }
+        format!("{mode}  {nodes} up  ·  {}", bits.join(" · "))
+    } else if sync == 0 && index_stale == 0 {
         format!("{mode}  {down} / {nodes} down")
     } else {
-        format!("{mode}  {down} / {nodes} down  ·  {sync} sync")
+        let mut bits = Vec::new();
+        if sync > 0 {
+            bits.push(format!("{sync} sync"));
+        }
+        if index_stale > 0 {
+            bits.push(format!("{index_stale} index"));
+        }
+        format!(
+            "{mode}  {down} / {nodes} down  ·  {}",
+            bits.join(" · ")
+        )
     }
 }
 
@@ -396,6 +416,9 @@ pub fn menu_lines(
                     line.push_str(&format!("  drift {}", n.drift.len()));
                 }
             }
+            if n.healthy && !n.index_ok && !n.index_stale_repos.is_empty() {
+                line.push_str(&format!("  index {}", n.index_stale_repos.len()));
+            }
             line
         });
     }
@@ -424,6 +447,7 @@ pub fn spawn_with_updates(ui_url: String) -> tokio::sync::mpsc::UnboundedSender<
                     t.unhealthy = view.unhealthy;
                     t.down = view.down;
                     t.sync = view.sync;
+                    t.index_stale = view.index_stale;
                     t.nodes = view.nodes;
                     t.summary = view.summary.clone();
                     t.mode = view.mode.clone();

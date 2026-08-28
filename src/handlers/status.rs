@@ -28,6 +28,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::git;
+use crate::git::search_store::SearchStore;
 use crate::mesh_role::{self, RelayNodeRole};
 use crate::types::{AppState, ServeContext};
 
@@ -216,6 +217,15 @@ pub(crate) struct RepoStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub branch_count: usize,
+    /// SearchStore `docs_indexed_head` for the publish (or HEAD) branch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indexed_head_sha: Option<String>,
+    /// True when `indexed_head_sha` matches the git publish/HEAD tip.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_fresh: Option<bool>,
+    /// Row count in the `index` collection (diagnostics).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_doc_count: Option<u64>,
     /// Present when the publish/HEAD tip references IPFS pointers or a manifest.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ipfs: Option<RepoIpfsStatus>,
@@ -231,6 +241,8 @@ struct StatusBody {
     ipfs_ok: bool,
     /// False when any **catalog** repo is missing on disk or has no `publish_branch` tip.
     repos_ok: bool,
+    /// False when any on-disk repo with a git tip has SearchStore lagging that tip.
+    indexes_ok: bool,
     generated_at_unix_secs: u64,
     #[serde(rename = "self")]
     self_: StatusSelf,
@@ -271,6 +283,36 @@ fn tip_sha(repo: &git2::Repository, branch: &str) -> Option<String> {
         .ok()
         .map(|c| c.id().to_string())?;
     is_hex_oid(&sha).then_some(sha)
+}
+
+fn repo_search_index_meta(
+    repo_path: &std::path::Path,
+    name: &str,
+    branch: &str,
+) -> (Option<String>, Option<u64>) {
+    if !is_safe_repo_name(name) || !is_safe_branch(branch) {
+        return (None, None);
+    }
+    let bare = repo_path.join(format!("{name}.git"));
+    let store = match git::store_for_bare_repo(&bare) {
+        Ok(s) => s,
+        Err(_) => return (None, None),
+    };
+    let key = git::store_key_for_bare(&bare, branch);
+    let indexed_head = store.docs_indexed_head(&key).ok().flatten();
+    let doc_count = store
+        .count_docs(&key, "index")
+        .ok()
+        .map(|n| n as u64);
+    (indexed_head, doc_count)
+}
+
+fn index_fresh_for_tip(indexed_head: Option<&str>, tip: Option<&str>) -> Option<bool> {
+    match (indexed_head.filter(|s| is_hex_oid(s)), tip.filter(|s| is_hex_oid(s))) {
+        (Some(i), Some(t)) => Some(i == t),
+        (None, Some(_)) => Some(false),
+        _ => None,
+    }
 }
 
 /// Union of on-disk bares and catalog `authorized_repos`, with HEAD / publish tips from libgit2.
@@ -338,6 +380,14 @@ pub(crate) fn collect_repo_status(state: &AppState) -> Vec<RepoStatus> {
                 present
             };
 
+            let index_branch = publish_branch.as_deref().or(head_branch.as_deref());
+            let (indexed_head_sha, index_doc_count) = index_branch
+                .map(|b| repo_search_index_meta(&state.repo_path, &name, b))
+                .unwrap_or((None, None));
+            let git_tip = publish_sha.as_deref().or(head_sha.as_deref());
+            let index_fresh =
+                index_fresh_for_tip(indexed_head_sha.as_deref(), git_tip);
+
             RepoStatus {
                 name,
                 on_disk: present,
@@ -349,6 +399,9 @@ pub(crate) fn collect_repo_status(state: &AppState) -> Vec<RepoStatus> {
                 publish_sha,
                 description,
                 branch_count,
+                indexed_head_sha,
+                index_fresh,
+                index_doc_count,
                 ipfs,
             }
         })
@@ -838,6 +891,10 @@ pub async fn post_api_status(
     let repo_rows = collect_repo_status(&state);
     let repo_count = repo_rows.iter().filter(|r| r.on_disk).count();
     let repos_ok = repo_rows.iter().filter(|r| r.in_catalog).all(|r| r.ok);
+    let indexes_ok = repo_rows
+        .iter()
+        .filter(|r| r.on_disk && (r.publish_sha.is_some() || r.head_sha.is_some()))
+        .all(|r| r.index_fresh != Some(false));
     let role = mesh_role::relay_node_role();
     let mesh_http = mesh_role::should_publish_mesh_http_events();
 
@@ -871,11 +928,12 @@ pub async fn post_api_status(
     let ipfs_ok = ipfs_self.ok;
 
     let body = StatusBody {
-        schema_version: 3,
+        schema_version: 4,
         status,
         healthy,
         ipfs_ok,
         repos_ok,
+        indexes_ok,
         generated_at_unix_secs: now_unix_secs(),
         self_: StatusSelf {
             gateway_version: env!("CARGO_PKG_VERSION"),
@@ -1064,11 +1122,12 @@ mod tests {
         assert!(!rows.iter().filter(|r| r.in_catalog).all(|r| r.ok));
 
         let html = render_html(&StatusBody {
-            schema_version: 3,
+            schema_version: 4,
             status: "ok",
             healthy: true,
             ipfs_ok: false,
             repos_ok: false,
+            indexes_ok: true,
             generated_at_unix_secs: 0,
             self_: StatusSelf {
                 gateway_version: "0",
@@ -1154,11 +1213,12 @@ mod tests {
         assert!(ipfs.cids.iter().any(|c| c == cid));
 
         let html = render_html(&StatusBody {
-            schema_version: 3,
+            schema_version: 4,
             status: "ok",
             healthy: true,
             ipfs_ok: true,
             repos_ok: true,
+            indexes_ok: true,
             generated_at_unix_secs: 0,
             self_: StatusSelf {
                 gateway_version: "0",

@@ -18,8 +18,9 @@ pub struct RecommendInput<'a> {
     pub ssh_ok: Option<bool>,
     pub host_key_changed: bool,
     pub install_present: Option<bool>,
-    /// Spot assigned an IPv4 for this node's cloudspace.
     pub has_spot_ip: bool,
+    pub index_ok: bool,
+    pub index_stale_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -36,6 +37,8 @@ pub struct VisibleActions {
     #[serde(rename = "point-dns")]
     pub point_dns: bool,
     pub sync: bool,
+    #[serde(rename = "index-warm")]
+    pub index_warm: bool,
     pub repair: bool,
     pub reclaim: bool,
 }
@@ -61,6 +64,8 @@ pub fn for_node(n: &NodeProbe, spot_ip: Option<&str>) -> (Option<Recommendation>
         host_key_changed: n.host_key_changed,
         install_present: n.install_present,
         has_spot_ip: spot_ip.is_some(),
+        index_ok: n.index_ok,
+        index_stale_count: n.index_stale_repos.len(),
     };
     let vis = visible_actions(&input);
     (recommend(input), vis)
@@ -71,6 +76,7 @@ pub fn visible_actions(input: &RecommendInput<'_>) -> VisibleActions {
     VisibleActions {
         point_dns: input.dns_mismatch,
         sync: input.healthy && needs_sync(input),
+        index_warm: input.healthy && !input.index_ok && input.index_stale_count > 0,
         repair: show_repair(input),
         reclaim: show_reclaim(input),
     }
@@ -155,6 +161,16 @@ pub fn recommend(input: RecommendInput<'_>) -> Option<Recommendation> {
         return Some(Recommendation {
             message: sync_message(input.missing_repos, input.drift),
             primary_action: Some("sync"),
+        });
+    }
+
+    if input.healthy && !input.index_ok && input.index_stale_count > 0 {
+        return Some(Recommendation {
+            message: format!(
+                "SearchStore lags git tip on {} repo(s) — click Warm indexes (QUERY is read-only until indexed).",
+                input.index_stale_count
+            ),
+            primary_action: Some("index-warm"),
         });
     }
 
@@ -275,6 +291,8 @@ mod tests {
             host_key_changed: false,
             install_present: None,
             has_spot_ip: false,
+            index_ok: true,
+            index_stale_count: 0,
         }
     }
 

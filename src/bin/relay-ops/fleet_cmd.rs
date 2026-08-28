@@ -805,6 +805,86 @@ pub fn reinstall_wipe(
     Ok(log)
 }
 
+/// POST `/api/index/warm/:repo` on each node for repos whose SearchStore lags git tip.
+pub async fn warm_stale_indexes(
+    fleet: &FleetFile,
+    fqdn_filter: Option<&str>,
+    repo_filter: Option<&str>,
+) -> Result<String> {
+    let gitlab = std::env::var("RELAY_OPS_GITLAB_URL").ok();
+    let (mut nodes, _, _) = probe_fleet(fleet, gitlab.as_deref()).await;
+    if let Some(fqdn) = fqdn_filter.filter(|s| !s.trim().is_empty()) {
+        nodes.retain(|n| n.fqdn.eq_ignore_ascii_case(fqdn.trim()));
+        if nodes.is_empty() {
+            anyhow::bail!("unknown or unreachable node {fqdn}");
+        }
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()?;
+    let mut log = String::new();
+    let mut fail = false;
+    let mut warmed = 0usize;
+    for n in &nodes {
+        if !n.healthy {
+            log.push_str(&format!("skip {} (down)\n", n.fqdn));
+            continue;
+        }
+        let stale: Vec<_> = n
+            .index_stale_repos
+            .iter()
+            .filter(|s| {
+                repo_filter
+                    .map(|r| s.repo.eq_ignore_ascii_case(r.trim()))
+                    .unwrap_or(true)
+            })
+            .collect();
+        if stale.is_empty() {
+            log.push_str(&format!("{} index ok (no stale repos)\n", n.fqdn));
+            continue;
+        }
+        log.push_str(&format!(
+            "{} warming {} stale index(es)\n",
+            n.fqdn,
+            stale.len()
+        ));
+        for s in stale {
+            let url = format!("https://{}/api/index/warm/{}", n.fqdn, s.repo);
+            match client.post(&url).json(&serde_json::json!({})).send().await {
+                Ok(r) if r.status().is_success() => {
+                    warmed += 1;
+                    log.push_str(&format!(
+                        "  ok {}@{} tip={}\n",
+                        s.repo,
+                        s.branch,
+                        &s.tip_sha[..12.min(s.tip_sha.len())]
+                    ));
+                }
+                Ok(r) => {
+                    fail = true;
+                    let status = r.status();
+                    let body = r.text().await.unwrap_or_default();
+                    log.push_str(&format!(
+                        "  FAIL {} HTTP {} {}\n",
+                        s.repo,
+                        status,
+                        body.trim()
+                    ));
+                }
+                Err(e) => {
+                    fail = true;
+                    log.push_str(&format!("  FAIL {} {e:#}\n", s.repo));
+                }
+            }
+        }
+    }
+    log.push_str(&format!("warmed {warmed} repo index(es)\n"));
+    if fail {
+        anyhow::bail!("{log}");
+    }
+    Ok(log)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
