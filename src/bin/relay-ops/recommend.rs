@@ -411,11 +411,29 @@ mod tests {
     }
 
     #[test]
-    fn down_without_diagnosis_has_no_primary() {
+    fn down_without_spot_assignment_is_blocked() {
         let mut input = base(&[], &[]);
         input.healthy = false;
         input.https_ok = false;
+        input.has_spot_ip = false;
         let rec = recommend(input.clone()).unwrap();
+        assert_eq!(rec.scenario_id.as_deref(), Some("down_no_spot_ip"));
+        assert_eq!(rec.primary_action, None);
+        assert!(rec.message.contains("Spot"), "{}", rec.message);
+        assert_eq!(shown(&input), VisibleActions::default());
+        assert!(rec.blocked);
+    }
+
+    #[test]
+    fn down_with_spot_no_ssh_diag_is_unknown() {
+        let mut input = base(&[], &[]);
+        input.healthy = false;
+        input.https_ok = false;
+        input.has_spot_ip = true;
+        input.tcp22 = true;
+        input.ssh_ok = None;
+        let rec = recommend(input.clone()).unwrap();
+        assert_eq!(rec.scenario_id.as_deref(), Some("unknown_down"));
         assert_eq!(rec.primary_action, None);
         assert!(rec.message.contains("Reset known_hosts"), "{}", rec.message);
         assert!(rec.message.contains("Reclaim"), "{}", rec.message);
