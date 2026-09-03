@@ -42,6 +42,7 @@ async fn main() -> Result<()> {
     let config = Config::from_cli(&cli)?;
     config.initialize_repos();
     relay_server::git::spawn_reconcile_stale_indexes(config.state.repo_path.clone());
+    relay_server::git::spawn_periodic_reconcile_stale_indexes(config.state.repo_path.clone());
 
     if let Some(relay_server::cli::Commands::Query(args)) = cli.command {
         let query_val = args.query.map(serde_json::Value::String);

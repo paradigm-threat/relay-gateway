@@ -1,0 +1,20 @@
+[Unit]
+Description=Relay fleet brain (local probe + scenarios + private feed)
+After=network-online.target
+PartOf=default.target
+
+[Service]
+WorkingDirectory=%h/dev/relay/relay-gateway
+Environment=RELAY_OPS_CHECKOUT=%h/dev/relay/relay-gateway
+Environment=RELAY_OPS_PREFER_LOCAL_FLEET=1
+Environment=RELAY_OPS_GITLAB_URL=git@gitlab.com:clevertree/relay-gateway.git
+Environment=RUST_LOG=info
+# Auto-run safe scenarios (catalog_sync, index_stale). High-risk still needs Approve.
+Environment=RELAY_BRAIN_EXECUTE=1
+ExecStart=%h/.local/bin/relay-brain
+Restart=always
+RestartSec=5
+KillMode=process
+
+[Install]
+WantedBy=default.target

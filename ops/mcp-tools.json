@@ -1,0 +1,168 @@
+{
+  "version": 1,
+  "notes": "Canonical tool list for relay-ops CLI, WebMCP, and future Cursor MCP. Tool names match CLI verbs.",
+  "tools": [
+    {
+      "name": "brain_status",
+      "description": "Brain online/blocked/observe status and per-node classifications",
+      "cli": "relay-ops brain status",
+      "http": "GET /status",
+      "high_risk": false
+    },
+    {
+      "name": "brain_feed_tail",
+      "description": "Tail private JSONL activity feed",
+      "cli": "relay-ops brain log --tail N",
+      "http": "GET /feed?tail=N",
+      "args": { "tail": "number" },
+      "high_risk": false
+    },
+    {
+      "name": "brain_requests_list",
+      "description": "List pending operator requests",
+      "cli": "relay-ops brain requests",
+      "http": "GET /requests",
+      "high_risk": false
+    },
+    {
+      "name": "brain_approve",
+      "description": "Approve a pending request (allowlists proposed steps)",
+      "cli": "relay-ops brain approve <id>",
+      "http": "POST /requests/:id/approve",
+      "args": { "id": "string" },
+      "needs_token": true,
+      "high_risk": true
+    },
+    {
+      "name": "brain_decline",
+      "description": "Decline a pending request",
+      "cli": "relay-ops brain decline <id>",
+      "http": "POST /requests/:id/decline",
+      "args": { "id": "string" },
+      "needs_token": true,
+      "high_risk": false
+    },
+    {
+      "name": "brain_handoff",
+      "description": "Print Cursor handoff prompt for a request",
+      "cli": "relay-ops brain handoff <id>",
+      "args": { "id": "string" },
+      "high_risk": false
+    },
+    {
+      "name": "brain_say",
+      "description": "Keyword chat or free-text into the brain feed",
+      "cli": "relay-ops brain say <text>",
+      "http": "POST /chat",
+      "args": { "text": "string" },
+      "needs_token": true,
+      "high_risk": false
+    },
+    {
+      "name": "brain_resume",
+      "description": "Unpause brain and enable execute mode",
+      "cli": "relay-ops brain resume",
+      "http": "POST /resume",
+      "needs_token": true,
+      "high_risk": true
+    },
+    {
+      "name": "brain_pause",
+      "description": "Pause brain probe loop",
+      "cli": "relay-ops brain pause",
+      "http": "POST /pause",
+      "needs_token": true,
+      "high_risk": false
+    },
+    {
+      "name": "ops_hosts",
+      "description": "Print fleet hosts",
+      "cli": "relay-ops hosts",
+      "job_kind": "hosts",
+      "high_risk": false
+    },
+    {
+      "name": "ops_health",
+      "description": "QUERY/SSL health smoke",
+      "cli": "relay-ops health",
+      "job_kind": "health",
+      "high_risk": false
+    },
+    {
+      "name": "ops_ssl",
+      "description": "HTTPS report",
+      "cli": "relay-ops ssl",
+      "job_kind": "ssl",
+      "high_risk": false
+    },
+    {
+      "name": "ops_ssh_check",
+      "description": "SSH check all nodes",
+      "cli": "relay-ops ssh-check",
+      "job_kind": "ssh-check",
+      "high_risk": false
+    },
+    {
+      "name": "ops_drift",
+      "description": "Catalog HEAD drift report",
+      "cli": "relay-ops drift",
+      "job_kind": "drift",
+      "high_risk": false
+    },
+    {
+      "name": "ops_sync",
+      "description": "Catalog/peer sync on a node. Brain auto-runs catalog_missing (no approval); tip-drift catalog_sync may refuse until approved.",
+      "cli": "relay-ops sync --only FQDN",
+      "job_kind": "sync",
+      "high_risk": true,
+      "brain_gated": true
+    },
+    {
+      "name": "ops_point_dns",
+      "description": "Point node FQDN A record at an IP",
+      "cli": "relay-ops point-dns --fqdn FQDN --ip IP",
+      "job_kind": "point-dns",
+      "high_risk": true,
+      "brain_gated": true
+    },
+    {
+      "name": "ops_repair",
+      "description": "install.sh repair on existing node",
+      "cli": "relay-ops repair --only FQDN",
+      "job_kind": "repair",
+      "high_risk": true,
+      "brain_gated": true
+    },
+    {
+      "name": "ops_reclaim",
+      "description": "Reclaim empty Spot VM",
+      "cli": "relay-ops reclaim --fqdn FQDN --yes",
+      "job_kind": "reclaim",
+      "high_risk": true,
+      "brain_gated": true
+    },
+    {
+      "name": "ops_index_warm",
+      "description": "Warm SearchStore indexes",
+      "cli": "relay-ops … job index-warm",
+      "job_kind": "index-warm",
+      "high_risk": false,
+      "brain_gated": true
+    },
+    {
+      "name": "ops_known_hosts_reset",
+      "description": "Reset SSH known_hosts for fqdn/IPs",
+      "cli": "relay-ops known-hosts-reset --fqdn FQDN",
+      "job_kind": "known-hosts",
+      "high_risk": true
+    },
+    {
+      "name": "ops_update",
+      "description": "Deploy packed tarball to hosts",
+      "cli": "relay-ops update --build",
+      "job_kind": "update",
+      "high_risk": true,
+      "brain_gated": true
+    }
+  ]
+}

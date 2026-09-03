@@ -1,4 +1,6 @@
 mod browse;
+mod brain;
+mod brain_client;
 mod config;
 mod fleet_cmd;
 mod gitlab;
@@ -7,6 +9,7 @@ mod jobs;
 mod notify;
 mod probe;
 mod recommend;
+mod scenarios;
 mod serve;
 mod spot;
 mod ssh;
@@ -178,6 +181,41 @@ enum Commands {
     /// Install login daemon (systemd --user or Windows Startup).
     #[command(name = "install-service")]
     InstallService,
+    /// Local fleet brain (status / feed / requests / serve).
+    Brain {
+        #[command(subcommand)]
+        cmd: BrainCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum BrainCmd {
+    /// Run brain probe loop + loopback HTTP (default :7781).
+    Serve {
+        /// Allow auto-run of non-confirm scenarios (still opens requests for high-risk).
+        #[arg(long)]
+        execute: bool,
+    },
+    Status,
+    Log {
+        #[arg(long, default_value_t = 50)]
+        tail: usize,
+    },
+    Requests,
+    Approve {
+        id: String,
+    },
+    Decline {
+        id: String,
+    },
+    Handoff {
+        id: String,
+    },
+    Say {
+        text: Vec<String>,
+    },
+    Resume,
+    Pause,
 }
 
 #[tokio::main]
@@ -360,6 +398,67 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Commands::InstallService => install_service(&cfg),
+        Commands::Brain { cmd } => cmd_brain(cmd).await,
+    }
+}
+
+async fn cmd_brain(cmd: BrainCmd) -> Result<()> {
+    match cmd {
+        BrainCmd::Serve { execute } => brain::run_serve(execute).await,
+        BrainCmd::Status => {
+            let v = brain_client::get_json("/status")?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
+        BrainCmd::Log { tail } => {
+            let v = brain_client::get_json(&format!("/feed?tail={tail}"))?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
+        BrainCmd::Requests => {
+            let v = brain_client::get_json("/requests")?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
+        BrainCmd::Approve { id } => {
+            println!("{}", brain_client::post_auth(&format!("/requests/{id}/approve"), None)?);
+            Ok(())
+        }
+        BrainCmd::Decline { id } => {
+            println!("{}", brain_client::post_auth(&format!("/requests/{id}/decline"), None)?);
+            Ok(())
+        }
+        BrainCmd::Handoff { id } => {
+            let v = brain_client::get_json("/requests")?;
+            let pending = v
+                .get("pending")
+                .and_then(|p| p.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let req = pending
+                .iter()
+                .find(|r| r.get("id").and_then(|x| x.as_str()) == Some(id.as_str()))
+                .ok_or_else(|| anyhow!("pending request {id} not found"))?;
+            let br: brain::BrainRequest = serde_json::from_value(req.clone())?;
+            println!("{}", brain::handoff_prompt(&br));
+            Ok(())
+        }
+        BrainCmd::Say { text } => {
+            let text = text.join(" ");
+            println!(
+                "{}",
+                brain_client::post_auth("/chat", Some(serde_json::json!({ "text": text })))?
+            );
+            Ok(())
+        }
+        BrainCmd::Resume => {
+            println!("{}", brain_client::post_auth("/resume", None)?);
+            Ok(())
+        }
+        BrainCmd::Pause => {
+            println!("{}", brain_client::post_auth("/pause", None)?);
+            Ok(())
+        }
     }
 }
 
@@ -486,6 +585,21 @@ fn install_service(cfg: &OpsConfig) -> Result<()> {
                 fs::set_permissions(&dest, fs::Permissions::from_mode(0o755))?;
             }
         }
+        // Sibling relay-brain binary (same cargo target dir) → ~/.local/bin + user unit
+        let brain_src = exe.with_file_name("relay-brain");
+        let brain_dest = bin.join("relay-brain");
+        if brain_src.is_file() {
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "stop", "relay-brain.service"])
+                .status();
+            fs::copy(&brain_src, &brain_dest)
+                .with_context(|| format!("copy to {}", brain_dest.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&brain_dest, fs::Permissions::from_mode(0o755))?;
+            }
+        }
         let icon_dir = home.join(".local/share/icons/hicolor/128x128/apps");
         fs::create_dir_all(&icon_dir)?;
         let icon = icon_dir.join("relay-ops.png");
@@ -527,6 +641,27 @@ fn install_service(cfg: &OpsConfig) -> Result<()> {
             gitlab
         );
         fs::write(&unit, body)?;
+
+        if brain_dest.is_file() {
+            let mut brain_env = String::new();
+            if let Some(root) = cfg.checkout_path() {
+                brain_env.push_str(&format!(
+                    "Environment=RELAY_OPS_CHECKOUT={}\nEnvironment=RELAY_SCENARIOS_DIR={}/ops/scenarios\n",
+                    root.display(),
+                    root.display()
+                ));
+            }
+            let brain_unit = unit_dir.join("relay-brain.service");
+            let brain_body = format!(
+                "[Unit]\nDescription=Relay fleet brain (local)\nAfter=network-online.target\n\n[Service]\n{brain_env}ExecStart={}\nRestart=always\nRestartSec=5\nKillMode=process\n\n[Install]\nWantedBy=default.target\n",
+                brain_dest.display()
+            );
+            fs::write(&brain_unit, brain_body)?;
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "enable", "--now", "relay-brain.service"])
+                .status();
+            println!("installed {} + unit {}", brain_dest.display(), brain_unit.display());
+        }
 
         let auto_dir = home.join(".config/autostart");
         fs::create_dir_all(&auto_dir)?;

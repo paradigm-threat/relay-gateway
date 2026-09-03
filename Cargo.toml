@@ -36,6 +36,10 @@ path = "src/bin/relay-git-proxy.rs"
 name = "relay-ops"
 path = "src/bin/relay-ops/main.rs"
 
+[[bin]]
+name = "relay-brain"
+path = "src/bin/relay-brain/main.rs"
+
 [dependencies]
 axum = { version = "0.7", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }

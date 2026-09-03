@@ -2,6 +2,8 @@
 
 One generic tool for any Relay fleet: **CLI + local UI**. Bootstrap from a **GitLab project URL** (not baked hostnames). The committed topology file is [`ops/fleet.json`](../ops/fleet.json) (`schema: relay.ops.fleet.v1`).
 
+Local fleet brain (scenarios, pending requests, private feed): [`RELAY_BRAIN.md`](RELAY_BRAIN.md). MCP/WebMCP tool catalog: [`RELAY_OPS_MCP.md`](RELAY_OPS_MCP.md).
+
 `./scripts/relay-fleet.sh` is a thin exec wrapper around this binary so existing muscle memory still works.
 
 ## Bootstrap
@@ -51,7 +53,7 @@ Global flags (before or with clap long opts): `--gitlab`, `--env-file`, `--only=
 | `serve` | GitLab URL | UI on `127.0.0.1:7780` |
 | `ssh-check` | Admin | Parallel `ssh true` |
 | `drift` | Admin | Catalog HEAD alignment (report only) |
-| `sync` | Admin | On-node `relay-startup-catalog-sync.sh` + optional peer `git fetch` (`--peer=FQDN`, `--only=`). No wipe, no force-push. UI **Synchronize** for `sync` / drift cells. |
+| `sync` | Admin | On-node `relay-startup-catalog-sync.sh` + peer `git fetch`; when `--peer` is set (or brain auto-sync), **ensure-bare** + fetch for catalog slugs missing on disk. No wipe, no force-push. UI **Synchronize** for drift cells. Brain auto-runs **`catalog_missing`** without approval when execute mode is on. |
 | `update` / `deploy-all` | Admin + checkout | Pack optional `--build`; tarball + restart. Pack **refuses a dirty/unpushed tree** unless **`--allow-dirty`**. |
 | `repair` | Admin + checkout | Remote `install.sh repair` on an **existing** node |
 | `reclaim` | Admin + checkout | Spot **install-only** via `relay-master-deploy.sh` (`--fqdn` `--yes`) |

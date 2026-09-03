@@ -1,0 +1,11 @@
+id: replica_ahead_of_publisher
+title: Replica tip ahead of publisher
+kind: ops
+priority: 55
+fingerprint:
+  replica_ahead: true
+steps: []
+requires_confirm: true
+blocked: true
+message: >-
+  Replica ahead of publish origin — fix on publisher; do not Synchronize here. Specialize this leaf from live incidents (reset vs compromise vs forge race).

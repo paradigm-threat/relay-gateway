@@ -1,0 +1,11 @@
+id: unknown_down
+title: Node down — no specific diagnosis
+kind: ops
+priority: 100
+fingerprint:
+  unknown_down: true
+steps: []
+requires_confirm: true
+blocked: true
+message: >-
+  Node is down. Reset known_hosts in Admin if the SSH host key changed; Reclaim a new empty VM; Repair an existing install.

@@ -1,0 +1,13 @@
+id: unknown_tip_divergence
+title: Unclassified tip divergence
+kind: ops
+priority: 90
+fingerprint:
+  # Catch-all parent; prefer more specific leaves above when flags allow.
+  replica_ahead: true
+  has_sync_anomaly: true
+steps: []
+requires_confirm: true
+blocked: true
+message: >-
+  Tip divergence with both replica-ahead and publisher anomaly bits — BLOCKED; grow a more specific scenario leaf.

@@ -1,0 +1,15 @@
+id: tcp22_closed_reclaim
+title: Node down — SSH port closed (likely Spot preemption)
+kind: ops
+priority: 95
+fingerprint:
+  healthy: false
+  tcp22: false
+  host_key_changed: false
+  dns_mismatch: false
+steps: [reclaim]
+primary_action: reclaim
+requires_confirm: true
+blocked: false
+message: >-
+  Node is down and port 22 is closed — check Rackspace Spot for a winning bid / new IP, then Reclaim and Point DNS.

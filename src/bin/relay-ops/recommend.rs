@@ -1,9 +1,10 @@
 //! Map probe symptoms to one operator sentence and a primary UI action.
 //!
-//! Priority matches real capabilities (do not recommend Repair for host-key
-//! change, empty Spot VMs, DNS-on-the-wrong-box, or catalog tip drift).
+//! Classification comes from [`crate::scenarios`] (YAML). Message text may still
+//! be specialized (repo names, anomaly detail) for the UI.
 
 use crate::probe::{DriftKind, NodeProbe, RepoDrift, SyncAnomaly};
+use crate::scenarios::{self, ScenarioHit, ScenarioStore};
 
 #[derive(Debug, Clone)]
 pub struct RecommendInput<'a> {
@@ -27,7 +28,11 @@ pub struct RecommendInput<'a> {
 pub struct Recommendation {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub primary_action: Option<&'static str>,
+    pub primary_action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scenario_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub blocked: bool,
 }
 
 /// Per-cell buttons that are valid for this probe. Invalid actions are omitted
@@ -48,6 +53,15 @@ pub fn dns_mismatch(dns: &[String], spot_ip: Option<&str>) -> bool {
         Some(ip) if !dns.is_empty() => !dns.iter().any(|d| d == ip),
         _ => false,
     }
+}
+
+fn store() -> ScenarioStore {
+    scenarios::load_default(
+        crate::config::OpsConfig::load()
+            .checkout_path()
+            .as_deref()
+            .or(Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))),
+    )
 }
 
 pub fn for_node(n: &NodeProbe, spot_ip: Option<&str>) -> (Option<Recommendation>, VisibleActions) {
@@ -75,14 +89,14 @@ pub fn for_node(n: &NodeProbe, spot_ip: Option<&str>) -> (Option<Recommendation>
 pub fn visible_actions(input: &RecommendInput<'_>) -> VisibleActions {
     VisibleActions {
         point_dns: input.dns_mismatch,
-        sync: input.healthy && needs_sync(input),
+        sync: input.healthy && input_needs_sync(input),
         index_warm: input.healthy && !input.index_ok && input.index_stale_count > 0,
-        repair: show_repair(input),
-        reclaim: show_reclaim(input),
+        repair: input_show_repair(input),
+        reclaim: input_show_reclaim(input),
     }
 }
 
-fn needs_sync(input: &RecommendInput<'_>) -> bool {
+pub fn input_needs_sync(input: &RecommendInput<'_>) -> bool {
     if input.sync_ok {
         return false;
     }
@@ -95,7 +109,7 @@ fn needs_sync(input: &RecommendInput<'_>) -> bool {
         .any(|d| d.kind != DriftKind::ReplicaAhead)
 }
 
-fn show_repair(input: &RecommendInput<'_>) -> bool {
+pub fn input_show_repair(input: &RecommendInput<'_>) -> bool {
     input.ssh_ok == Some(true)
         && input.install_present == Some(true)
         && !input.healthy
@@ -103,7 +117,7 @@ fn show_repair(input: &RecommendInput<'_>) -> bool {
         && !input.host_key_changed
 }
 
-fn show_reclaim(input: &RecommendInput<'_>) -> bool {
+pub fn input_show_reclaim(input: &RecommendInput<'_>) -> bool {
     input.has_spot_ip
         && input.ssh_ok == Some(true)
         && input.install_present == Some(false)
@@ -111,93 +125,64 @@ fn show_reclaim(input: &RecommendInput<'_>) -> bool {
         && !input.host_key_changed
 }
 
+pub fn classify(input: &RecommendInput<'_>) -> Option<ScenarioHit> {
+    store().match_input(input)
+}
+
 pub fn recommend(input: RecommendInput<'_>) -> Option<Recommendation> {
-    // Down + DNS A ≠ Spot IP: SSH to the FQDN may be the wrong box.
-    if !input.healthy && input.dns_mismatch {
-        return Some(Recommendation {
-            message: "DNS A does not match the Spot IP — click Point DNS to Spot IP (do not Repair; SSH may hit the wrong box)."
-                .into(),
-            primary_action: Some("point-dns"),
-        });
-    }
+    let hit = classify(&input)?;
+    Some(recommendation_from_hit(&input, &hit))
+}
 
-    // Host key in ~/.ssh/known_hosts does not match. Repair uses SSH and will fail.
-    if input.host_key_changed {
-        return Some(Recommendation {
-            message: "SSH host key changed — click Reset known_hosts in Admin (Repair will fail StrictHostKeyChecking)."
-                .into(),
-            primary_action: Some("known-hosts"),
-        });
+pub fn recommendation_from_hit(input: &RecommendInput<'_>, hit: &ScenarioHit) -> Recommendation {
+    let message = specialize_message(input, hit);
+    Recommendation {
+        message,
+        primary_action: hit.primary_action.clone(),
+        scenario_id: Some(hit.id.clone()),
+        blocked: hit.blocked,
     }
+}
 
-    // SSH works on a blank Spot VM we own.
-    if show_reclaim(&input) {
-        return Some(Recommendation {
-            message: "SSH works but /opt/relay is missing — click Reclaim to install on this empty VM (not Repair)."
-                .into(),
-            primary_action: Some("reclaim"),
-        });
+fn specialize_message(input: &RecommendInput<'_>, hit: &ScenarioHit) -> String {
+    match hit.id.as_str() {
+        "catalog_missing" => missing_catalog_message(input.missing_repos),
+        "catalog_sync" => sync_message(input.missing_repos, input.drift),
+        "publisher_behind_replica" => publisher_anomaly_message(input.sync_anomalies),
+        "index_stale" => format!(
+            "SearchStore lags git tip on {} repo(s) — click Warm indexes (QUERY is read-only until indexed).",
+            input.index_stale_count
+        ),
+        "unknown_down" => down_fallback(input),
+        "replica_ahead_of_publisher" => {
+            let ahead: Vec<_> = input
+                .drift
+                .iter()
+                .filter(|d| d.kind == DriftKind::ReplicaAhead)
+                .map(|d| format!("{}@{}", d.repo, d.branch))
+                .collect();
+            if ahead.is_empty() {
+                hit.message.clone()
+            } else {
+                format!(
+                    "Out of sync (replica ahead of publish origin ({}) — fix on publisher, do not Synchronize here).",
+                    ahead.join(", ")
+                )
+            }
+        }
+        _ => hit.message.clone(),
     }
+}
 
-    // Existing tree, units/HTTPS/git broken.
-    if show_repair(&input) {
-        return Some(Recommendation {
-            message: "Install is present but the node is down — click Repair (install.sh repair). Do not Reclaim."
-                .into(),
-            primary_action: Some("repair"),
-        });
-    }
-
-    // Publish origin is behind a non-publisher replica (mesh anomaly).
-    if input.healthy && !input.sync_anomalies.is_empty() {
-        return Some(Recommendation {
-            message: publisher_anomaly_message(input.sync_anomalies),
-            primary_action: None,
-        });
-    }
-
-    // Reachable relay whose catalog/git tips disagree with the fleet.
-    if input.healthy && needs_sync(&input) {
-        return Some(Recommendation {
-            message: sync_message(input.missing_repos, input.drift),
-            primary_action: Some("sync"),
-        });
-    }
-
-    if input.healthy && !input.index_ok && input.index_stale_count > 0 {
-        return Some(Recommendation {
-            message: format!(
-                "SearchStore lags git tip on {} repo(s) — click Warm indexes (QUERY is read-only until indexed).",
-                input.index_stale_count
-            ),
-            primary_action: Some("index-warm"),
-        });
-    }
-
-    if input.healthy && !input.sync_ok && !input.drift.is_empty() {
-        return Some(Recommendation {
-            message: sync_message(input.missing_repos, input.drift),
-            primary_action: None,
-        });
-    }
-
-    if input.healthy && input.dns_mismatch {
-        return Some(Recommendation {
-            message:
-                "Spot IP differs from DNS A — click Point DNS to Spot IP if this node was replaced."
-                    .into(),
-            primary_action: Some("point-dns"),
-        });
-    }
-
-    if input.healthy && input.sync_ok {
-        return None;
-    }
-
-    Some(Recommendation {
-        message: down_fallback(&input),
-        primary_action: None,
-    })
+fn missing_catalog_message(missing: &[String]) -> String {
+    let list = if missing.is_empty() {
+        "catalog repo(s)".to_string()
+    } else {
+        format!("missing {}", missing.join(", "))
+    };
+    format!(
+        "Out of sync ({list}) — brain auto-fills from a healthy peer (no approval); Synchronize also works."
+    )
 }
 
 fn sync_message(missing: &[String], drift: &[RepoDrift]) -> String {
@@ -231,7 +216,9 @@ fn sync_message(missing: &[String], drift: &[RepoDrift]) -> String {
     } else {
         bits.join("; ")
     };
-    format!("Out of sync ({detail}) — click Synchronize to fetch catalog/peer tips (not Repair or Reclaim).")
+    format!(
+        "Out of sync ({detail}) — Approve sync or click Synchronize to fetch peer tips (not Repair or Reclaim)."
+    )
 }
 
 fn publisher_anomaly_message(anomalies: &[SyncAnomaly]) -> String {
@@ -313,8 +300,8 @@ mod tests {
         let mut input = base(&[], &rows);
         input.sync_ok = false;
         let rec = recommend(input.clone()).unwrap();
-        assert_eq!(rec.primary_action, Some("sync"));
-        assert!(rec.message.contains("Synchronize"), "{}", rec.message);
+        assert_eq!(rec.primary_action.as_deref(), Some("sync"));
+        assert!(rec.message.contains("Approve sync") || rec.message.contains("Synchronize"), "{}", rec.message);
         assert!(
             rec.message.contains("clevertree-site@release"),
             "{}",
@@ -332,8 +319,10 @@ mod tests {
         let mut input = base(&missing, &[]);
         input.sync_ok = false;
         let rec = recommend(input.clone()).unwrap();
-        assert_eq!(rec.primary_action, Some("sync"));
+        assert_eq!(rec.primary_action.as_deref(), Some("sync"));
+        assert_eq!(rec.scenario_id.as_deref(), Some("catalog_missing"));
         assert!(rec.message.contains("missing park"), "{}", rec.message);
+        assert!(rec.message.contains("auto-fills"), "{}", rec.message);
         assert!(shown(&input).sync);
         assert!(!shown(&input).repair);
     }
@@ -345,7 +334,7 @@ mod tests {
         input.https_ok = false;
         input.host_key_changed = true;
         let rec = recommend(input.clone()).unwrap();
-        assert_eq!(rec.primary_action, Some("known-hosts"));
+        assert_eq!(rec.primary_action.as_deref(), Some("known-hosts"));
         assert!(rec.message.contains("Reset known_hosts"), "{}", rec.message);
         assert!(rec.message.contains("in Admin"), "{}", rec.message);
         assert!(rec.message.contains("Repair will fail"), "{}", rec.message);
@@ -361,7 +350,7 @@ mod tests {
         input.dns_mismatch = true;
         input.host_key_changed = true;
         let rec = recommend(input.clone()).unwrap();
-        assert_eq!(rec.primary_action, Some("point-dns"));
+        assert_eq!(rec.primary_action.as_deref(), Some("point-dns"));
         assert!(rec.message.contains("Point DNS"), "{}", rec.message);
         assert!(rec.message.contains("do not Repair"), "{}", rec.message);
         let vis = shown(&input);
@@ -378,7 +367,7 @@ mod tests {
         input.install_present = Some(false);
         input.has_spot_ip = true;
         let rec = recommend(input.clone()).unwrap();
-        assert_eq!(rec.primary_action, Some("reclaim"));
+        assert_eq!(rec.primary_action.as_deref(), Some("reclaim"));
         assert!(rec.message.contains("Reclaim"), "{}", rec.message);
         assert!(rec.message.contains("not Repair"), "{}", rec.message);
         let vis = shown(&input);
@@ -395,7 +384,7 @@ mod tests {
         input.install_present = Some(false);
         input.has_spot_ip = false;
         let rec = recommend(input.clone()).unwrap();
-        assert_ne!(rec.primary_action, Some("reclaim"));
+        assert_ne!(rec.primary_action.as_deref(), Some("reclaim"));
         assert!(!shown(&input).reclaim);
     }
 
@@ -407,7 +396,7 @@ mod tests {
         input.ssh_ok = Some(true);
         input.install_present = Some(true);
         let rec = recommend(input.clone()).unwrap();
-        assert_eq!(rec.primary_action, Some("repair"));
+        assert_eq!(rec.primary_action.as_deref(), Some("repair"));
         assert!(rec.message.contains("Repair"), "{}", rec.message);
         assert!(rec.message.contains("Do not Reclaim"), "{}", rec.message);
         let vis = shown(&input);
@@ -426,6 +415,7 @@ mod tests {
         assert!(rec.message.contains("Reclaim"), "{}", rec.message);
         assert!(rec.message.contains("Repair"), "{}", rec.message);
         assert_eq!(shown(&input), VisibleActions::default());
+        assert!(rec.blocked);
     }
 
     #[test]
@@ -433,7 +423,7 @@ mod tests {
         let mut input = base(&[], &[]);
         input.dns_mismatch = true;
         let rec = recommend(input.clone()).unwrap();
-        assert_eq!(rec.primary_action, Some("point-dns"));
+        assert_eq!(rec.primary_action.as_deref(), Some("point-dns"));
         assert!(shown(&input).point_dns);
         assert!(!shown(&input).sync && !shown(&input).repair && !shown(&input).reclaim);
     }
@@ -445,7 +435,7 @@ mod tests {
         input.sync_ok = false;
         input.dns_mismatch = true;
         let rec = recommend(input.clone()).unwrap();
-        assert_eq!(rec.primary_action, Some("sync"));
+        assert_eq!(rec.primary_action.as_deref(), Some("sync"));
         let vis = shown(&input);
         assert!(vis.sync && vis.point_dns);
         assert!(!vis.repair && !vis.reclaim);
@@ -499,6 +489,8 @@ mod tests {
             host_key_changed: false,
             install_present: None,
             has_spot_ip: false,
+            index_ok: true,
+            index_stale_count: 0,
         };
         let rec = recommend(input.clone()).unwrap();
         assert_eq!(rec.primary_action, None);
@@ -521,5 +513,7 @@ mod tests {
         let rec = recommend(input.clone()).unwrap();
         assert_eq!(rec.primary_action, None);
         assert!(rec.message.contains("do not Synchronize here"));
+        assert_eq!(rec.scenario_id.as_deref(), Some("replica_ahead_of_publisher"));
+        assert!(rec.blocked);
     }
 }

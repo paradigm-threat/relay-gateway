@@ -51,7 +51,7 @@ pub use index_policy::has_index_hook;
 pub use indexing::{
     branch_data_dir, branch_hash_short, branch_index_paths, branch_operation_mutex,
     branch_sqlite_path, ensure_indexed, ensure_indexed_force, reconcile_stale_indexes,
-    spawn_ensure_indexed, spawn_reconcile_stale_indexes,
+    spawn_ensure_indexed, spawn_periodic_reconcile_stale_indexes, spawn_reconcile_stale_indexes,
 };
 pub use repo::{
     apply_bare_receive_security, apply_bare_receive_security_at_path, bare_repo_names,

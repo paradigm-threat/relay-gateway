@@ -1,0 +1,12 @@
+id: publisher_behind_replica
+title: Publish origin behind replica
+kind: ops
+priority: 50
+fingerprint:
+  healthy: true
+  has_sync_anomaly: true
+steps: []
+requires_confirm: true
+blocked: true
+message: >-
+  Publish origin behind replica — push or republish on the publish-origin node; do not Synchronize replicas that are ahead.

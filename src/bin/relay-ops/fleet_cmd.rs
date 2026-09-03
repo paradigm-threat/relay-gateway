@@ -322,6 +322,7 @@ pub fn drift(cfg: &OpsConfig, fleet: &FleetFile, interactive: bool) -> Result<St
 }
 
 /// Run catalog sync + optional peer fetch on each filtered host. Fetch only; never wipe or force-push.
+/// When a peer is set, also `ensure-bare` + fetch any catalog (`authorized_repos`) slugs missing locally.
 const SYNC_REMOTE: &str = r#"set -euo pipefail
 INSTALL=/opt/relay
 SCRIPT="$INSTALL/bin/relay-startup-catalog-sync.sh"
@@ -344,9 +345,32 @@ fi
 if [[ -n "$PEER" && -d "$DATA" ]]; then
   echo "peer-fetch from $PEER"
   shopt -s nullglob
+  # Catalog-missing repos: create empty bare then fill from peer (no GitLab needed).
+  if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    AUTH_JSON=$(curl -fsS -m 30 -X POST http://127.0.0.1:8080/api/config 2>/dev/null || true)
+    if [[ -n "${AUTH_JSON:-}" ]]; then
+      while IFS= read -r name; do
+        [[ -z "$name" ]] && continue
+        bare="$DATA/${name}.git"
+        if [[ ! -d "$bare" ]]; then
+          echo "ensure-bare $name (in catalog, missing locally)"
+          curl -fsS -m 60 -X POST "http://127.0.0.1:8080/api/git/ensure-bare/${name}" \
+            || echo "WARN ensure-bare $name failed"
+        fi
+      done < <(printf '%s' "$AUTH_JSON" | python3 -c 'import json,sys
+try:
+  d=json.load(sys.stdin)
+  for n in (d.get("authorized_repos") or []):
+    if isinstance(n, str) and n.strip():
+      print(n.strip())
+except Exception:
+  pass')
+    fi
+  fi
   for bare in "$DATA"/*.git; do
     name=$(basename "$bare" .git)
-    if sudo -u relay git --git-dir="$bare" fetch "git://${PEER}:${PORT}/${name}.git" 'refs/heads/*:refs/heads/*' --prune; then
+    if sudo -u relay git --git-dir="$bare" fetch "git://${PEER}:${PORT}/${name}.git" 'refs/heads/*:refs/heads/*' --prune \
+      || sudo -u relay git --git-dir="$bare" fetch "git://${PEER}:${PORT}/${name}" 'refs/heads/*:refs/heads/*' --prune; then
       echo "fetched $name from $PEER"
     else
       echo "WARN fetch $name from $PEER failed"
@@ -806,83 +830,164 @@ pub fn reinstall_wipe(
 }
 
 /// POST `/api/index/warm/:repo` on each node for repos whose SearchStore lags git tip.
+/// Re-probes between rounds so a git tip advance during warm is caught.
 pub async fn warm_stale_indexes(
     fleet: &FleetFile,
     fqdn_filter: Option<&str>,
     repo_filter: Option<&str>,
 ) -> Result<String> {
+    const MAX_ROUNDS: usize = 3;
     let gitlab = std::env::var("RELAY_OPS_GITLAB_URL").ok();
-    let (mut nodes, _, _) = probe_fleet(fleet, gitlab.as_deref()).await;
-    if let Some(fqdn) = fqdn_filter.filter(|s| !s.trim().is_empty()) {
-        nodes.retain(|n| n.fqdn.eq_ignore_ascii_case(fqdn.trim()));
-        if nodes.is_empty() {
-            anyhow::bail!("unknown or unreachable node {fqdn}");
-        }
-    }
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(180))
+        .timeout(Duration::from_secs(600))
         .build()?;
     let mut log = String::new();
     let mut fail = false;
-    let mut warmed = 0usize;
-    for n in &nodes {
-        if !n.healthy {
-            log.push_str(&format!("skip {} (down)\n", n.fqdn));
-            continue;
+    let mut warmed_total = 0usize;
+
+    for round in 1..=MAX_ROUNDS {
+        let (mut nodes, _, _) = probe_fleet(fleet, gitlab.as_deref()).await;
+        if let Some(fqdn) = fqdn_filter.filter(|s| !s.trim().is_empty()) {
+            nodes.retain(|n| n.fqdn.eq_ignore_ascii_case(fqdn.trim()));
+            if nodes.is_empty() {
+                anyhow::bail!("unknown or unreachable node {fqdn}");
+            }
         }
-        let stale: Vec<_> = n
-            .index_stale_repos
-            .iter()
-            .filter(|s| {
-                repo_filter
-                    .map(|r| s.repo.eq_ignore_ascii_case(r.trim()))
-                    .unwrap_or(true)
-            })
-            .collect();
-        if stale.is_empty() {
-            log.push_str(&format!("{} index ok (no stale repos)\n", n.fqdn));
-            continue;
-        }
-        log.push_str(&format!(
-            "{} warming {} stale index(es)\n",
-            n.fqdn,
-            stale.len()
-        ));
-        for s in stale {
-            let url = format!("https://{}/api/index/warm/{}", n.fqdn, s.repo);
-            match client.post(&url).json(&serde_json::json!({})).send().await {
-                Ok(r) if r.status().is_success() => {
-                    warmed += 1;
-                    log.push_str(&format!(
-                        "  ok {}@{} tip={}\n",
-                        s.repo,
-                        s.branch,
-                        &s.tip_sha[..12.min(s.tip_sha.len())]
-                    ));
+        let mut round_warmed = 0usize;
+        for n in &nodes {
+            if !n.healthy {
+                log.push_str(&format!("skip {} (down)\n", n.fqdn));
+                continue;
+            }
+            let stale: Vec<_> = n
+                .index_stale_repos
+                .iter()
+                .filter(|s| {
+                    repo_filter
+                        .map(|r| s.repo.eq_ignore_ascii_case(r.trim()))
+                        .unwrap_or(true)
+                })
+                .collect();
+            if stale.is_empty() {
+                if round == 1 {
+                    log.push_str(&format!("{} index ok (no stale repos)\n", n.fqdn));
                 }
-                Ok(r) => {
-                    fail = true;
-                    let status = r.status();
-                    let body = r.text().await.unwrap_or_default();
-                    log.push_str(&format!(
-                        "  FAIL {} HTTP {} {}\n",
-                        s.repo,
-                        status,
-                        body.trim()
-                    ));
+                continue;
+            }
+            log.push_str(&format!(
+                "{} warming {} stale index(es){}\n",
+                n.fqdn,
+                stale.len(),
+                if round > 1 {
+                    format!(" (round {round})")
+                } else {
+                    String::new()
                 }
-                Err(e) => {
-                    fail = true;
-                    log.push_str(&format!("  FAIL {} {e:#}\n", s.repo));
+            ));
+            for s in stale {
+                let url = format!("https://{}/api/index/warm/{}", n.fqdn, s.repo);
+                match client.post(&url).json(&serde_json::json!({})).send().await {
+                    Ok(r) if r.status().is_success() => {
+                        round_warmed += 1;
+                        let body = r.text().await.unwrap_or_default();
+                        let warmed_tip = serde_json::from_str::<serde_json::Value>(&body)
+                            .ok()
+                            .and_then(|j| j.get("tip").and_then(|t| t.as_str()).map(str::to_string))
+                            .unwrap_or_else(|| s.tip_sha.clone());
+                        let warmed_short = warmed_tip.chars().take(12).collect::<String>();
+                        let snapshot_short = s.tip_sha.chars().take(12).collect::<String>();
+                        if warmed_tip.eq_ignore_ascii_case(&s.tip_sha) {
+                            log.push_str(&format!(
+                                "  ok {}@{} tip={}\n",
+                                s.repo, s.branch, warmed_short
+                            ));
+                        } else {
+                            log.push_str(&format!(
+                                "  ok {}@{} warmed tip={} (probe snapshot was {} — git tip moved)\n",
+                                s.repo, s.branch, warmed_short, snapshot_short
+                            ));
+                        }
+                        match verify_repo_index_fresh(&client, &n.fqdn, &s.repo).await {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                log.push_str(&format!(
+                                    "  WARN {} still stale on {} after warm — will retry if rounds remain\n",
+                                    s.repo, n.fqdn
+                                ));
+                            }
+                            Err(e) => {
+                                log.push_str(&format!(
+                                    "  WARN {} status check on {}: {e:#}\n",
+                                    s.repo, n.fqdn
+                                ));
+                            }
+                        }
+                    }
+                    Ok(r) => {
+                        fail = true;
+                        let status = r.status();
+                        let body = r.text().await.unwrap_or_default();
+                        log.push_str(&format!(
+                            "  FAIL {} HTTP {} {}\n",
+                            s.repo,
+                            status,
+                            body.trim()
+                        ));
+                    }
+                    Err(e) => {
+                        fail = true;
+                        log.push_str(&format!("  FAIL {} {e:#}\n", s.repo));
+                    }
                 }
             }
         }
+        warmed_total += round_warmed;
+        if round_warmed == 0 {
+            break;
+        }
+        let (nodes_after, _, _) = probe_fleet(fleet, gitlab.as_deref()).await;
+        let any_stale = nodes_after.iter().any(|n| {
+            n.healthy
+                && !n.index_ok
+                && n.index_stale_repos.iter().any(|s| {
+                    repo_filter
+                        .map(|r| s.repo.eq_ignore_ascii_case(r.trim()))
+                        .unwrap_or(true)
+                        && fqdn_filter
+                            .map(|f| n.fqdn.eq_ignore_ascii_case(f.trim()))
+                            .unwrap_or(true)
+                })
+        });
+        if !any_stale {
+            break;
+        }
+        if round < MAX_ROUNDS {
+            log.push_str("still stale after warm — re-probing and retrying\n");
+        }
     }
-    log.push_str(&format!("warmed {warmed} repo index(es)\n"));
+    log.push_str(&format!("warmed {warmed_total} repo index(es)\n"));
     if fail {
         anyhow::bail!("{log}");
     }
     Ok(log)
+}
+
+async fn verify_repo_index_fresh(
+    client: &reqwest::Client,
+    fqdn: &str,
+    repo: &str,
+) -> Result<bool> {
+    let url = format!("https://{fqdn}/api/status");
+    let st: serde_json::Value = client.get(&url).send().await?.error_for_status()?.json().await?;
+    let fresh = st
+        .get("repos")
+        .and_then(|r| r.as_array())
+        .and_then(|rows| {
+            rows.iter().find(|row| row.get("name").and_then(|n| n.as_str()) == Some(repo))
+        })
+        .and_then(|row| row.get("index_fresh"))
+        .and_then(|v| v.as_bool());
+    Ok(fresh == Some(true))
 }
 
 #[cfg(test)]
@@ -911,6 +1016,8 @@ mod tests {
         assert!(SYNC_REMOTE.contains("relay-startup-catalog-sync.sh"));
         assert!(SYNC_REMOTE.contains("git --git-dir="));
         assert!(SYNC_REMOTE.contains(" fetch "));
+        assert!(SYNC_REMOTE.contains("ensure-bare"));
+        assert!(SYNC_REMOTE.contains("authorized_repos"));
         assert!(!SYNC_REMOTE.contains("push --force"));
         assert!(!SYNC_REMOTE.contains("+refs/heads"));
         assert!(!SYNC_REMOTE.contains("reset --hard"));

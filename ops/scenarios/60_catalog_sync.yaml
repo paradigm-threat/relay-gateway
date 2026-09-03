@@ -1,0 +1,14 @@
+id: catalog_sync
+title: Catalog / tip drift needs sync
+kind: ops
+priority: 60
+fingerprint:
+  healthy: true
+  needs_sync: true
+  has_missing_repos: false
+  replica_ahead: false
+steps: [sync]
+primary_action: sync
+requires_confirm: true
+message: >-
+  Out of sync (tip drift) — Approve sync or click Synchronize to fetch peer tips (not Repair or Reclaim).

@@ -195,6 +195,28 @@ pub fn spawn_reconcile_stale_indexes(repo_root: PathBuf) {
     });
 }
 
+fn reconcile_interval_secs() -> u64 {
+    std::env::var("RELAY_INDEX_RECONCILE_INTERVAL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n >= 60)
+        .unwrap_or(300)
+}
+
+/// Background loop: re-run [`reconcile_stale_indexes`] so GitLab forge `git fetch` ref
+/// advances (no post-receive) cannot leave SearchStore stale until manual warm.
+pub fn spawn_periodic_reconcile_stale_indexes(repo_root: PathBuf) {
+    std::thread::spawn(move || {
+        let interval = std::time::Duration::from_secs(reconcile_interval_secs());
+        loop {
+            std::thread::sleep(interval);
+            if let Err(e) = reconcile_stale_indexes(&repo_root) {
+                tracing::warn!(error = %e, "periodic reconcile_stale_indexes failed");
+            }
+        }
+    });
+}
+
 pub fn reconcile_stale_indexes(repo_root: &Path) -> anyhow::Result<()> {
     let root = repo_root.to_path_buf();
     let names = bare_repo_names(&root);

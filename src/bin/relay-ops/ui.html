@@ -47,6 +47,16 @@
     .list div:hover, .list div.on { background:#2a2a2a; }
     .sha { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
     .crumb { margin-bottom: 6px; }
+    .nav { display:flex; gap:8px; margin-left:auto; }
+    .nav button.on { background:#1f6b45; }
+    .panel { display:none; }
+    .panel.on { display:block; }
+    .req { border:1px solid #6b3a12; background:#2a1c0e; border-radius:8px; padding:10px; margin:8px 0; cursor:pointer; }
+    .req.open { border-color: var(--warn); }
+    .req h3 { margin:0 0 6px; font-size:14px; }
+    .ai-diag { font-size:11px; color:var(--muted); margin-top:6px; }
+    #brainFeed { max-height:320px; }
+    #brainChatOut { min-height:40px; }
   </style>
 </head>
 <body>
@@ -54,8 +64,14 @@
   <h1>Relay fleet</h1>
   <span id="mode" class="pill ro">read-only</span>
   <span id="source" class="muted"></span>
+  <span id="brainPill" class="pill ro" title="Brain status">brain: —</span>
+  <div class="nav">
+    <button type="button" class="ghost on" id="navFleet" onclick="showPanel('fleet')">Fleet</button>
+    <button type="button" class="ghost" id="navBrain" onclick="showPanel('brain')">Brain</button>
+  </div>
 </header>
 <main>
+  <div id="panelFleet" class="panel on">
   <section class="card">
     <div class="row"><span>GitLab</span><span id="gitlab" class="muted"></span></div>
     <div class="row"><span>Inventory</span><span id="inv" class="muted"></span></div>
@@ -105,6 +121,35 @@
     <h2>Job log</h2>
     <pre id="log">idle</pre>
   </section>
+  </div>
+
+  <div id="panelBrain" class="panel">
+    <section class="card">
+      <div class="row">
+        <h2>Brain</h2>
+        <span id="brainMeta" class="muted"></span>
+      </div>
+      <div class="actions">
+        <button type="button" onclick="brainRefresh()">Refresh brain</button>
+        <button type="button" class="ghost" onclick="brainPost('/api/brain/resume')">Resume</button>
+        <button type="button" class="ghost" onclick="brainPost('/api/brain/pause')">Pause</button>
+        <button type="button" class="ghost" onclick="brainNanoSummary()" title="Uses Gemini Nano Prompt API when available">AI summarize feed</button>
+      </div>
+      <div id="brainAiDiag" class="ai-diag"></div>
+      <h2>Pending requests</h2>
+      <div id="brainRequests" class="muted">Loading…</div>
+      <h2>Activity feed</h2>
+      <pre id="brainFeed">…</pre>
+      <h2>Chat</h2>
+      <div class="actions">
+        <input id="brainChatIn" style="flex:1;min-width:180px" placeholder="status / blocked / message for Cursor…"
+               onkeydown="if(event.key==='Enter')brainSay()"/>
+        <button type="button" onclick="brainSay()">Send</button>
+      </div>
+      <div id="brainChatOut" class="muted"></div>
+      <pre id="brainHandoff" class="fileview" style="display:none"></pre>
+    </section>
+  </div>
 </main>
 <script>
 let lastSnap = null;
@@ -471,6 +516,189 @@ function resetFleetKnownHosts() {
 }
 snap();
 setInterval(snap, 8000);
+
+function showPanel(name) {
+  document.getElementById('panelFleet').classList.toggle('on', name === 'fleet');
+  document.getElementById('panelBrain').classList.toggle('on', name === 'brain');
+  document.getElementById('navFleet').classList.toggle('on', name === 'fleet');
+  document.getElementById('navBrain').classList.toggle('on', name === 'brain');
+  if (name === 'brain') brainRefresh();
+}
+
+const brainClient = {
+  async status() {
+    const r = await fetch('/api/brain/status');
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async requests() {
+    const r = await fetch('/api/brain/requests');
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async feed(tail) {
+    const r = await fetch('/api/brain/feed?tail=' + (tail || 80));
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async approve(id) {
+    const r = await fetch('/api/brain/requests/' + encodeURIComponent(id) + '/approve', { method: 'POST' });
+    return r.text();
+  },
+  async decline(id) {
+    const r = await fetch('/api/brain/requests/' + encodeURIComponent(id) + '/decline', { method: 'POST' });
+    return r.text();
+  },
+  async say(text) {
+    const r = await fetch('/api/brain/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    return r.text();
+  },
+  async post(path) {
+    const r = await fetch(path, { method: 'POST' });
+    return r.text();
+  },
+};
+
+async function brainRefresh() {
+  const pill = document.getElementById('brainPill');
+  const meta = document.getElementById('brainMeta');
+  const reqEl = document.getElementById('brainRequests');
+  const feedEl = document.getElementById('brainFeed');
+  try {
+    const [st, reqs, feed] = await Promise.all([
+      brainClient.status(),
+      brainClient.requests(),
+      brainClient.feed(80),
+    ]);
+    const pending = (reqs.pending || []).length;
+    pill.textContent = st.blocked ? 'brain: BLOCKED' : (st.online ? 'brain: online' : 'brain: offline');
+    pill.className = 'pill ' + (st.blocked ? 'ro' : 'admin');
+    meta.textContent = (st.observe_only ? 'observe-only' : 'execute') +
+      (st.paused ? ' · paused' : '') +
+      ' · pending ' + pending +
+      (st.last_scenario ? ' · ' + st.last_scenario : '');
+    if (!(reqs.pending || []).length) {
+      reqEl.innerHTML = '<div class="muted">No pending requests</div>';
+    } else {
+      reqEl.innerHTML = (reqs.pending || []).map(r => `
+        <div class="req" data-id="${esc(r.id)}" onclick="this.classList.toggle('open')">
+          <h3>${esc(r.title)} <span class="muted">${esc(r.severity)}</span></h3>
+          <div class="muted">${esc(r.fqdn || '')} · ${esc(r.scenario_id || '')} · ${esc(r.id)}</div>
+          <p>${esc(r.description)}</p>
+          <div class="actions" onclick="event.stopPropagation()">
+            <button type="button" class="primary" onclick="brainApprove('${esc(r.id)}')">Approve</button>
+            <button type="button" class="warn" onclick="brainDecline('${esc(r.id)}')">Decline</button>
+            <button type="button" class="ghost" onclick="brainHandoff('${esc(r.id)}')">Hand off to Cursor</button>
+          </div>
+        </div>`).join('');
+    }
+    const lines = (feed.lines || []).slice().reverse();
+    feedEl.textContent = lines.map(l => JSON.stringify(l)).join('\n') || '(empty feed)';
+  } catch (e) {
+    pill.textContent = 'brain: offline';
+    pill.className = 'pill ro';
+    meta.textContent = String(e.message || e);
+    reqEl.innerHTML = '<div class="bad">Brain unreachable — start <code>relay-brain</code> or <code>relay-ops brain serve</code></div>';
+    feedEl.textContent = '';
+  }
+  updateAiDiag();
+}
+
+async function brainApprove(id) {
+  document.getElementById('brainChatOut').textContent = await brainClient.approve(id);
+  await brainRefresh();
+}
+async function brainDecline(id) {
+  document.getElementById('brainChatOut').textContent = await brainClient.decline(id);
+  await brainRefresh();
+}
+async function brainHandoff(id) {
+  const reqs = await brainClient.requests();
+  const r = (reqs.pending || []).find(x => x.id === id);
+  if (!r) return;
+  const prompt = `Relay brain request ${r.id} needs attention.\nTitle: ${r.title}\nFQDN: ${r.fqdn || '-'}\nScenario: ${r.scenario_id || '-'}\nSeverity: ${r.severity}\nDescription: ${r.description}\nProposed steps: ${JSON.stringify(r.proposed_steps)}\n\nPlease inspect ops/scenarios/, extend YAML if BLOCKED/unknown, then relay-ops brain approve ${r.id} or decline.`;
+  const box = document.getElementById('brainHandoff');
+  box.style.display = 'block';
+  box.textContent = prompt;
+  try { await navigator.clipboard.writeText(prompt); document.getElementById('brainChatOut').textContent = 'Handoff copied to clipboard'; }
+  catch (_) { document.getElementById('brainChatOut').textContent = 'Handoff ready — copy from box below'; }
+}
+async function brainSay() {
+  const input = document.getElementById('brainChatIn');
+  const text = input.value.trim();
+  if (!text) return;
+  document.getElementById('brainChatOut').textContent = await brainClient.say(text);
+  input.value = '';
+  await brainRefresh();
+}
+async function brainPost(path) {
+  document.getElementById('brainChatOut').textContent = await brainClient.post(path);
+  await brainRefresh();
+}
+
+function updateAiDiag() {
+  const el = document.getElementById('brainAiDiag');
+  const webmcp = !!(document.modelContext && document.modelContext.registerTool);
+  const nano = !!(window.ai && window.ai.languageModel) || !!(window.LanguageModel);
+  el.textContent = 'WebMCP: ' + (webmcp ? 'available' : 'unavailable') + ' · Gemini Nano Prompt API: ' + (nano ? 'available' : 'unavailable') +
+    ' (chat/requests work without either)';
+}
+
+async function brainNanoSummary() {
+  const out = document.getElementById('brainChatOut');
+  try {
+    const feed = await brainClient.feed(40);
+    const text = (feed.lines || []).map(l => JSON.stringify(l)).join('\n').slice(0, 12000);
+    let session;
+    if (window.LanguageModel && LanguageModel.create) {
+      session = await LanguageModel.create();
+    } else if (window.ai && window.ai.languageModel) {
+      session = await window.ai.languageModel.create();
+    } else {
+      out.textContent = 'Gemini Nano Prompt API not available in this browser';
+      return;
+    }
+    const reply = await session.prompt(
+      'Summarize this relay-brain activity feed for an operator in 5 short bullets. Do not approve actions.\n\n' + text
+    );
+    out.textContent = reply;
+  } catch (e) {
+    out.textContent = 'Nano summarize failed: ' + (e.message || e);
+  }
+}
+
+async function registerWebMcpTools() {
+  if (!document.modelContext || typeof document.modelContext.registerTool !== 'function') {
+    updateAiDiag();
+    return;
+  }
+  const tools = [
+    { name: 'brain_status', description: 'Relay brain status (online, blocked, scenarios)', execute: async () => ({ content: [{ type: 'text', text: JSON.stringify(await brainClient.status()) }] }) },
+    { name: 'brain_requests_list', description: 'List pending brain operator requests', execute: async () => ({ content: [{ type: 'text', text: JSON.stringify(await brainClient.requests()) }] }) },
+    { name: 'brain_feed_tail', description: 'Tail brain JSONL feed', inputSchema: { type: 'object', properties: { tail: { type: 'number' } } },
+      execute: async ({ tail }) => ({ content: [{ type: 'text', text: JSON.stringify(await brainClient.feed(tail || 40)) }] }) },
+    { name: 'brain_approve', description: 'Approve a pending brain request by id', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+      execute: async ({ id }) => ({ content: [{ type: 'text', text: await brainClient.approve(id) }] }) },
+    { name: 'brain_decline', description: 'Decline a pending brain request by id', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+      execute: async ({ id }) => ({ content: [{ type: 'text', text: await brainClient.decline(id) }] }) },
+    { name: 'brain_say', description: 'Send chat/keyword to brain feed', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+      execute: async ({ text }) => ({ content: [{ type: 'text', text: await brainClient.say(text) }] }) },
+    { name: 'ops_job', description: 'Start a relay-ops job (may be refused by brain allowlist)', inputSchema: { type: 'object', properties: { kind: { type: 'string' }, fqdn: { type: 'string' } }, required: ['kind'] },
+      execute: async (args) => { await job(args); return { content: [{ type: 'text', text: 'job submitted' }] }; } },
+  ];
+  for (const t of tools) {
+    try { await document.modelContext.registerTool(t); } catch (e) { console.warn('WebMCP register', t.name, e); }
+  }
+  updateAiDiag();
+}
+
+registerWebMcpTools();
+setInterval(() => { if (document.getElementById('panelBrain').classList.contains('on')) brainRefresh(); }, 10000);
+brainRefresh();
 </script>
 </body>
 </html>

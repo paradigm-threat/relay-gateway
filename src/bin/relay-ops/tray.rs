@@ -538,8 +538,8 @@ mod tests {
 
     #[test]
     fn headline_all_up() {
-        assert_eq!(headline(0, 3, 0, "Admin"), "Admin  3 up");
-        assert_eq!(headline(1, 3, 0, "Observer"), "Observer  1 / 3 down");
-        assert_eq!(headline(0, 3, 1, "Admin"), "Admin  3 up  ·  1 sync");
+        assert_eq!(headline(0, 3, 0, 0, "Admin"), "Admin  3 up");
+        assert_eq!(headline(1, 3, 0, 0, "Observer"), "Observer  1 / 3 down");
+        assert_eq!(headline(0, 3, 1, 0, "Admin"), "Admin  3 up  ·  1 sync");
     }
 }

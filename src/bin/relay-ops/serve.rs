@@ -253,6 +253,15 @@ pub async fn serve(app: App, bind: &str) -> anyhow::Result<()> {
         .route("/api/git/refs", get(git_refs))
         .route("/api/git/tree", get(git_tree))
         .route("/api/git/file", get(git_file))
+        .route("/api/brain/status", get(brain_proxy_get))
+        .route("/api/brain/feed", get(brain_proxy_get))
+        .route("/api/brain/requests", get(brain_proxy_get))
+        .route("/api/brain/chat", post(brain_proxy_post))
+        .route("/api/brain/resume", post(brain_proxy_post))
+        .route("/api/brain/pause", post(brain_proxy_post))
+        .route("/api/brain/requests/:id/approve", post(brain_proxy_post))
+        .route("/api/brain/requests/:id/decline", post(brain_proxy_post))
+        .route("/api/mcp-tools", get(mcp_tools))
         .with_state(app.clone());
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("relay-ops UI http://{bind}");
@@ -262,6 +271,110 @@ pub async fn serve(app: App, bind: &str) -> anyhow::Result<()> {
 
 async fn ui() -> Html<&'static str> {
     Html(include_str!("ui.html"))
+}
+
+async fn mcp_tools() -> impl IntoResponse {
+    match std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ops/mcp-tools.json"),
+    ) {
+        Ok(s) => (StatusCode::OK, [("content-type", "application/json")], s).into_response(),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            format!("ops/mcp-tools.json: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+fn brain_upstream_path(uri_path: &str) -> String {
+    uri_path
+        .strip_prefix("/api/brain")
+        .unwrap_or(uri_path)
+        .to_string()
+}
+
+async fn brain_proxy_get(
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
+) -> impl IntoResponse {
+    let path = brain_upstream_path(uri.path());
+    let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+    match crate::brain_client::get_json_async(&format!("{path}{q}")).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
+    }
+}
+
+async fn brain_proxy_post(
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
+    body: Option<Json<serde_json::Value>>,
+) -> impl IntoResponse {
+    let path = brain_upstream_path(uri.path());
+    let body = body.map(|Json(v)| v);
+    match crate::brain_client::post_auth_async(&path, body).await {
+        Ok(t) => (StatusCode::OK, t).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
+    }
+}
+
+/// When brain is reachable, refuse remediations that are not allowlisted /
+/// approved for the target fqdn.
+async fn brain_job_gate(kind: &str, fqdn: Option<&str>) -> Result<(), String> {
+    const GATED: &[&str] = &[
+        "repair",
+        "reclaim",
+        "sync",
+        "point-dns",
+        "index-warm",
+        "update",
+        "deploy-all",
+        "reclone-repo",
+    ];
+    if !GATED.contains(&kind) {
+        return Ok(());
+    }
+    let Ok(st) = crate::brain_client::get_json_async("/status").await else {
+        return Ok(());
+    };
+    if !st.get("online").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return Ok(());
+    }
+    let Some(fqdn) = fqdn.filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
+    if let Some(nodes) = st.get("nodes").and_then(|n| n.as_array()) {
+        for n in nodes {
+            if n.get("fqdn").and_then(|x| x.as_str()) != Some(fqdn) {
+                continue;
+            }
+            let blocked = n.get("blocked").and_then(|v| v.as_bool()).unwrap_or(false);
+            let confirm = n
+                .get("requires_confirm")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let steps: Vec<&str> = n
+                .get("steps")
+                .and_then(|s| s.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                .unwrap_or_default();
+            if blocked {
+                return Err(format!(
+                    "brain BLOCKED for {fqdn} — approve/decline the pending request or extend ops/scenarios"
+                ));
+            }
+            if confirm {
+                return Err(format!(
+                    "brain requires confirmation for {fqdn} ({kind}) — open Brain tab and Approve the request first"
+                ));
+            }
+            if !steps.is_empty() && !steps.contains(&kind) {
+                return Err(format!(
+                    "brain allowlist for {fqdn} is {steps:?}; refused {kind}"
+                ));
+            }
+            return Ok(());
+        }
+    }
+    Ok(())
 }
 
 async fn snapshot(State(app): State<App>) -> Json<Snapshot> {
@@ -428,6 +541,9 @@ async fn job(State(app): State<App>, Json(body): Json<JobReq>) -> impl IntoRespo
     if matches!(kind, "fleet-dns" | "fleet-dns-drop") && !inv.vercel_token {
         return (StatusCode::BAD_REQUEST, "needs Vercel token".to_string());
     }
+    if let Err(msg) = brain_job_gate(kind, body.fqdn.as_deref()).await {
+        return (StatusCode::FORBIDDEN, msg);
+    }
     let (fleet_all, source) = {
         let g = app.inner.lock().await;
         (g.fleet.clone(), g.topology_source.clone())
@@ -572,16 +688,19 @@ async fn job(State(app): State<App>, Json(body): Json<JobReq>) -> impl IntoRespo
         "index-warm" => {
             let fqdn = body.fqdn.clone();
             let repo = body.repo.clone();
+            let app2 = app.clone();
             app.jobs
                 .start_async("index-warm", &target, {
                     let fleet = fleet.clone();
                     move || async move {
-                        crate::fleet_cmd::warm_stale_indexes(
+                        let result = crate::fleet_cmd::warm_stale_indexes(
                             &fleet,
                             fqdn.as_deref(),
                             repo.as_deref(),
                         )
-                        .await
+                        .await;
+                        refresh_inner(&app2).await;
+                        result
                     }
                 })
                 .await

@@ -1,0 +1,14 @@
+id: mesh_race_transient
+title: Transient mesh tip race
+kind: ops
+priority: 200
+fingerprint:
+  # Matched only when brain re-probe clears; seed for documentation / wait-reprobe step.
+  healthy: true
+  needs_sync: true
+  replica_ahead: true
+steps: [wait-reprobe]
+requires_confirm: false
+blocked: false
+message: >-
+  Possible brief mesh race (replica briefly ahead) — wait and re-probe before treating as divergence.
