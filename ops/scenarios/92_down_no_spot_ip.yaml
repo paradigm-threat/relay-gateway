@@ -1,0 +1,17 @@
+id: down_no_spot_ip
+title: Node down — no Spot VM assignment
+kind: ops
+priority: 92
+fingerprint:
+  healthy: false
+  has_spot_ip: false
+  host_key_changed: false
+  dns_mismatch: false
+steps: []
+requires_confirm: true
+blocked: true
+message: >-
+  Node is down and Spot has no assigned IP for this cloudspace (missing pool,
+  No Winning Bids, or wrong org / RXTSPOT_TOKEN). Create a VM pool in the Spot UI
+  (MCP createVMPool is broken — vmCloudSpaceRef null), wait for an IP, then Reclaim
+  and Point DNS. Drop any dead address from fleet.relaygateway.net A records.

@@ -55,7 +55,9 @@ Brain chat/requests/feed work with **zero** browser AI.
 
 ## Scenarios
 
-YAML under `ops/scenarios/`. Shared matcher with UI recommendations (`recommend` → scenario id + specialized message). Tip-divergence parents include `replica_ahead_of_publisher` and `unknown_tip_divergence` (BLOCKED). Grow leaves from live incidents — do not invent encyclopedic stubs.
+YAML under `ops/scenarios/`. Shared matcher with UI recommendations (`recommend` → scenario id + specialized message). Tip-divergence parents include `replica_ahead_of_publisher` and `unknown_tip_divergence` (BLOCKED). Live down leaves also cover **`down_no_spot_ip`** (empty / missing Spot pool) and **`tcp22_open_unresponsive`** (zombie: port open, SSH fails). Grow leaves from live incidents — do not invent encyclopedic stubs.
+
+Brain probe loop runs the same SSH diagnose as the ops UI (`ssh::attach_diags`) so repair/reclaim/zombie fingerprints match.
 
 ## Prove before growing
 

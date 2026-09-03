@@ -69,6 +69,12 @@ pub struct Fingerprint {
     pub healthy_in_sync: Option<bool>,
     #[serde(default)]
     pub tcp22: Option<bool>,
+    /// SSH diagnose failed (banner hang, auth fail, timeout) with TCP 22 open.
+    #[serde(default)]
+    pub ssh_failed: Option<bool>,
+    /// Spot API returned an assigned IP for this node's cloudspace.
+    #[serde(default)]
+    pub has_spot_ip: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +93,8 @@ pub struct InputFlags {
     pub unknown_down: bool,
     pub healthy_in_sync: bool,
     pub tcp22: bool,
+    pub ssh_failed: bool,
+    pub has_spot_ip: bool,
 }
 
 impl InputFlags {
@@ -102,12 +110,15 @@ impl InputFlags {
         let show_reclaim = crate::recommend::input_show_reclaim(input);
         let index_stale = input.healthy && !input.index_ok && input.index_stale_count > 0;
         let healthy_in_sync = input.healthy && input.sync_ok && !index_stale && !has_sync_anomaly && !input.dns_mismatch;
-        // "unknown_down": unhealthy without dns/host-key/repair/reclaim diagnosis
+        let ssh_failed = input.ssh_ok == Some(false) && !input.host_key_changed;
+        // "unknown_down": unhealthy without a more specific diagnosis leaf
         let unknown_down = !input.healthy
             && !input.dns_mismatch
             && !input.host_key_changed
             && !show_repair
-            && !show_reclaim;
+            && !show_reclaim
+            && !ssh_failed
+            && input.has_spot_ip;
         Self {
             healthy: input.healthy,
             sync_ok: input.sync_ok,
@@ -123,6 +134,8 @@ impl InputFlags {
             unknown_down,
             healthy_in_sync,
             tcp22: input.tcp22,
+            ssh_failed,
+            has_spot_ip: input.has_spot_ip,
         }
     }
 }
@@ -150,6 +163,8 @@ impl Fingerprint {
             && flag_match(self.unknown_down, f.unknown_down)
             && flag_match(self.healthy_in_sync, f.healthy_in_sync)
             && flag_match(self.tcp22, f.tcp22)
+            && flag_match(self.ssh_failed, f.ssh_failed)
+            && flag_match(self.has_spot_ip, f.has_spot_ip)
     }
 }
 
@@ -456,5 +471,31 @@ mod tests {
         let hit = store.match_input(&input).expect("hit");
         assert_eq!(hit.id, "publisher_behind_replica");
         assert!(hit.primary_action.is_none());
+    }
+
+    #[test]
+    fn down_no_spot_ip_and_zombie_ssh() {
+        let store = load_default(Some(Path::new(env!("CARGO_MANIFEST_DIR"))));
+        if store.scenarios.is_empty() {
+            return;
+        }
+        let mut no_spot = base(&[], &[]);
+        no_spot.healthy = false;
+        no_spot.https_ok = false;
+        no_spot.has_spot_ip = false;
+        no_spot.tcp22 = true;
+        let hit = store.match_input(&no_spot).expect("hit");
+        assert_eq!(hit.id, "down_no_spot_ip");
+        assert!(hit.blocked);
+
+        let mut zombie = base(&[], &[]);
+        zombie.healthy = false;
+        zombie.https_ok = false;
+        zombie.has_spot_ip = true;
+        zombie.tcp22 = true;
+        zombie.ssh_ok = Some(false);
+        let hit = store.match_input(&zombie).expect("hit");
+        assert_eq!(hit.id, "tcp22_open_unresponsive");
+        assert_eq!(hit.primary_action.as_deref(), Some("reclaim"));
     }
 }

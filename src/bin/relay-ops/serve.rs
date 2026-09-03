@@ -190,37 +190,7 @@ pub async fn refresh_inner(app: &App) {
 }
 
 async fn attach_ssh_diags(cfg: &OpsConfig, fleet: &FleetFile, nodes: &mut [NodeProbe]) {
-    let want: Vec<String> = nodes
-        .iter()
-        .filter(|n| !n.healthy && n.tcp22)
-        .map(|n| n.fqdn.clone())
-        .collect();
-    if want.is_empty() {
-        return;
-    }
-    let mut set = tokio::task::JoinSet::new();
-    for fqdn in want {
-        let cfg = cfg.clone();
-        let fleet = fleet.clone();
-        set.spawn_blocking(move || {
-            let ssh = crate::ssh::SshCtx {
-                cfg: &cfg,
-                fleet: &fleet,
-                interactive: false,
-            };
-            (fqdn.clone(), ssh.diagnose(&fqdn))
-        });
-    }
-    while let Some(res) = set.join_next().await {
-        let Ok((fqdn, diag)) = res else {
-            continue;
-        };
-        if let Some(n) = nodes.iter_mut().find(|n| n.fqdn == fqdn) {
-            n.ssh_ok = diag.ssh_ok;
-            n.host_key_changed = diag.host_key_changed;
-            n.install_present = diag.install_present;
-        }
-    }
+    crate::ssh::attach_diags(cfg, fleet, nodes).await;
 }
 
 pub async fn serve(app: App, bind: &str) -> anyhow::Result<()> {

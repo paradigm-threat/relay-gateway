@@ -277,7 +277,9 @@ async fn classify_once(app: &BrainApp) -> Result<()> {
         .gitlab_url_resolved()
         .ok_or_else(|| anyhow!("set gitlab URL in relay-ops config"))?;
     let (fleet, _source) = gitlab::load_topology(&cfg, &gitlab).await?;
-    let (nodes, _ingress, _peers) = probe_fleet(&fleet, Some(gitlab.as_str())).await;
+    let (mut nodes, _ingress, _peers) = probe_fleet(&fleet, Some(gitlab.as_str())).await;
+    // Same SSH diagnose as ops UI — needed for repair/reclaim/zombie fingerprints.
+    crate::ssh::attach_diags(&cfg, &fleet, &mut nodes).await;
     let spot = if let Some(tok) = cfg.spot_token.as_deref() {
         crate::spot::list_assignments(tok).await.unwrap_or_default()
     } else {

@@ -154,6 +154,12 @@ fn specialize_message(input: &RecommendInput<'_>, hit: &ScenarioHit) -> String {
             input.index_stale_count
         ),
         "unknown_down" => down_fallback(input),
+        "down_no_spot_ip" => {
+            "Node is down with no Spot assignment — create/fix the VM pool in Spot UI (paradigmthreat org; MCP createVMPool is broken), then Reclaim + Point DNS; remove dead IPs from fleet A.".into()
+        }
+        "tcp22_open_unresponsive" => {
+            "TCP 22 is open but SSH failed — zombie Spot VM; Reclaim a new bid rather than waiting on Repair.".into()
+        }
         "replica_ahead_of_publisher" => {
             let ahead: Vec<_> = input
                 .drift

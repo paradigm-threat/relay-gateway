@@ -1,0 +1,19 @@
+id: tcp22_open_unresponsive
+title: Node down — TCP 22 open but SSH unresponsive
+kind: ops
+priority: 94
+fingerprint:
+  healthy: false
+  tcp22: true
+  ssh_failed: true
+  host_key_changed: false
+  dns_mismatch: false
+  has_spot_ip: true
+steps: [reclaim]
+primary_action: reclaim
+requires_confirm: true
+blocked: false
+message: >-
+  Port 22 accepts TCP but SSH fails (banner hang / timeout) and HTTPS is unhealthy —
+  treat as a zombie Spot VM. Prefer Reclaim onto a fresh winning bid, then Point DNS;
+  Repair only if you confirm the install is still reachable.
