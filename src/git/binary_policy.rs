@@ -20,7 +20,7 @@ pub fn enforce_commit_no_disallowed_binaries(
         return Ok(());
     }
 
-    let paths = diff_paths_for_commit(repo_path, commit)?;
+    let paths = diff_added_or_modified_paths_for_commit(repo_path, commit)?;
     for path in paths {
         if should_skip_path(&path) {
             continue;
@@ -60,11 +60,15 @@ fn should_skip_path(path: &str) -> bool {
     path.ends_with(".json") && path != MANIFEST_PATH
 }
 
-fn diff_paths_for_commit(repo_path: &Path, commit: &str) -> Result<Vec<String>, String> {
+/// Added/modified paths only — deletions must not `git show new:path` (missing blob).
+fn diff_added_or_modified_paths_for_commit(
+    repo_path: &Path,
+    commit: &str,
+) -> Result<Vec<String>, String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(repo_path)
-        .args(["diff-tree", "--no-commit-id", "--name-only", "-r", commit])
+        .args(["diff-tree", "--no-commit-id", "--name-status", "-r", commit])
         .output()
         .map_err(|e| format!("git diff-tree: {}", e))?;
     if !out.status.success() {
@@ -73,11 +77,34 @@ fn diff_paths_for_commit(repo_path: &Path, commit: &str) -> Result<Vec<String>, 
             String::from_utf8_lossy(&out.stderr)
         ));
     }
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect())
+    let mut paths = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split('\t');
+        let status = parts.next().unwrap_or("");
+        // D = deleted; skip. R100/C100 → take new path.
+        if status.starts_with('D') {
+            continue;
+        }
+        if status.starts_with('R') || status.starts_with('C') {
+            let _old = parts.next();
+            if let Some(new_path) = parts.next() {
+                if !new_path.is_empty() {
+                    paths.push(new_path.to_string());
+                }
+            }
+            continue;
+        }
+        if let Some(path) = parts.next() {
+            if !path.is_empty() {
+                paths.push(path.to_string());
+            }
+        }
+    }
+    Ok(paths)
 }
 
 fn read_blob_at_commit(repo_path: &Path, commit: &str, path: &str) -> Result<Vec<u8>, String> {
