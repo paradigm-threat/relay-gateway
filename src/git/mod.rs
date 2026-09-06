@@ -31,6 +31,7 @@ pub mod search_config;
 pub mod search_plugins;
 pub mod search_store;
 pub mod seo_from_markdown;
+pub mod sitemap;
 pub mod sqlite_index;
 pub mod ssr_client_hook;
 pub mod ssr_html_cache;

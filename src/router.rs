@@ -59,6 +59,12 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(handlers::api_status),
         )
         .route(
+            "/api/rum",
+            get(handlers::api_rum)
+                .head(handlers::api_rum)
+                .post(handlers::api_rum),
+        )
+        .route(
             "/api/mcp/:repo",
             get(handlers::mcp::get_mcp)
                 .post(handlers::mcp::post_mcp)
@@ -111,6 +117,7 @@ pub fn build_router(state: AppState) -> Router {
         // Compress QUERY catalogs + page.md for browsers (Accept-Encoding). No topology change.
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
+        .layer(axum::middleware::from_fn(crate::http_stats::http_stats_middleware))
         .with_state(state)
 }
 

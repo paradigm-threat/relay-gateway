@@ -9,6 +9,7 @@ pub mod mesh_sync;
 pub mod node_api;
 pub mod query;
 pub mod query_response;
+pub mod rum;
 pub mod status;
 pub mod write;
 
@@ -22,6 +23,7 @@ pub use general::{
 pub use head::{head_file, head_root};
 pub use ipfs::{handle_get_ipfs, handle_get_ipfs_prefixed};
 pub use query::handle_query;
+pub use rum::api_rum;
 pub use status::{api_status, post_api_status};
 pub use mesh_sync::api_mesh_sync;
 pub use write::{delete_file, put_file};

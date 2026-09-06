@@ -196,6 +196,12 @@ pub struct EmbedSeoExtras<'a> {
     pub og_image: Option<&'a str>,
     /// When true, emit `og:type=article` instead of `website`.
     pub is_article: bool,
+    /// Soft-missing SPA shell: tell crawlers not to index this URL.
+    pub noindex: bool,
+    /// Site name for JSON-LD `isPartOf` / `WebSite` (falls back to document title).
+    pub site_name: Option<&'a str>,
+    /// When true (typically `/`), emit `WebSite` + `SearchAction` JSON-LD instead of `Article`.
+    pub is_website_home: bool,
 }
 
 /// Like [`embed_html_document_with_assets_and_title`], with optional description + canonical.
@@ -328,6 +334,22 @@ pub fn embed_html_document_with_assets_and_seo_extras(
     } else {
         seo_tags.push_str("\n  <meta name=\"twitter:card\" content=\"summary\"/>");
     }
+    if extras.noindex {
+        seo_tags.push_str("\n  <meta name=\"robots\" content=\"noindex,follow\"/>");
+    }
+    if let Some(ld) = build_json_ld(
+        site_title
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(repo),
+        site_description,
+        canonical_url,
+        &extras,
+    ) {
+        seo_tags.push_str("\n  <script type=\"application/ld+json\">");
+        seo_tags.push_str(&ld);
+        seo_tags.push_str("</script>");
+    }
     // data-pt-hydrated="0" until embed JS promotes live (relay-runtime-web syncHtmlHydratedAttr).
     // Park tips style .pt-client-only chrome as inactive until "1".
     format!(
@@ -348,6 +370,103 @@ pub fn embed_html_document_with_assets_and_seo_extras(
 </body>
 </html>"#,
     )
+}
+
+/// Compact JSON-LD for crawlers (`Article` or home `WebSite` + `SearchAction`).
+fn build_json_ld(
+    title: &str,
+    description: Option<&str>,
+    canonical_url: Option<&str>,
+    extras: &EmbedSeoExtras<'_>,
+) -> Option<String> {
+    if extras.noindex {
+        return None;
+    }
+    let canon = canonical_url.map(str::trim).filter(|s| !s.is_empty())?;
+    let site = extras
+        .site_name
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(title);
+    let origin = origin_from_canonical(canon).unwrap_or_else(|| canon.to_string());
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "@context".into(),
+        serde_json::Value::String("https://schema.org".into()),
+    );
+    let home_like = extras.is_website_home
+        || (!extras.is_article
+            && canon.trim_end_matches('/') == origin.trim_end_matches('/'));
+    if home_like {
+        obj.insert("@type".into(), serde_json::Value::String("WebSite".into()));
+        obj.insert("name".into(), serde_json::Value::String(site.to_string()));
+        obj.insert("url".into(), serde_json::Value::String(origin.clone()));
+        if let Some(d) = description.map(str::trim).filter(|s| !s.is_empty()) {
+            obj.insert(
+                "description".into(),
+                serde_json::Value::String(d.to_string()),
+            );
+        }
+        let search_target = format!(
+            "{}/search?q={{search_term_string}}",
+            origin.trim_end_matches('/')
+        );
+        obj.insert(
+            "potentialAction".into(),
+            serde_json::json!({
+                "@type": "SearchAction",
+                "target": search_target,
+                "query-input": "required name=search_term_string"
+            }),
+        );
+    } else if extras.is_article {
+        obj.insert("@type".into(), serde_json::Value::String("Article".into()));
+        obj.insert(
+            "headline".into(),
+            serde_json::Value::String(title.to_string()),
+        );
+        if let Some(d) = description.map(str::trim).filter(|s| !s.is_empty()) {
+            obj.insert(
+                "description".into(),
+                serde_json::Value::String(d.to_string()),
+            );
+        }
+        obj.insert("url".into(), serde_json::Value::String(canon.to_string()));
+        if let Some(img) = extras.og_image.map(str::trim).filter(|s| !s.is_empty()) {
+            obj.insert("image".into(), serde_json::Value::String(img.to_string()));
+        }
+        obj.insert(
+            "isPartOf".into(),
+            serde_json::json!({
+                "@type": "WebSite",
+                "name": site,
+                "url": origin
+            }),
+        );
+    } else {
+        return None;
+    }
+    let raw = serde_json::to_string(&serde_json::Value::Object(obj)).ok()?;
+    // Prevent `</script>` breakout in hostile titles/descriptions.
+    Some(
+        raw.replace('<', "\\u003c")
+            .replace('>', "\\u003e")
+            .replace('&', "\\u0026"),
+    )
+}
+
+fn origin_from_canonical(canon: &str) -> Option<String> {
+    let s = canon.trim();
+    let rest = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))?;
+    let scheme = if s.starts_with("https://") {
+        "https"
+    } else {
+        "http"
+    };
+    let host_port = rest.split('/').next().filter(|h| !h.is_empty())?;
+    Some(format!("{scheme}://{host_port}"))
 }
 
 /// Inject tip portrait-sibling map for PopImage (before embed.js).
@@ -646,6 +765,7 @@ mod tests {
             EmbedSeoExtras {
                 og_image: Some("https://paradigmthreat.net/a.png?w=800"),
                 is_article: true,
+                ..Default::default()
             },
         );
         assert!(
@@ -662,5 +782,57 @@ mod tests {
             html.contains(r#"name="twitter:card" content="summary_large_image""#),
             "{html}"
         );
+        assert!(
+            html.contains(r#"application/ld+json"#) && html.contains(r#""@type":"Article""#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn embed_seo_noindex_skips_json_ld() {
+        let html = embed_html_document_with_assets_and_seo_extras(
+            "r",
+            "main",
+            "/missing",
+            "/hooks/client/get.jsx",
+            None,
+            None,
+            None,
+            Some("Missing"),
+            None,
+            Some("https://example.test/missing"),
+            EmbedSeoExtras {
+                noindex: true,
+                ..Default::default()
+            },
+        );
+        assert!(
+            html.contains(r#"name="robots" content="noindex,follow""#),
+            "{html}"
+        );
+        assert!(!html.contains("application/ld+json"), "{html}");
+    }
+
+    #[test]
+    fn embed_seo_home_emits_website_json_ld() {
+        let html = embed_html_document_with_assets_and_seo_extras(
+            "r",
+            "main",
+            "/",
+            "/hooks/client/get.jsx",
+            None,
+            None,
+            None,
+            Some("Paradigm Threat"),
+            Some("Corpus"),
+            Some("https://relay.paradigmthreat.net/"),
+            EmbedSeoExtras {
+                is_website_home: true,
+                site_name: Some("Paradigm Threat"),
+                ..Default::default()
+            },
+        );
+        assert!(html.contains(r#""@type":"WebSite""#), "{html}");
+        assert!(html.contains("SearchAction"), "{html}");
     }
 }

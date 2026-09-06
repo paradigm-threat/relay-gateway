@@ -36,6 +36,9 @@ pub struct NodeProbe {
     pub index_ok: bool,
     #[serde(default)]
     pub index_stale_repos: Vec<IndexStaleRepo>,
+    /// Origin HTTP traffic aggregates from `/api/status` `http` (schema ≥ 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http: Option<HttpTrafficProbe>,
     /// Admin SSH probe (Observer leaves this unset).
     #[serde(default)]
     pub ssh_ok: Option<bool>,
@@ -144,12 +147,47 @@ pub struct StatusRepo {
     pub index_doc_count: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StatusProbe {
     pub ok: bool,
     pub schema_version: u32,
     pub repos_ok: Option<bool>,
     pub repos: Vec<StatusRepo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http: Option<HttpTrafficProbe>,
+}
+
+/// Subset of gateway `/api/status` `http` object (schema ≥ 5).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HttpTrafficProbe {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub req_1m: u64,
+    #[serde(default)]
+    pub req_1h: u64,
+    #[serde(default)]
+    pub req_24h: u64,
+    #[serde(default)]
+    pub p50_ms: Option<u32>,
+    #[serde(default)]
+    pub p95_ms: Option<u32>,
+    #[serde(default)]
+    pub window_1h: HttpWindowProbe,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HttpWindowProbe {
+    #[serde(default)]
+    pub requests: u64,
+    #[serde(default)]
+    pub status_2xx: u64,
+    #[serde(default)]
+    pub status_3xx: u64,
+    #[serde(default)]
+    pub status_4xx: u64,
+    #[serde(default)]
+    pub status_5xx: u64,
 }
 
 /// SearchStore indexed head lags git tip for this repo on the node.
@@ -253,6 +291,7 @@ fn unreachable_probe(
         sync_ok: true,
         index_ok: true,
         index_stale_repos: Vec::new(),
+        http: None,
         ssh_ok: None,
         host_key_changed: false,
         install_present: None,
@@ -310,6 +349,7 @@ async fn probe_node(node: &FleetNode, git_port: u16, repos: &[String]) -> NodePr
         sync_ok: true,
         index_ok,
         index_stale_repos,
+        http: https_status.as_ref().and_then(|s| s.http.clone()),
         ssh_ok: None,
         host_key_changed: false,
         install_present: None,
@@ -546,6 +586,9 @@ pub(crate) fn parse_status_probe(ok: bool, body: &serde_json::Value) -> StatusPr
         schema_version,
         repos_ok,
         repos,
+        http: body
+            .get("http")
+            .and_then(|v| serde_json::from_value::<HttpTrafficProbe>(v.clone()).ok()),
     }
 }
 
@@ -1153,6 +1196,7 @@ mod tests {
             sync_ok: true,
             index_ok: true,
             index_stale_repos: vec![],
+            http: None,
             ssh_ok: None,
             host_key_changed: false,
             install_present: None,
@@ -1367,6 +1411,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_status_v5_http_traffic() {
+        let body = serde_json::json!({
+            "schema_version": 5,
+            "http": {
+                "enabled": true,
+                "req_1m": 12,
+                "req_1h": 900,
+                "req_24h": 20000,
+                "p50_ms": 40,
+                "p95_ms": 180,
+                "window_1h": {
+                    "requests": 900,
+                    "status_2xx": 880,
+                    "status_5xx": 2
+                }
+            }
+        });
+        let st = parse_status_probe(true, &body);
+        assert_eq!(st.schema_version, 5);
+        let h = st.http.expect("http");
+        assert!(h.enabled);
+        assert_eq!(h.req_1h, 900);
+        assert_eq!(h.p95_ms, Some(180));
+        assert_eq!(h.window_1h.status_5xx, 2);
+    }
+
+    #[test]
     fn two_lagging_replicas_are_behind_publisher_not_ahead() {
         let site = catalog_row("paradigm-threat-files", "main", "iad1.example");
         let mut nodes = vec![
@@ -1378,7 +1449,7 @@ mod tests {
                 vec![site.clone()],
             ),
             up_node(
-                "iad1.example",
+                "sjc1.example",
                 &["paradigm-threat-files"],
                 &["paradigm-threat-files"],
                 vec![tip("paradigm-threat-files", "main", "oldsha00")],

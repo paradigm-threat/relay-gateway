@@ -1,4 +1,4 @@
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -303,6 +303,21 @@ fn want_static_markdown_html(
     is_markdown_blob(content_type, uri_path) && accept_prefers_html(headers) && !embed_query_flag(q)
 }
 
+/// Virtual SPA routes that have no tip blob but should stay HTTP 200 (indexable chrome).
+fn is_spa_virtual_path(rel: &str) -> bool {
+    let p = rel.trim().trim_matches('/');
+    p.is_empty() || p.eq_ignore_ascii_case("search")
+}
+
+fn mark_missing_shell_noindex(mut resp: axum::response::Response) -> axum::response::Response {
+    *resp.status_mut() = StatusCode::NOT_FOUND;
+    if let Ok(hv) = HeaderValue::try_from("noindex, follow") {
+        resp.headers_mut()
+            .insert(HeaderName::from_static("x-robots-tag"), hv);
+    }
+    resp
+}
+
 /// Site shell (embed SSR / CSR): markdown blob and either `?embed=1` or `Accept: text/html`.
 fn want_relay_embed_from_request(
     headers: &HeaderMap,
@@ -445,11 +460,17 @@ pub fn git_resolve_and_respond(
                     .to_string();
                 // Multi-page CS shells: missing non-asset paths with HTML Accept / ?embed=1
                 // get the same siteShellRequest opt-in as repo-host `/` (relPath → initialPath).
+                // Non-allowlisted missing paths are soft-404: HTML shell + HTTP 404 + noindex.
                 let wants_shell = has_get_hook
                     && !asset_like
                     && (accept_prefers_html(headers) || embed_query_flag(&qmap));
+                let spa_virtual = is_spa_virtual_path(rel);
+                let missing_for_seo = wants_shell && !spa_virtual;
                 let extra = if wants_shell {
-                    serde_json::json!({ "siteShellRequest": true })
+                    serde_json::json!({
+                        "siteShellRequest": true,
+                        "siteShellMissingPath": missing_for_seo,
+                    })
                 } else {
                     serde_json::json!({})
                 };
@@ -458,7 +479,13 @@ pub fn git_resolve_and_respond(
                 ) {
                     if wants_shell {
                         if response_content_type_is_html(&resp) {
-                            return GitResolveResult::Respond(merge_vary_accept(resp));
+                            let resp = merge_vary_accept(resp);
+                            let resp = if missing_for_seo {
+                                mark_missing_shell_noindex(resp)
+                            } else {
+                                resp
+                            };
+                            return GitResolveResult::Respond(resp);
                         }
                     } else {
                         return GitResolveResult::Respond(resp);
@@ -1211,6 +1238,54 @@ export default function run(ctx, next) {
         assert!(
             vary.to_ascii_lowercase().contains("accept"),
             "missing-path shell must Vary: Accept, got {vary:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn missing_non_spa_path_accept_html_is_404_noindex() {
+        let (_dir, root) = bare_ssr_opt_in_repo();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
+        headers.insert(header::HOST, HeaderValue::from_static("doc.example.test"));
+        headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(
+            &state,
+            &headers,
+            "main",
+            "doc",
+            "does-not-exist-path",
+            None,
+        );
+        let GitResolveResult::Respond(resp) = r else {
+            panic!("expected Respond for missing non-SPA path");
+        };
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::NOT_FOUND);
+        let robots = parts
+            .headers
+            .get("x-robots-tag")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            robots.to_ascii_lowercase().contains("noindex"),
+            "expected X-Robots-Tag noindex, got {robots:?}"
+        );
+        let html = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(html.contains("data-relay-ssr=\"1\""), "{html}");
+        assert!(
+            html.contains(r#"name="robots" content="noindex,follow""#),
+            "{html}"
         );
     }
 

@@ -5,6 +5,7 @@ pub mod config;
 pub mod dispatch;
 pub mod git;
 pub mod handlers;
+pub mod http_stats;
 pub mod mesh_events;
 pub mod mesh_role;
 pub mod notify;

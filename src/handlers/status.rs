@@ -248,6 +248,9 @@ struct StatusBody {
     self_: StatusSelf,
     peers: Vec<PeerProbe>,
     repos: Vec<RepoStatus>,
+    /// Coarse origin HTTP traffic aggregates (no client IPs / raw paths).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http: Option<crate::http_stats::HttpTrafficStats>,
 }
 
 /// Public status lists at most this many repos (catalog ∪ on-disk).
@@ -745,6 +748,59 @@ fn render_html(body: &StatusBody) -> String {
         .map(|p| html_escape(p))
         .unwrap_or_else(|| "—".into());
 
+    let http_section = match &body.http {
+        Some(h) if h.enabled => {
+            let p95 = h
+                .p95_ms
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into());
+            let p50 = h
+                .p50_ms
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into());
+            let hosts = if h.top_hosts.is_empty() {
+                "—".into()
+            } else {
+                h.top_hosts
+                    .iter()
+                    .map(|x| format!("{} ({})", html_escape(&x.host), x.requests))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            format!(
+                r#"  <h2>HTTP traffic (origin)</h2>
+  <p class="meta">Coarse aggregates only — no client IPs. Disable with <code>RELAY_HTTP_STATS=0</code>.</p>
+  <table>
+    <tr><th>req 1m / 1h / 24h</th><td>{}/{}/{}</td></tr>
+    <tr><th>p50 / p95 ms</th><td>{}/{}</td></tr>
+    <tr><th>1h status 2xx/3xx/4xx/5xx</th><td>{}/{}/{}/{}</td></tr>
+    <tr><th>1h api/asset/html/other</th><td>{}/{}/{}/{}</td></tr>
+    <tr><th>top hosts</th><td>{}</td></tr>
+  </table>
+"#,
+                h.req_1m,
+                h.req_1h,
+                h.req_24h,
+                p50,
+                p95,
+                h.window_1h.status_2xx,
+                h.window_1h.status_3xx,
+                h.window_1h.status_4xx,
+                h.window_1h.status_5xx,
+                h.window_1h.api,
+                h.window_1h.asset,
+                h.window_1h.html,
+                h.window_1h.other,
+                hosts,
+            )
+        }
+        Some(_) => {
+            "  <h2>HTTP traffic (origin)</h2>\n  <p class=\"meta\">Disabled (<code>RELAY_HTTP_STATS=0</code>).</p>\n"
+                .into()
+        }
+        None => String::new(),
+    };
+
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -779,7 +835,7 @@ fn render_html(body: &StatusBody) -> String {
     <tr><th>repo_count</th><td>{}</td></tr>
     <tr><th>git_ensure_bare_enabled</th><td>{}</td></tr>
   </table>
-  <h2>IPFS seed (Kubo + disk cache)</h2>
+{}  <h2>IPFS seed (Kubo + disk cache)</h2>
   <p class="meta">Git-ops <code>ensure-bare</code> seed is unrelated. This is CID availability on this node.</p>
   <table>
     <tr><th>ok</th><td class="{}">{}</td></tr>
@@ -821,6 +877,7 @@ fn render_html(body: &StatusBody) -> String {
         s.tls_enabled,
         s.repo_count,
         s.git_ensure_bare_enabled,
+        http_section,
         ipfs_class,
         if ipfs.ok { "OK" } else { "DOWN" },
         ipfs.enabled,
@@ -928,7 +985,7 @@ pub async fn post_api_status(
     let ipfs_ok = ipfs_self.ok;
 
     let body = StatusBody {
-        schema_version: 4,
+        schema_version: 5,
         status,
         healthy,
         ipfs_ok,
@@ -955,6 +1012,7 @@ pub async fn post_api_status(
         },
         peers,
         repos: repo_rows,
+        http: crate::http_stats::snapshot(),
     };
 
     let code = if strict && !body.healthy {
@@ -1156,6 +1214,7 @@ mod tests {
             },
             peers: vec![],
             repos: rows,
+            http: None,
         });
         assert!(html.contains("present"));
         assert!(html.contains("missing"));
@@ -1247,6 +1306,7 @@ mod tests {
             },
             peers: vec![],
             repos: rows,
+            http: None,
         });
         assert!(html.contains(&format!("/ipfs/{cid}?relayAssetStatus=1")));
     }

@@ -36,6 +36,21 @@ pub async fn handle_get_file(
         helpers::repo_from_host_or_default(&state, state.node_fqdn.as_deref(), &headers);
     let branch = helpers::branch_for_request(&headers, &state, repo_name_opt.as_deref());
 
+    // Dynamic tip sitemap / robots (prefer over stale tip blobs).
+    if crate::git::sitemap::is_seo_meta_path(&decoded) {
+        if let Some(ref repo_name) = repo_name_opt {
+            if let Some(resp) = crate::git::sitemap::try_seo_meta_response(
+                &state,
+                &headers,
+                &branch,
+                repo_name,
+                &decoded,
+            ) {
+                return resp;
+            }
+        }
+    }
+
     // Framework `/assets` + `/wasm` only when the site imports `@relay/web-assets` in get.cs.
     // Opt-in is a cached source scan — never runs CleverScript for chunk/WASM GETs.
     if is_relay_runtime_static_path(&decoded) {

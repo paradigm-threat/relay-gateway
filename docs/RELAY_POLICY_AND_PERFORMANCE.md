@@ -87,6 +87,18 @@ Same-Host HTTP `fetch` / QUERY from the site-shell worker still deadlocks (or st
 
 Implementation: [`src/git/ssr_html_cache.rs`](../src/git/ssr_html_cache.rs). Related: [`RELAY_EMBED_CLIENT_GET_INTERCEPT.md`](./RELAY_EMBED_CLIENT_GET_INTERCEPT.md) Phase D.
 
+### Tip sitemap / robots + soft-404
+
+Parked hosts serve **dynamic** `GET /sitemap.xml` and `GET /robots.txt` from the publish tip (markdown paths + pretty URLs), not a stale tip blob. Missing non-asset HTML shells that are not SPA virtual routes (`/`, `/search`) return **HTTP 404** with `noindex` (meta + `X-Robots-Tag`).
+
+### Optional RUM (`/api/rum`)
+
+Off by default. Set **`RELAY_RUM_ENABLED=1`** (optional **`RELAY_RUM_DIR`**, **`RELAY_RUM_SAMPLE_RATE`**, **`RELAY_RUM_RETENTION_DAYS`**). Embed beacons TTFC + CWV-ish metrics to same-origin `POST /api/rum` (SQLite under the rum dir). `GET /api/rum` returns a 24h p75 summary. Prefer Umami/Plausible for product analytics.
+
+### Origin HTTP traffic (`/api/status` → `http`)
+
+On by default (disable with **`RELAY_HTTP_STATS=0`**). Axum middleware records status class + latency; minute buckets expose `req_1m` / `req_1h` / `req_24h`, p50/p95, and top Hosts (no client IPs). Persist under **`RELAY_HTTP_STATS_DIR`** (default `/opt/relay/state/http_stats`). Schema **≥ 5**. relay-ops node cards show a one-line strip from this blob.
+
 ## fan-edits / desktop profile
 
 - Catalog reads: on-tree GETs (`index.json`, `hooks/client/get.jsx`, project `.md`) — no `server.hooks.get`.

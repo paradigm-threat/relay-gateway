@@ -38,6 +38,7 @@ async fn main() -> Result<()> {
         .init();
 
     notify::install_panic_hook();
+    relay_server::http_stats::init_from_env();
 
     let config = Config::from_cli(&cli)?;
     config.initialize_repos();

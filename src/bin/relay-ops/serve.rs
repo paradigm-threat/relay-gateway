@@ -65,6 +65,8 @@ struct NodeJson {
     sync_ok: bool,
     index_ok: bool,
     index_stale_repos: Vec<crate::probe::IndexStaleRepo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    http: Option<crate::probe::HttpTrafficProbe>,
     ssh_ok: Option<bool>,
     host_key_changed: bool,
     install_present: Option<bool>,
@@ -379,6 +381,7 @@ async fn snapshot(State(app): State<App>) -> Json<Snapshot> {
                 sync_ok: n.sync_ok,
                 index_ok: n.index_ok,
                 index_stale_repos: n.index_stale_repos.clone(),
+                http: n.http.clone(),
                 ssh_ok: n.ssh_ok,
                 host_key_changed: n.host_key_changed,
                 install_present: n.install_present,

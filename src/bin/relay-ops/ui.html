@@ -161,6 +161,17 @@ function esc(s) {
 }
 function shortSha(s) { return s ? String(s).slice(0, 8) : '—'; }
 
+function httpStrip(n) {
+  const h = n && n.http;
+  if (!h || h.enabled === false) return '';
+  const p95 = h.p95_ms != null ? (h.p95_ms + 'ms p95') : '—';
+  const p50 = h.p50_ms != null ? (h.p50_ms + 'ms p50') : '';
+  const s5 = (h.window_1h && h.window_1h.status_5xx) || 0;
+  const req1h = h.req_1h != null ? h.req_1h : ((h.window_1h && h.window_1h.requests) || 0);
+  const errCls = s5 > 0 ? 'warn' : 'muted';
+  return `<div class="${errCls}">HTTP ${req1h}/h · ${p50}${p50 && p95 ? ' / ' : ''}${p95}${s5 ? (' · ' + s5 + '×5xx/h') : ''}</div>`;
+}
+
 function captureRepoUi() {
   document.querySelectorAll('#nodes [data-fqdn] details.repos').forEach(d => {
     const fqdn = d.closest('[data-fqdn]')?.dataset.fqdn;
@@ -274,6 +285,7 @@ function nodeCardHtml(n, d) {
       <div class="muted">DNS ${ (n.dns||[]).join(', ') || '—' }</div>
       <div class="muted">tcp 22=${n.tcp22} 443=${n.tcp443} git=${n.tcp_git}</div>
       <div class="muted">${esc(cfg.relay_server_id || 'no /api/config')}</div>
+      ${httpStrip(n)}
       <div class="row">
         <span>${repoCountLabel}${auth.length ? ' · ' + auth.length + ' authorized' : ''}${n.sync_ok && n.healthy ? ' · in sync' : ''}</span>
         <span class="link" onclick="openBrowser('${esc(n.fqdn)}')">${(repos.length || tips.length) ? 'Browse' : ''}</span>

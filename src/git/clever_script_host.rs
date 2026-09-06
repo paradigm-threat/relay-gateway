@@ -619,12 +619,26 @@ fn hook_file_object_html(html: &str) -> CsValue {
 }
 
 fn hook_file_object_ssr_html(html: String) -> CsValue {
+    hook_file_object_ssr_html_with_status(html, None, false)
+}
+
+fn hook_file_object_ssr_html_with_status(
+    html: String,
+    status: Option<u16>,
+    noindex: bool,
+) -> CsValue {
     let mut headers = HashMap::new();
     headers.insert(
         "Cache-Control".to_string(),
         CsValue::String(crate::git::ssr_html_cache::SSR_HTML_CACHE_CONTROL.into()),
     );
     headers.insert("Vary".to_string(), CsValue::String("Accept".into()));
+    if noindex {
+        headers.insert(
+            "X-Robots-Tag".to_string(),
+            CsValue::String("noindex, follow".into()),
+        );
+    }
     let mut file = HashMap::new();
     file.insert("kind".to_string(), CsValue::String("file".into()));
     file.insert(
@@ -633,6 +647,12 @@ fn hook_file_object_ssr_html(html: String) -> CsValue {
     );
     file.insert("bodyUtf8".to_string(), CsValue::String(html));
     file.insert("headers".to_string(), CsValue::Object(headers));
+    if let Some(code) = status {
+        file.insert(
+            "status".to_string(),
+            CsValue::Number(f64::from(code)),
+        );
+    }
     CsValue::Object(file)
 }
 
@@ -781,7 +801,12 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                     crate::git::portrait::portrait_sibling_set_json(&repo_root, request_branch);
                 crate::git::embed_html::inject_portrait_sibling_bootstrap(&cached, &portraits_json)
             };
-            return Ok(hook_file_object_ssr_html(html));
+            let missing = ctx_flag_true(ctx, "siteShellMissingPath");
+            return Ok(if missing {
+                hook_file_object_ssr_html_with_status(html, Some(404), true)
+            } else {
+                hook_file_object_ssr_html(html)
+            });
         }
 
         let Some(rendered) = crate::git::ssr_client_hook::try_ssr_client_hook(
@@ -872,6 +897,11 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             });
         let og_image = article_seo.as_ref().and_then(|s| s.image_url.clone());
         let is_article = article_seo.as_ref().map(|s| s.is_article).unwrap_or(false);
+        let missing = ctx_flag_true(ctx, "siteShellMissingPath");
+        let is_home = !missing
+            && (initial_path == "/"
+                || initial_path.is_empty()
+                || initial_path.trim_matches('/') == "page.md");
 
         let html = crate::git::embed_html::embed_html_document_with_assets_and_seo_extras(
             repo,
@@ -890,7 +920,10 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             doc_canonical.as_deref(),
             crate::git::embed_html::EmbedSeoExtras {
                 og_image: og_image.as_deref(),
-                is_article,
+                is_article: is_article && !missing,
+                noindex: missing,
+                site_name: site_name.as_deref(),
+                is_website_home: is_home,
             },
         );
         let portraits_json =
@@ -904,7 +937,11 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             client_hook_path,
             html.clone(),
         );
-        Ok(hook_file_object_ssr_html(html))
+        Ok(if missing {
+            hook_file_object_ssr_html_with_status(html, Some(404), true)
+        } else {
+            hook_file_object_ssr_html(html)
+        })
     });
     let mut module = HashMap::new();
     module.insert(
