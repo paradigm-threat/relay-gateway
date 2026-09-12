@@ -11,7 +11,7 @@ Registered in `relay-runtime/src/relay_modules.rs` (SSR + WASM). Spec table: `re
 | `@relay/util` | `sortBy`, `take`, `prop`, `omitUndefined`, `slugify`, `uniqueId`, `includes`, `splitSentences`, `takeSentenceChunk` |
 | `@relay/path` | path join/normalize, `siteHref`, asset URL rewrite, gallery `#img=` / DOM id / portrait index lookup, `normalizeHttpHref` / `lookupHttpHref` (dead-URL maps) |
 | `@relay/date` | ChangeLog / feed date formats |
-| `@relay/catalog` | nav-index parse, TOC extract, dir tree, Feeling Lucky |
+| `@relay/catalog` | nav-index parse, TOC extract/nest, dir tree + expand-to-current, Feeling Lucky |
 | `@relay/ui` | `cachedGet`, `Link`, `RadioTabs`, `safeProps` |
 | `@relay/tts` | Piper synthesize + audio player vnode |
 
@@ -43,6 +43,7 @@ When tip code grows loops that look like libraries, extract here and add **`rela
 | **Gallery hash / `#img=` / DOM id** | **Shipped** — `@relay/path` `readHashImgSrc` / `galleryImgHash` / `safeImgDomId` / `galleryDisplaySrc` / `portraitSiblingIfPresent(map)` |
 | **TTS sentence chunking** | **Shipped** — `@relay/util.splitSentences` / `takeSentenceChunk` |
 | **TOC ATX extract** | **Shipped** — tip is thin wrap over `@relay/catalog.extractMarkdownHeadings` |
+| **Directory tree / expand / nested TOC** | **Shipped** — `@relay/catalog.loadDirTree`, `dirExpandPaths`, `nestTocItems` (`buildDirTree` also emits `path` + `count`) |
 | **HTTP href normalize / dead-URL lookup** | **Shipped** — `@relay/path.normalizeHttpHref` / `lookupHttpHref` |
 | Sitemap / nav-index **writers** | Stay in Python/CI; **readers** already `@relay/catalog` |
 
