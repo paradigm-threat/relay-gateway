@@ -39,6 +39,9 @@ pub struct NodeProbe {
     /// Origin HTTP traffic aggregates from `/api/status` `http` (schema ≥ 5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http: Option<HttpTrafficProbe>,
+    /// Optional 24h RUM p75 from `GET /api/rum` when enabled on the node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rum: Option<RumProbe>,
     /// Admin SSH probe (Observer leaves this unset).
     #[serde(default)]
     pub ssh_ok: Option<bool>,
@@ -174,6 +177,12 @@ pub struct HttpTrafficProbe {
     pub p95_ms: Option<u32>,
     #[serde(default)]
     pub window_1h: HttpWindowProbe,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_hosts: Vec<HostCountProbe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<HostWindowProbe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_paths: Vec<PathCountProbe>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -188,6 +197,60 @@ pub struct HttpWindowProbe {
     pub status_4xx: u64,
     #[serde(default)]
     pub status_5xx: u64,
+    #[serde(default)]
+    pub api: u64,
+    #[serde(default)]
+    pub asset: u64,
+    #[serde(default)]
+    pub html: u64,
+    #[serde(default)]
+    pub other: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HostCountProbe {
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub requests: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HostWindowProbe {
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub req_1h: u64,
+    #[serde(default)]
+    pub html: u64,
+    #[serde(default)]
+    pub api: u64,
+    #[serde(default)]
+    pub asset: u64,
+    #[serde(default)]
+    pub s5xx: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PathCountProbe {
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub requests: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RumProbe {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub events: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p75_ttfc_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p75_lcp_ms: Option<f64>,
 }
 
 /// SearchStore indexed head lags git tip for this repo on the node.
@@ -292,6 +355,7 @@ fn unreachable_probe(
         index_ok: true,
         index_stale_repos: Vec::new(),
         http: None,
+        rum: None,
         ssh_ok: None,
         host_key_changed: false,
         install_present: None,
@@ -314,8 +378,11 @@ async fn probe_node(node: &FleetNode, git_port: u16, repos: &[String]) -> NodePr
     if !tcp443 {
         return unreachable_probe(fqdn, dns, tcp22, tcp443, tcp_git);
     }
-    let (mut https_config, https_status) =
-        tokio::join!(https_api_config(&fqdn), https_api_status(&fqdn));
+    let (mut https_config, https_status, rum) = tokio::join!(
+        https_api_config(&fqdn),
+        https_api_status(&fqdn),
+        https_api_rum(&fqdn),
+    );
     if let (Some(cfg), Some(st)) = (https_config.as_mut(), https_status.as_ref()) {
         merge_status_into_config(cfg, st);
     }
@@ -350,6 +417,7 @@ async fn probe_node(node: &FleetNode, git_port: u16, repos: &[String]) -> NodePr
         index_ok,
         index_stale_repos,
         http: https_status.as_ref().and_then(|s| s.http.clone()),
+        rum,
         ssh_ok: None,
         host_key_changed: false,
         install_present: None,
@@ -569,6 +637,53 @@ async fn https_api_status(host: &str) -> Option<StatusProbe> {
     let ok = resp.status().is_success();
     let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
     Some(parse_status_probe(ok, &body))
+}
+
+async fn https_api_rum(host: &str) -> Option<RumProbe> {
+    let url = format!("https://{host}/api/rum");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .danger_accept_invalid_certs(false)
+        .build()
+        .ok()?;
+    let resp = client
+        .get(&url)
+        .header("accept", "application/json")
+        .send()
+        .await
+        .ok()?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Some(RumProbe {
+            enabled: false,
+            ..Default::default()
+        });
+    }
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+    Some(parse_rum_probe(&body))
+}
+
+pub(crate) fn parse_rum_probe(body: &serde_json::Value) -> RumProbe {
+    let p75 = body.get("p75");
+    let num = |key: &str| -> Option<f64> {
+        p75.and_then(|v| v.get(key)).and_then(|v| {
+            v.as_f64()
+                .or_else(|| v.as_u64().map(|n| n as f64))
+                .or_else(|| v.as_i64().map(|n| n as f64))
+        })
+    };
+    RumProbe {
+        enabled: body
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .or_else(|| body.get("ok").and_then(|v| v.as_bool()))
+            .unwrap_or(true),
+        events: body.get("events").and_then(|v| v.as_u64()).unwrap_or(0),
+        p75_ttfc_ms: num("ttfc_ms"),
+        p75_lcp_ms: num("lcp_ms"),
+    }
 }
 
 pub(crate) fn parse_status_probe(ok: bool, body: &serde_json::Value) -> StatusProbe {
@@ -1197,6 +1312,7 @@ mod tests {
             index_ok: true,
             index_stale_repos: vec![],
             http: None,
+            rum: None,
             ssh_ok: None,
             host_key_changed: false,
             install_present: None,
@@ -1424,8 +1540,19 @@ mod tests {
                 "window_1h": {
                     "requests": 900,
                     "status_2xx": 880,
-                    "status_5xx": 2
-                }
+                    "status_5xx": 2,
+                    "html": 120,
+                    "api": 700
+                },
+                "top_hosts": [
+                    {"host": "paradigmthreat.net", "requests": 120}
+                ],
+                "hosts": [
+                    {"host": "paradigmthreat.net", "req_1h": 120, "html": 100, "api": 10, "s5xx": 0}
+                ],
+                "top_paths": [
+                    {"host": "paradigmthreat.net", "path": "/science/computing/crichtons-prophecy.md", "requests": 40}
+                ]
             }
         });
         let st = parse_status_probe(true, &body);
@@ -1435,6 +1562,24 @@ mod tests {
         assert_eq!(h.req_1h, 900);
         assert_eq!(h.p95_ms, Some(180));
         assert_eq!(h.window_1h.status_5xx, 2);
+        assert_eq!(h.window_1h.html, 120);
+        assert_eq!(h.top_hosts[0].host, "paradigmthreat.net");
+        assert_eq!(h.hosts[0].html, 100);
+        assert_eq!(h.top_paths[0].path, "/science/computing/crichtons-prophecy.md");
+    }
+
+    #[test]
+    fn parse_rum_p75() {
+        let rum = parse_rum_probe(&serde_json::json!({
+            "ok": true,
+            "enabled": true,
+            "events": 12,
+            "p75": { "ttfc_ms": 180.0, "lcp_ms": 900.0 }
+        }));
+        assert!(rum.enabled);
+        assert_eq!(rum.events, 12);
+        assert_eq!(rum.p75_ttfc_ms, Some(180.0));
+        assert_eq!(rum.p75_lcp_ms, Some(900.0));
     }
 
     #[test]

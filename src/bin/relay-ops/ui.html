@@ -169,7 +169,27 @@ function httpStrip(n) {
   const s5 = (h.window_1h && h.window_1h.status_5xx) || 0;
   const req1h = h.req_1h != null ? h.req_1h : ((h.window_1h && h.window_1h.requests) || 0);
   const errCls = s5 > 0 ? 'warn' : 'muted';
-  return `<div class="${errCls}">HTTP ${req1h}/h · ${p50}${p50 && p95 ? ' / ' : ''}${p95}${s5 ? (' · ' + s5 + '×5xx/h') : ''}</div>`;
+  const w = h.window_1h || {};
+  const mix = [w.html != null ? ('html ' + w.html) : '', w.api != null ? ('api ' + w.api) : '', w.asset != null ? ('asset ' + w.asset) : '']
+    .filter(Boolean).join(' · ');
+  const hostList = (h.hosts && h.hosts.length)
+    ? h.hosts
+    : (h.top_hosts || []).map(x => ({ host: x.host, req_1h: x.requests, html: 0 }));
+  const hosts = hostList.slice(0, 3).map(x => {
+    const nreq = x.req_1h != null ? x.req_1h : x.requests;
+    const html = x.html != null && x.html > 0 ? (' html ' + x.html) : '';
+    return esc(x.host) + ' ' + nreq + html;
+  }).join(', ');
+  const paths = (h.top_paths || []).slice(0, 3).map(x => esc(x.path) + ' ' + x.requests).join(', ');
+  const rum = n.rum && n.rum.enabled
+    ? ('RUM p75 ' + (n.rum.p75_lcp_ms != null ? Math.round(n.rum.p75_lcp_ms) + 'ms LCP' : '—')
+      + (n.rum.p75_ttfc_ms != null ? (' / ' + Math.round(n.rum.p75_ttfc_ms) + 'ms TTFC') : '')
+      + (n.rum.events ? (' · ' + n.rum.events + ' ev') : ''))
+    : '';
+  return `<div class="${errCls}">HTTP ${req1h}/h · ${p50}${p50 && p95 ? ' / ' : ''}${p95}${s5 ? (' · ' + s5 + '×5xx/h') : ''}</div>`
+    + (mix ? `<div class="muted">${esc(mix)}${hosts ? ' · ' + hosts : ''}</div>` : (hosts ? `<div class="muted">${hosts}</div>` : ''))
+    + (paths ? `<div class="muted">paths ${paths}</div>` : '')
+    + (rum ? `<div class="muted">${esc(rum)}</div>` : '');
 }
 
 function captureRepoUi() {

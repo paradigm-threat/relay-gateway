@@ -1,9 +1,9 @@
 //! In-process HTTP traffic aggregates for `/api/status`.
 //!
 //! Middleware records status class + latency; minute buckets feed 1m / 1h / 24h
-//! rollups. Optional SQLite under `RELAY_HTTP_STATS_DIR` (default
-//! `/opt/relay/state/http_stats`) survives restarts. Disable with
-//! `RELAY_HTTP_STATS=0`.
+//! rollups, including per-Host mix and top HTML paths (no client IPs). Optional
+//! SQLite under `RELAY_HTTP_STATS_DIR` (default `/opt/relay/state/http_stats`)
+//! survives restarts. Disable with `RELAY_HTTP_STATS=0`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,10 +20,23 @@ use serde::Serialize;
 
 const LATENCY_RING: usize = 2048;
 const HOST_TOP_N: usize = 8;
+const PATH_TOP_N: usize = 8;
+const PATHS_PER_MINUTE: usize = 48;
+const PATH_MAX_LEN: usize = 160;
 const MINUTE_HISTORY: usize = 60 * 24; // 24h
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
 static STORE: OnceLock<Mutex<HttpStatsStore>> = OnceLock::new();
+
+#[derive(Debug, Clone, Default)]
+struct HostMinute {
+    count: u64,
+    html: u64,
+    api: u64,
+    asset: u64,
+    other: u64,
+    s5xx: u64,
+}
 
 #[derive(Debug, Clone, Default)]
 struct MinuteBucket {
@@ -37,6 +50,8 @@ struct MinuteBucket {
     asset: u64,
     html: u64,
     other: u64,
+    hosts: HashMap<String, HostMinute>,
+    html_paths: HashMap<(String, String), u64>,
 }
 
 struct HttpStatsStore {
@@ -44,7 +59,6 @@ struct HttpStatsStore {
     history: Vec<MinuteBucket>,
     latency_ms: Vec<u32>,
     latency_i: usize,
-    host_counts: HashMap<String, u64>,
     db: Option<Connection>,
     last_flush: Instant,
 }
@@ -64,10 +78,19 @@ impl HttpStatsStore {
             history,
             latency_ms: vec![0; LATENCY_RING],
             latency_i: 0,
-            host_counts: HashMap::new(),
             db,
             last_flush: Instant::now(),
         }
+    }
+
+    fn persist_current(&self) {
+        let Some(conn) = self.db.as_ref() else {
+            return;
+        };
+        let _ = persist_minute(conn, &self.current);
+        let _ = persist_hosts(conn, &self.current);
+        let _ = persist_paths(conn, &self.current);
+        let _ = prune_db(conn);
     }
 
     fn roll_if_needed(&mut self) {
@@ -76,10 +99,8 @@ impl HttpStatsStore {
             return;
         }
         if self.current.count > 0 || self.current.minute > 0 {
+            self.persist_current();
             self.history.push(self.current.clone());
-            if let Some(conn) = self.db.as_ref() {
-                let _ = persist_minute(conn, &self.current);
-            }
             while self.history.len() > MINUTE_HISTORY {
                 self.history.remove(0);
             }
@@ -90,8 +111,9 @@ impl HttpStatsStore {
         };
     }
 
-    fn record(&mut self, status: u16, ms: u64, class: PathClass, host: Option<&str>) {
+    fn record(&mut self, status: u16, ms: u64, path: &str, host: Option<&str>) {
         self.roll_if_needed();
+        let class = classify_path(path);
         self.current.count = self.current.count.saturating_add(1);
         match status {
             200..=299 => self.current.s2xx += 1,
@@ -114,15 +136,31 @@ impl HttpStatsStore {
         if let Some(h) = host {
             let key = sanitize_host(h);
             if !key.is_empty() {
-                *self.host_counts.entry(key).or_insert(0) += 1;
+                let hm = self.current.hosts.entry(key.clone()).or_default();
+                hm.count = hm.count.saturating_add(1);
+                match class {
+                    PathClass::Api => hm.api += 1,
+                    PathClass::Asset => hm.asset += 1,
+                    PathClass::Html => hm.html += 1,
+                    PathClass::Other => hm.other += 1,
+                }
+                if (500..=599).contains(&status) {
+                    hm.s5xx += 1;
+                }
+                if class == PathClass::Html {
+                    if let Some(p) = sanitize_html_path(path) {
+                        let pk = (key, p);
+                        let known = self.current.html_paths.contains_key(&pk);
+                        if known || self.current.html_paths.len() < PATHS_PER_MINUTE {
+                            *self.current.html_paths.entry(pk).or_insert(0) += 1;
+                        }
+                    }
+                }
             }
         }
 
         if self.last_flush.elapsed() > Duration::from_secs(30) {
-            if let Some(conn) = self.db.as_ref() {
-                let _ = persist_minute(conn, &self.current);
-                let _ = prune_db(conn);
-            }
+            self.persist_current();
             self.last_flush = Instant::now();
         }
     }
@@ -169,9 +207,84 @@ impl HttpStatsStore {
             (p(0.50), p(0.95))
         };
 
-        let mut hosts: Vec<(String, u64)> = self.host_counts.iter().map(|(k, v)| (k.clone(), *v)).collect();
-        hosts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        hosts.truncate(HOST_TOP_N);
+        let cutoff_1h = now_minute().saturating_sub(59);
+        let mut host_agg: HashMap<String, HostMinute> = HashMap::new();
+        let mut path_agg: HashMap<(String, String), u64> = HashMap::new();
+        let mut add_host_window = |b: &MinuteBucket| {
+            if b.minute < cutoff_1h {
+                return;
+            }
+            for (host, hm) in &b.hosts {
+                let e = host_agg.entry(host.clone()).or_default();
+                e.count = e.count.saturating_add(hm.count);
+                e.html = e.html.saturating_add(hm.html);
+                e.api = e.api.saturating_add(hm.api);
+                e.asset = e.asset.saturating_add(hm.asset);
+                e.other = e.other.saturating_add(hm.other);
+                e.s5xx = e.s5xx.saturating_add(hm.s5xx);
+            }
+            for ((host, path), n) in &b.html_paths {
+                *path_agg.entry((host.clone(), path.clone())).or_insert(0) += *n;
+            }
+        };
+        for b in &self.history {
+            add_host_window(b);
+        }
+        add_host_window(&self.current);
+
+        let mut host_rows: Vec<(String, HostMinute)> = host_agg.into_iter().collect();
+        host_rows.sort_by(|a, b| {
+            b.1.count
+                .cmp(&a.1.count)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        host_rows.truncate(HOST_TOP_N);
+
+        let mut path_rows: Vec<((String, String), u64)> = path_agg.into_iter().collect();
+        path_rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        let hosts: Vec<HostWindow> = host_rows
+            .iter()
+            .map(|(host, hm)| {
+                let top_paths: Vec<PathCount> = path_rows
+                    .iter()
+                    .filter(|((h, _), _)| h == host)
+                    .take(3)
+                    .map(|((_, path), n)| PathCount {
+                        host: host.clone(),
+                        path: path.clone(),
+                        requests: *n,
+                    })
+                    .collect();
+                HostWindow {
+                    host: host.clone(),
+                    req_1h: hm.count,
+                    html: hm.html,
+                    api: hm.api,
+                    asset: hm.asset,
+                    s5xx: hm.s5xx,
+                    top_paths,
+                }
+            })
+            .collect();
+
+        let top_hosts: Vec<HostCount> = hosts
+            .iter()
+            .map(|h| HostCount {
+                host: h.host.clone(),
+                requests: h.req_1h,
+            })
+            .collect();
+
+        let top_paths: Vec<PathCount> = path_rows
+            .into_iter()
+            .take(PATH_TOP_N)
+            .map(|((host, path), requests)| PathCount {
+                host,
+                path,
+                requests,
+            })
+            .collect();
 
         HttpTrafficStats {
             enabled: true,
@@ -181,15 +294,14 @@ impl HttpStatsStore {
             window_1h: sum_window(60),
             p50_ms: p50,
             p95_ms: p95,
-            top_hosts: hosts
-                .into_iter()
-                .map(|(host, requests)| HostCount { host, requests })
-                .collect(),
+            top_hosts,
+            hosts,
+            top_paths,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PathClass {
     Api,
     Asset,
@@ -206,11 +318,7 @@ fn classify_path(path: &str) -> PathClass {
         return PathClass::Asset;
     }
     // Heuristic: extension-less or .md often SSR HTML
-    if p.is_empty()
-        || p.ends_with(".md")
-        || p.ends_with(".html")
-        || !p.contains('.')
-    {
+    if p.is_empty() || p.ends_with(".md") || p.ends_with(".html") || !p.contains('.') {
         return PathClass::Html;
     }
     PathClass::Other
@@ -229,6 +337,26 @@ fn sanitize_host(raw: &str) -> String {
         return String::new();
     }
     h
+}
+
+fn sanitize_html_path(path: &str) -> Option<String> {
+    let p = path.split(['?', '#']).next().unwrap_or(path).trim();
+    let mut out = String::new();
+    for c in p.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-') {
+            out.push(c);
+        }
+    }
+    if out.is_empty() {
+        return None;
+    }
+    if !out.starts_with('/') {
+        out.insert(0, '/');
+    }
+    if out.len() > PATH_MAX_LEN {
+        out.truncate(PATH_MAX_LEN);
+    }
+    Some(out)
 }
 
 fn now_minute() -> u64 {
@@ -260,6 +388,24 @@ fn open_db() -> Result<Connection, String> {
             asset INTEGER NOT NULL,
             html INTEGER NOT NULL,
             other INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS host_minutes (
+            minute INTEGER NOT NULL,
+            host TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            html INTEGER NOT NULL,
+            api INTEGER NOT NULL,
+            asset INTEGER NOT NULL,
+            other INTEGER NOT NULL,
+            s5xx INTEGER NOT NULL,
+            PRIMARY KEY (minute, host)
+         );
+         CREATE TABLE IF NOT EXISTS path_minutes (
+            minute INTEGER NOT NULL,
+            host TEXT NOT NULL,
+            path TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            PRIMARY KEY (minute, host, path)
          );",
     )
     .map_err(|e| e.to_string())?;
@@ -291,10 +437,62 @@ fn persist_minute(conn: &Connection, b: &MinuteBucket) -> Result<(), String> {
     Ok(())
 }
 
+fn persist_hosts(conn: &Connection, b: &MinuteBucket) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM host_minutes WHERE minute = ?1",
+        params![b.minute as i64],
+    )
+    .map_err(|e| e.to_string())?;
+    for (host, hm) in &b.hosts {
+        conn.execute(
+            "INSERT INTO host_minutes(minute,host,count,html,api,asset,other,s5xx)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![
+                b.minute as i64,
+                host,
+                hm.count as i64,
+                hm.html as i64,
+                hm.api as i64,
+                hm.asset as i64,
+                hm.other as i64,
+                hm.s5xx as i64
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn persist_paths(conn: &Connection, b: &MinuteBucket) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM path_minutes WHERE minute = ?1",
+        params![b.minute as i64],
+    )
+    .map_err(|e| e.to_string())?;
+    for ((host, path), n) in &b.html_paths {
+        conn.execute(
+            "INSERT INTO path_minutes(minute,host,path,count) VALUES(?1,?2,?3,?4)",
+            params![b.minute as i64, host, path, *n as i64],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn prune_db(conn: &Connection) -> Result<(), String> {
     let cutoff = now_minute().saturating_sub(MINUTE_HISTORY as u64) as i64;
     conn.execute("DELETE FROM minutes WHERE minute < ?1", params![cutoff])
         .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM host_minutes WHERE minute < ?1",
+        params![cutoff],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM path_minutes WHERE minute < ?1",
+        params![cutoff],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -319,12 +517,69 @@ fn load_history(conn: &Connection) -> Vec<MinuteBucket> {
             asset: r.get::<_, i64>(7)? as u64,
             html: r.get::<_, i64>(8)? as u64,
             other: r.get::<_, i64>(9)? as u64,
+            hosts: HashMap::new(),
+            html_paths: HashMap::new(),
         })
     }) else {
         return out;
     };
     for row in rows.flatten() {
         out.push(row);
+    }
+    drop(stmt);
+
+    let mut host_map: HashMap<u64, HashMap<String, HostMinute>> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT minute,host,count,html,api,asset,other,s5xx FROM host_minutes WHERE minute >= ?1",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![cutoff], |r| {
+            Ok((
+                r.get::<_, i64>(0)? as u64,
+                r.get::<_, String>(1)?,
+                HostMinute {
+                    count: r.get::<_, i64>(2)? as u64,
+                    html: r.get::<_, i64>(3)? as u64,
+                    api: r.get::<_, i64>(4)? as u64,
+                    asset: r.get::<_, i64>(5)? as u64,
+                    other: r.get::<_, i64>(6)? as u64,
+                    s5xx: r.get::<_, i64>(7)? as u64,
+                },
+            ))
+        }) {
+            for row in rows.flatten() {
+                host_map.entry(row.0).or_default().insert(row.1, row.2);
+            }
+        }
+    }
+
+    let mut path_map: HashMap<u64, HashMap<(String, String), u64>> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT minute,host,path,count FROM path_minutes WHERE minute >= ?1",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![cutoff], |r| {
+            Ok((
+                r.get::<_, i64>(0)? as u64,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)? as u64,
+            ))
+        }) {
+            for row in rows.flatten() {
+                path_map
+                    .entry(row.0)
+                    .or_default()
+                    .insert((row.1, row.2), row.3);
+            }
+        }
+    }
+
+    for b in &mut out {
+        if let Some(h) = host_map.remove(&b.minute) {
+            b.hosts = h;
+        }
+        if let Some(p) = path_map.remove(&b.minute) {
+            b.html_paths = p;
+        }
     }
     out
 }
@@ -366,6 +621,12 @@ pub struct HttpTrafficStats {
     pub p95_ms: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub top_hosts: Vec<HostCount>,
+    /// 1h per-Host mix (top N by requests).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<HostWindow>,
+    /// 1h top HTML paths (query stripped, no client IPs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_paths: Vec<PathCount>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -387,6 +648,25 @@ pub struct HostCount {
     pub requests: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct HostWindow {
+    pub host: String,
+    pub req_1h: u64,
+    pub html: u64,
+    pub api: u64,
+    pub asset: u64,
+    pub s5xx: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_paths: Vec<PathCount>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PathCount {
+    pub host: String,
+    pub path: String,
+    pub requests: u64,
+}
+
 pub fn snapshot() -> Option<HttpTrafficStats> {
     if !enabled() {
         return Some(HttpTrafficStats {
@@ -405,12 +685,7 @@ pub fn record_sample(status: u16, elapsed: Duration, path: &str, host: Option<&s
     let Ok(mut g) = store().lock() else {
         return;
     };
-    g.record(
-        status,
-        elapsed.as_millis() as u64,
-        classify_path(path),
-        host,
-    );
+    g.record(status, elapsed.as_millis() as u64, path, host);
 }
 
 /// Axum middleware: record status + latency for every completed request.
@@ -426,7 +701,12 @@ pub async fn http_stats_middleware(req: Request<Body>, next: Next) -> Response {
         .map(|s| s.to_string());
     let start = Instant::now();
     let res = next.run(req).await;
-    record_sample(res.status().as_u16(), start.elapsed(), &path, host.as_deref());
+    record_sample(
+        res.status().as_u16(),
+        start.elapsed(),
+        &path,
+        host.as_deref(),
+    );
     res
 }
 
@@ -434,10 +714,27 @@ pub async fn http_stats_middleware(req: Request<Body>, next: Next) -> Response {
 mod tests {
     use super::*;
 
+    fn empty_store() -> HttpStatsStore {
+        HttpStatsStore {
+            current: MinuteBucket {
+                minute: now_minute(),
+                ..Default::default()
+            },
+            history: Vec::new(),
+            latency_ms: vec![0; LATENCY_RING],
+            latency_i: 0,
+            db: None,
+            last_flush: Instant::now(),
+        }
+    }
+
     #[test]
     fn classify_paths() {
         assert!(matches!(classify_path("/api/status"), PathClass::Api));
-        assert!(matches!(classify_path("/assets/c/abc/embed.js"), PathClass::Asset));
+        assert!(matches!(
+            classify_path("/assets/c/abc/embed.js"),
+            PathClass::Asset
+        ));
         assert!(matches!(classify_path("/"), PathClass::Html));
         assert!(matches!(classify_path("/foo/bar.md"), PathClass::Html));
     }
@@ -448,20 +745,90 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_html_path_strips_query() {
+        assert_eq!(
+            sanitize_html_path("/science/computing/crichtons-prophecy.md?x=1#h"),
+            Some("/science/computing/crichtons-prophecy.md".into())
+        );
+    }
+
+    #[test]
+    fn windowed_hosts_isolate_park_html() {
+        let mut store = empty_store();
+        store.record(
+            200,
+            10,
+            "/science/computing/crichtons-prophecy.md",
+            Some("paradigmthreat.net"),
+        );
+        store.record(200, 3, "/api/status", Some("iad1.relaygateway.net"));
+        store.record(500, 40, "/api/query", Some("iad1.relaygateway.net"));
+        let snap = store.snapshot();
+        let park = snap
+            .hosts
+            .iter()
+            .find(|h| h.host == "paradigmthreat.net")
+            .expect("park host");
+        assert_eq!(park.html, 1);
+        assert_eq!(park.api, 0);
+        let node = snap
+            .hosts
+            .iter()
+            .find(|h| h.host == "iad1.relaygateway.net")
+            .expect("node host");
+        assert_eq!(node.api, 2);
+        assert_eq!(node.html, 0);
+        assert_eq!(node.s5xx, 1);
+        assert_eq!(
+            snap.top_paths[0].path,
+            "/science/computing/crichtons-prophecy.md"
+        );
+        assert_eq!(snap.top_hosts[0].host, "iad1.relaygateway.net");
+    }
+
+    #[test]
+    fn top_hosts_are_one_hour_not_process_life() {
+        let mut store = empty_store();
+        let old = now_minute().saturating_sub(120);
+        let mut stale = MinuteBucket {
+            minute: old,
+            count: 999,
+            ..Default::default()
+        };
+        stale.hosts.insert(
+            "stale.example".into(),
+            HostMinute {
+                count: 999,
+                html: 999,
+                ..Default::default()
+            },
+        );
+        store.history.push(stale);
+        store.record(200, 8, "/", Some("paradigmthreat.net"));
+        let snap = store.snapshot();
+        assert!(
+            snap.hosts.iter().all(|h| h.host != "stale.example"),
+            "2h-old host must not appear in 1h window"
+        );
+        assert!(snap.hosts.iter().any(|h| h.host == "paradigmthreat.net"));
+    }
+
+    #[test]
     fn snapshot_counts_current_minute() {
         init_from_env();
         ENABLED.store(true, Ordering::Relaxed);
         {
             let mut g = store().lock().unwrap();
-            g.record(200, 12, PathClass::Html, Some("park.example"));
-            g.record(404, 5, PathClass::Html, Some("park.example"));
-            g.record(500, 40, PathClass::Api, Some("node.example"));
+            g.record(200, 12, "/", Some("park.example"));
+            g.record(404, 5, "/gone.md", Some("park.example"));
+            g.record(500, 40, "/api/x", Some("node.example"));
             let snap = g.snapshot();
             assert!(snap.req_1m >= 3);
             assert!(snap.window_1h.status_2xx >= 1);
             assert!(snap.window_1h.status_4xx >= 1);
             assert!(snap.window_1h.status_5xx >= 1);
             assert!(!snap.top_hosts.is_empty());
+            assert!(!snap.hosts.is_empty());
         }
     }
 }

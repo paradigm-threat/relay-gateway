@@ -758,12 +758,45 @@ fn render_html(body: &StatusBody) -> String {
                 .p50_ms
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| "—".into());
-            let hosts = if h.top_hosts.is_empty() {
+            let hosts = if h.hosts.is_empty() {
+                if h.top_hosts.is_empty() {
+                    "—".into()
+                } else {
+                    h.top_hosts
+                        .iter()
+                        .map(|x| format!("{} ({})", html_escape(&x.host), x.requests))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            } else {
+                h.hosts
+                    .iter()
+                    .map(|x| {
+                        format!(
+                            "{} ({}  html={} api={} 5xx={})",
+                            html_escape(&x.host),
+                            x.req_1h,
+                            x.html,
+                            x.api,
+                            x.s5xx
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let paths = if h.top_paths.is_empty() {
                 "—".into()
             } else {
-                h.top_hosts
+                h.top_paths
                     .iter()
-                    .map(|x| format!("{} ({})", html_escape(&x.host), x.requests))
+                    .map(|x| {
+                        format!(
+                            "{} {} ({})",
+                            html_escape(&x.host),
+                            html_escape(&x.path),
+                            x.requests
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join(", ")
             };
@@ -775,7 +808,8 @@ fn render_html(body: &StatusBody) -> String {
     <tr><th>p50 / p95 ms</th><td>{}/{}</td></tr>
     <tr><th>1h status 2xx/3xx/4xx/5xx</th><td>{}/{}/{}/{}</td></tr>
     <tr><th>1h api/asset/html/other</th><td>{}/{}/{}/{}</td></tr>
-    <tr><th>top hosts</th><td>{}</td></tr>
+    <tr><th>1h hosts</th><td>{}</td></tr>
+    <tr><th>1h html paths</th><td>{}</td></tr>
   </table>
 "#,
                 h.req_1m,
@@ -792,6 +826,7 @@ fn render_html(body: &StatusBody) -> String {
                 h.window_1h.html,
                 h.window_1h.other,
                 hosts,
+                paths,
             )
         }
         Some(_) => {

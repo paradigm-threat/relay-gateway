@@ -1335,6 +1335,15 @@ append_relay_env_web_assets_defaults() {
   fi
 }
 
+# Park/embed RUM (TTFC + CWV-ish beacons → /api/rum). Write-if-missing so operators can set 0.
+append_relay_env_rum_defaults() {
+  local f="$INSTALL/relay.env"
+  touch "$f"
+  if ! grep -q '^RELAY_RUM_ENABLED=' "$f" 2>/dev/null; then
+    echo "RELAY_RUM_ENABLED=${RELAY_RUM_ENABLED:-1}" >>"$f"
+  fi
+}
+
 # Set or replace KEY=VALUE in relay.env.
 upsert_relay_env_var() {
   local f="$1" key="$2" val="$3"
@@ -1435,6 +1444,7 @@ do_install() {
   append_relay_env_git_ensure_bare_default
   append_relay_env_catalog_defaults
   append_relay_env_web_assets_defaults
+  append_relay_env_rum_defaults
   merge_relay_env_mesh_from_env
   lock_relay_env_permissions
   ensure_ipfs_kubo
@@ -1468,6 +1478,7 @@ do_update() {
   refresh_features_inventory
   append_relay_env_catalog_defaults
   append_relay_env_web_assets_defaults
+  append_relay_env_rum_defaults
   merge_relay_env_mesh_from_env
   ensure_ipfs_kubo
   systemctl restart relay-git-daemon relay-git-proxy relay-gateway
@@ -1530,6 +1541,7 @@ do_repair() {
   refresh_features_inventory
   append_relay_env_catalog_defaults
   append_relay_env_web_assets_defaults
+  append_relay_env_rum_defaults
   merge_relay_env_mesh_from_env
   lock_relay_env_permissions
   ensure_ipfs_kubo

@@ -93,11 +93,11 @@ Parked hosts serve **dynamic** `GET /sitemap.xml` and `GET /robots.txt` from the
 
 ### Optional RUM (`/api/rum`)
 
-Off by default. Set **`RELAY_RUM_ENABLED=1`** (optional **`RELAY_RUM_DIR`**, **`RELAY_RUM_SAMPLE_RATE`**, **`RELAY_RUM_RETENTION_DAYS`**). Embed beacons TTFC + CWV-ish metrics to same-origin `POST /api/rum` (SQLite under the rum dir). `GET /api/rum` returns a 24h p75 summary. Prefer Umami/Plausible for product analytics.
+Off by default unless **`RELAY_RUM_ENABLED=1`** (install/update writes that if the key is missing). Optional **`RELAY_RUM_DIR`**, **`RELAY_RUM_SAMPLE_RATE`**, **`RELAY_RUM_RETENTION_DAYS`**. Embed beacons TTFC + CWV-ish metrics to same-origin `POST /api/rum` (SQLite under the rum dir). `GET /api/rum` returns a 24h p75 summary. relay-ops node cards show p75 LCP/TTFC when the endpoint is enabled. Prefer Umami/Plausible for product analytics.
 
 ### Origin HTTP traffic (`/api/status` → `http`)
 
-On by default (disable with **`RELAY_HTTP_STATS=0`**). Axum middleware records status class + latency; minute buckets expose `req_1m` / `req_1h` / `req_24h`, p50/p95, and top Hosts (no client IPs). Persist under **`RELAY_HTTP_STATS_DIR`** (default `/opt/relay/state/http_stats`). Schema **≥ 5**. relay-ops node cards show a one-line strip from this blob.
+On by default (disable with **`RELAY_HTTP_STATS=0`**). Axum middleware records status class + latency; minute buckets expose `req_1m` / `req_1h` / `req_24h`, p50/p95, **1h per-Host mix** (`hosts[]`: html/api/5xx), and **top HTML paths** (query stripped, no client IPs). Persist under **`RELAY_HTTP_STATS_DIR`** (default `/opt/relay/state/http_stats`). Schema **≥ 5**. relay-ops node cards show QPS/latency plus html/api mix, top hosts, and paths from this blob.
 
 ## fan-edits / desktop profile
 
@@ -115,4 +115,4 @@ On by default (disable with **`RELAY_HTTP_STATS=0`**). Axum middleware records s
 - **[`PARADIGM_PARK_LOCAL.md`](./PARADIGM_PARK_LOCAL.md)** — local SSR smoke
 - Park tip: `hooks/CLEVERSCRIPT_TIP.md` (P0–P3 + cache layers)
 
-*Last updated: 2026-08-02*
+*Last updated: 2026-09-12*
