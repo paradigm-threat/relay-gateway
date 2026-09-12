@@ -30,6 +30,7 @@ const EXCLUDE_FILES: &[&str] = &[
 const INCLUDE_EXTS: &[&str] = &[
     ".md", ".txt", ".pdf", ".json", ".srt", ".jpg", ".jpeg", ".png", ".webp",
 ];
+const IMAGE_EXTS: &[&str] = &[".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"];
 
 const MIN_YEAR: i64 = -10_000;
 const MAX_YEAR: i64 = 3_000;
@@ -340,18 +341,20 @@ pub fn build_path_tree_docs_scoped(
         updated: iso,
         commit: commit.to_string(),
     });
+    let image_maps = image_maps_from_paths(&paths);
     let mut docs = Vec::new();
     for path in paths {
         let path_meta = meta_map
             .get(&path)
             .or(tip_meta.as_ref());
-        if let Some(doc) = path_tree_doc_for(
+        if let Some(mut doc) = path_tree_doc_for(
             repo,
             commit,
             &path,
             scoped_root.as_deref(),
             path_meta,
         ) {
+            stamp_image_src(&mut doc, &image_maps);
             docs.push(doc);
         }
     }
@@ -373,16 +376,19 @@ pub fn build_path_tree_docs_for_paths(
     });
     let path_list: Vec<String> = paths.iter().cloned().collect();
     let meta_map = path_last_commit_map(repo, commit, &path_list);
+    let tree_paths = git_ls_tree(repo, commit).unwrap_or_else(|_| path_list.clone());
+    let image_maps = image_maps_from_paths(&tree_paths);
     let mut docs = Vec::new();
     for path in paths {
         let path_meta = meta_map.get(path).or(tip_meta.as_ref());
-        if let Some(doc) = path_tree_doc_for(
+        if let Some(mut doc) = path_tree_doc_for(
             repo,
             commit,
             path,
             scoped_root.as_deref(),
             path_meta,
         ) {
+            stamp_image_src(&mut doc, &image_maps);
             docs.push(doc);
         }
     }
@@ -488,6 +494,77 @@ fn path_tree_doc_for(
     }
 
     Some(Value::Object(doc))
+}
+
+struct ImageMaps {
+    by_exact_stem: HashMap<String, String>,
+    by_slug: HashMap<String, String>,
+}
+
+fn image_maps_from_paths(paths: &[String]) -> ImageMaps {
+    let mut by_exact_stem: HashMap<String, String> = HashMap::new();
+    let mut by_slug: HashMap<String, String> = HashMap::new();
+    let mut sorted: Vec<&String> = paths.iter().collect();
+    sorted.sort();
+    for path in sorted {
+        let ext = ext_of(path);
+        if !IMAGE_EXTS.contains(&ext.as_str()) {
+            continue;
+        }
+        if path_excluded(path, None) {
+            continue;
+        }
+        let with_slash = if path.starts_with('/') {
+            path.clone()
+        } else {
+            format!("/{path}")
+        };
+        let stem_path = path.rsplit_once('.').map(|(s, _)| s).unwrap_or(path);
+        if !stem_path.is_empty() {
+            by_exact_stem
+                .entry(stem_path.to_string())
+                .or_insert_with(|| with_slash.clone());
+        }
+        let slug = Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if !slug.is_empty() {
+            by_slug.entry(slug.to_string()).or_insert(with_slash);
+        }
+    }
+    ImageMaps {
+        by_exact_stem,
+        by_slug,
+    }
+}
+
+fn image_src_for_markdown(path: &str, maps: &ImageMaps) -> Option<String> {
+    let stem_path = path.rsplit_once('.').map(|(s, _)| s).unwrap_or(path);
+    if let Some(img) = maps.by_exact_stem.get(stem_path) {
+        return Some(img.clone());
+    }
+    let slug = Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    maps.by_slug.get(slug).cloned()
+}
+
+fn stamp_image_src(doc: &mut Value, maps: &ImageMaps) {
+    let Some(obj) = doc.as_object_mut() else {
+        return;
+    };
+    let Some(path) = obj.get("path").and_then(|v| v.as_str()) else {
+        return;
+    };
+    if !path.ends_with(".md") {
+        return;
+    }
+    let path = path.to_string();
+    if let Some(img) = image_src_for_markdown(&path, maps) {
+        obj.insert("image_src".into(), Value::String(img));
+    }
 }
 
 fn strip_frontmatter(content: &str) -> (&str, Option<&str>) {
@@ -1188,6 +1265,8 @@ mod tests {
             ),
             ("blog/2026-07-04-roundup.md", "# Roundup\n\nHello\n"),
             ("cosmos/mars.png", "not really an image"),
+            ("history/slug-article.md", "# Slug\n\nHello\n"),
+            ("images/slug-article.png", "also not an image"),
         ]);
         let docs = build_path_tree_docs(&repo, &commit).unwrap();
 
@@ -1196,6 +1275,10 @@ mod tests {
         assert_eq!(article["content_kind"], "article");
         assert!(article["_updated"].as_str().is_some());
         assert_eq!(article["_commit"].as_str().unwrap().len(), 40);
+        assert_eq!(article["image_src"], "/cosmos/mars.png");
+
+        let slug_article = by_path("history/slug-article.md");
+        assert_eq!(slug_article["image_src"], "/images/slug-article.png");
 
         let investigation = by_path("events/false_flag/investigations/tonkin-investigation.md");
         assert_eq!(investigation["content_kind"], "investigation");

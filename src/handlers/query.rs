@@ -201,6 +201,10 @@ pub async fn handle_query(
             }
         },
         Err(e) => {
+            let msg = format!("{e:#}");
+            if msg.contains("QUERY_BAD_ORDER:") {
+                return (StatusCode::BAD_REQUEST, msg).into_response();
+            }
             error!(?e, "Query failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "Query execution failed").into_response()
         }
@@ -245,6 +249,14 @@ mod tests {
         let mut qs = HashMap::new();
         qs.insert("order".into(), "drop-table".into());
         assert!(parse_query_options(Some(&qs), None, None).is_err());
+    }
+
+    #[test]
+    fn updated_order_parses() {
+        let body = json!({ "order": "-_updated", "limit": 8, "query": { "content_kind": "article" } });
+        let opts = parse_query_options(None, Some(&body), None).unwrap();
+        assert_eq!(opts.order, QueryOrder::UpdatedDesc);
+        assert_eq!(opts.limit, Some(8));
     }
 
     #[test]

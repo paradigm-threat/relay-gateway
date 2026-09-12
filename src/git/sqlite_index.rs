@@ -447,6 +447,12 @@ fn order_by_sql_fragment(order: QueryOrder) -> &'static str {
                json_extract(json, '$.path')
              ) DESC, doc_id DESC"
         }
+        QueryOrder::UpdatedAsc => {
+            "ORDER BY json_extract(json, '$._updated') ASC, json_extract(json, '$.path') ASC"
+        }
+        QueryOrder::UpdatedDesc => {
+            "ORDER BY json_extract(json, '$._updated') DESC, json_extract(json, '$.path') DESC"
+        }
     }
 }
 
@@ -462,21 +468,27 @@ pub enum QueryOrder {
     SortKeyAsc,
     /// `ORDER BY sort_key DESC`, then stable document id.
     SortKeyDesc,
+    /// `ORDER BY _updated ASC` (ISO committer time on path_tree docs).
+    UpdatedAsc,
+    /// `ORDER BY _updated DESC`.
+    UpdatedDesc,
     /// Portable random: candidate cap then shuffle in Rust (not engine `RANDOM()`).
     Random,
 }
 
 impl QueryOrder {
-    /// Parse allowlisted order tokens: `path`, `-path`, `sort_key`, `-sort_key`, `random`.
+    /// Parse allowlisted order tokens.
     pub fn parse(raw: &str) -> Result<Self, String> {
         match raw.trim() {
             "path" | "" => Ok(Self::PathAsc),
             "-path" => Ok(Self::PathDesc),
             "sort_key" => Ok(Self::SortKeyAsc),
             "-sort_key" => Ok(Self::SortKeyDesc),
+            "_updated" => Ok(Self::UpdatedAsc),
+            "-_updated" => Ok(Self::UpdatedDesc),
             "random" => Ok(Self::Random),
             other => Err(format!(
-                "invalid order {other:?}; expected path, -path, sort_key, -sort_key, or random"
+                "invalid order {other:?}; expected path, -path, sort_key, -sort_key, _updated, -_updated, or random"
             )),
         }
     }
@@ -487,7 +499,27 @@ impl QueryOrder {
             Self::PathDesc => "-path",
             Self::SortKeyAsc => "sort_key",
             Self::SortKeyDesc => "-sort_key",
+            Self::UpdatedAsc => "_updated",
+            Self::UpdatedDesc => "-_updated",
             Self::Random => "random",
+        }
+    }
+
+    /// Column name declared in collection `sortFields` (`random` is a scan mode, not a column).
+    pub fn sort_field(self) -> Option<&'static str> {
+        match self {
+            Self::PathAsc | Self::PathDesc => Some("path"),
+            Self::SortKeyAsc | Self::SortKeyDesc => Some("sort_key"),
+            Self::UpdatedAsc | Self::UpdatedDesc => Some("_updated"),
+            Self::Random => None,
+        }
+    }
+
+    /// `random` is always allowed; column orders must appear in `sortFields`.
+    pub fn allowed_for_sort_fields(self, sort_fields: &[String]) -> bool {
+        match self.sort_field() {
+            None => true,
+            Some(field) => sort_fields.iter().any(|f| f == field),
         }
     }
 }
@@ -810,7 +842,16 @@ mod tests {
             QueryOrder::SortKeyDesc
         );
         assert_eq!(QueryOrder::parse("random").unwrap(), QueryOrder::Random);
+        assert_eq!(QueryOrder::parse("_updated").unwrap(), QueryOrder::UpdatedAsc);
+        assert_eq!(
+            QueryOrder::parse("-_updated").unwrap(),
+            QueryOrder::UpdatedDesc
+        );
         assert!(QueryOrder::parse("drop table").is_err());
+        let defaults: Vec<String> = crate::git::search_store::effective_sort_fields(None);
+        assert!(QueryOrder::UpdatedDesc.allowed_for_sort_fields(&defaults));
+        assert!(!QueryOrder::UpdatedDesc.allowed_for_sort_fields(&["path".into()]));
+        assert!(QueryOrder::Random.allowed_for_sort_fields(&["path".into()]));
     }
 
     #[test]
@@ -883,6 +924,64 @@ mod tests {
                 .unwrap();
         assert_eq!(hits[0]["path"], "a");
         assert_eq!(hits[2]["path"], "c");
+    }
+
+    #[test]
+    fn query_order_updated_desc_newest_articles_first() {
+        let dir = tempdir().unwrap();
+        let json_path = dir.path().join("index.db.json");
+        let db_path = dir.path().join("index.db");
+        std::fs::write(
+            &json_path,
+            json!({
+                "metadata": { "indexed_head": "h" },
+                "collections": {
+                    "index": [
+                        {
+                            "path": "old.md",
+                            "content_kind": "article",
+                            "_title": "Old",
+                            "_updated": "2026-09-06T10:14:56-04:00"
+                        },
+                        {
+                            "path": "science/computing/crichtons-prophecy.md",
+                            "content_kind": "article",
+                            "_title": "Crichton's Prophecy",
+                            "_updated": "2026-09-12T12:55:38Z"
+                        },
+                        {
+                            "path": "mid.md",
+                            "content_kind": "article",
+                            "_title": "Mid",
+                            "_updated": "2026-09-10T00:00:00Z"
+                        },
+                        {
+                            "path": "inv.md",
+                            "content_kind": "investigation",
+                            "_title": "Inv",
+                            "_updated": "2026-09-13T00:00:00Z"
+                        }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        sync_json_to_sqlite(&json_path, &db_path).unwrap();
+        let q = json!({"content_kind": "article"});
+        let hits = query_collection_ordered(
+            &db_path,
+            "index",
+            Some(&q),
+            None,
+            Some(8),
+            QueryOrder::UpdatedDesc,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 3);
+        assert_eq!(hits[0]["path"], "science/computing/crichtons-prophecy.md");
+        assert_eq!(hits[1]["path"], "mid.md");
+        assert_eq!(hits[2]["path"], "old.md");
     }
 
     #[test]

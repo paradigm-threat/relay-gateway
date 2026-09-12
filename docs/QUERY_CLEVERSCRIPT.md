@@ -78,7 +78,7 @@ collections:
     idFields: [path, _meta_dir, id]
     ftsFields: [_title, title, _keywords, keywords, description]
     filterFields: [content_kind, type, path, id]   # portable object QUERY keys
-    sortFields: [path, sort_key, md_path]
+    sortFields: [_updated, path, sort_key, md_path]
   events:
     sources:
       - type: events_json
@@ -87,7 +87,7 @@ collections:
     ftsFields: [title, keywords, name]
 ```
 
-Without `search.yaml`, builtins still ingest meta.yaml + `index.json` (replace) + `data/events.json`. Default **`filterFields`**: `content_kind`, `type`, `path`, `id`, `channel`, `author`, `title`. Default **`sortFields`**: `path`, `sort_key`, `md_path`, `created`. Undeclared object-filter keys yield an **empty result** (not a SQL `json_extract` of every key).
+Without `search.yaml`, builtins still ingest meta.yaml + `index.json` (replace) + `data/events.json`. Default **`filterFields`**: `content_kind`, `type`, `path`, `id`, `channel`, `author`, `title`, `_keywords`. Default **`sortFields`**: `path`, `sort_key`, `md_path`, `created`, `_updated`. Undeclared object-filter keys yield an **empty result** (not a SQL `json_extract` of every key).
 
 String QUERY uses FTS (AND of terms + prefix). Object QUERY uses exact field match on declared filter fields.
 
@@ -96,7 +96,7 @@ String QUERY uses FTS (AND of terms + prefix). Object QUERY uses exact field mat
 Indexing (git sources, on-commit, regen) does not depend on the engine. QUERY and upsert go through `SearchStore`. v1 is SQLite (`RELAY_SEARCH_STORE=sqlite`, default). `postgres` and `meilisearch` are reserved names — they must implement the **same** declared-schema contract:
 
 - **Filter** only keys listed in `filterFields` (or builtins). Never “any JSON key.”
-- **Sort** is the closed HTTP set: `path`, `-path`, `sort_key`, `-sort_key`, `random`. `sortFields` tells the backend which columns/attributes to index.
+- **Sort** tokens must appear in the collection’s `sortFields` (plus `random`, which is a scan mode). HTTP tokens: `path`, `-path`, `sort_key`, `-sort_key`, `_updated`, `-_updated`, `random`.
 - **`order=random`** is shuffled in Rust after a capped candidate fetch (not SQL `RANDOM()` / Meili ranking). Postgres may use SQL `random()` as an optimization behind the same limit/cap.
 - **FTS** is AND of tokens + prefix (`iran*`). Engine-specific ranking is not part of the HTTP contract.
 - Identity is `(repo slug, branch, collection)` — never hostname. Shared-catalog later is `RELAY_DATABASE_URL` plus a second backend on this trait.
@@ -161,7 +161,7 @@ curl -X QUERY "https://iad1.relaygateway.net/paradigm-threat-files" \
 | `q` | FTS string (max 200 chars) |
 | `collection` | Collection name (default `index`) |
 | `limit` | Row cap (`1..=10000`; **`1..=100` when `order=random`**) |
-| `order` | `path` (asc, default), `-path`, `sort_key`, `-sort_key`, or `random`. Timeline events should use `sort_key` (falls back to `md_path`/`path` when unreindexed). |
+| `order` | `path` (asc, default), `-path`, `sort_key`, `-sort_key`, `_updated`, `-_updated`, or `random`. Token must be in collection `sortFields` (`random` always allowed). Timeline events should use `sort_key` (falls back to `md_path`/`path` when unreindexed). |
 
 Object `query` (JSON body) supports field predicates on **declared** `filterFields` (builtins if omitted):
 
@@ -175,7 +175,7 @@ Object `query` (JSON body) supports field predicates on **declared** `filterFiel
 
 Predicates are applied on declared `filterFields` first, then `order=random` shuffles a capped candidate set in Rust so `limit=N` is N matching rows. Invalid / unsafe shapes yield an empty result set (never interpolated SQL).
 
-Unknown keys are ignored. Invalid `order` → HTTP 400. `order` is a closed token set (`path`, `-path`, `sort_key`, `-sort_key`, `random`).
+Unknown keys are ignored. Invalid `order` → HTTP 400. `order` must parse as a known token **and** be listed in collection `sortFields` (`random` is always allowed).
 
 ```bash
 # Curl-friendly: no body
@@ -198,26 +198,36 @@ Optional: `X-Relay-Branch` (default `main`).
 Park site-shell SSR must **not** drive DirNav / ChangeLog / article lists via QUERY (or same-Host HTTP `fetch`). Reasons:
 
 1. **Worker deadlock / stall** — CleverScript site-shell render that self-HTTP QUERY’s the same Host blocks the gateway worker (index mutex / request loop). `RepoFetchHost` offers in-process QUERY only as an escape hatch for rare SSR needs; park tip policy still forbids P2 catalog on SSR.
-2. **HTML cache miss cost** — `ssr_html_cache` is tip-OID keyed. Catalog work inside the miss path pays nav-index parse / card fan-out / cold WASM on every push (the old ~10s path). Keep SSR to **P0 article + P1 chrome**; placeholders for catalog (`data-pt-*-ssr`).
-3. **Optimal load** — hydrate when `isClientLive()`, then one on-tree GET of `nav-index.txt` warmed by runtime `tip_cached_get` + `tip_cached_nav_index_rows` (and tip thumbs module warm). QUERY stays for search, comments, and optional opt-in `collection: articles` **after** live.
+2. **HTML cache miss cost** — `ssr_html_cache` is tip-OID keyed. Catalog work inside the miss path pays QUERY / card fan-out / cold WASM on every push (the old ~10s path). Keep SSR to **P0 article + P1 chrome**; placeholders for catalog (`data-pt-*-ssr`).
+3. **Optimal load** — hydrate when `isClientLive()`, then QUERY the index (module-warm one HTTP per spec). Recency is `order=-_updated`; DirNav is `order=path` + `content_kind: { $ne: "exclude" }`; Feeling Lucky is `order=random`. Same-Host QUERY during SSR remains forbidden.
 
 Normative tip tiers + cache table: park checkout `hooks/CLEVERSCRIPT_TIP.md`. Gateway HTML cache: [`RELAY_POLICY_AND_PERFORMANCE.md`](./RELAY_POLICY_AND_PERFORMANCE.md) § SSR HTML cache.
 
-## Roadmap: repo-opt-in SQLite + tip catalog cache (2026-08-02)
+## Hydrate catalog = QUERY (2026-09-12)
 
-Park ChangeLog / DirNav used to feel slow on hydrate when they re-parsed `nav-index.txt` (and thumbs) on every live shell run. **Do not “fix” that by moving catalog into SSR** — that is the anti-pattern above. Vercel’s sister path QUERY’s once and caches client-side; park tip stays **on-tree first** for SSR hygiene. QUERY enhancements are for search, comments, and optional warm indexes **on hydrate**.
+Park ChangeLog / DirNav / Feeling Lucky / neighbors hydrate from QUERY. **Do not** ship a second catalog (`nav-index.txt`, `changelog-thumbs.json`) or fetch 10k rows to `sortBy` in CleverScript. **Do not** “fix” hydrate cost by moving catalog into SSR.
 
-### Recommended implementation order
+`search.yaml` `filterFields` / `sortFields` is the repo customization. `path_tree` already stamps `content_kind`, `_updated`, `_title`, `image_src`. Named extra collections that copy `path_tree` are not better.
 
-1. **Tip catalog warm (P2 hydrate)** — **Done (2026-08-02):** `@relay/catalog.loadNavIndex` reuses one parsed `nav-index.txt` Rc per tip blob text within a RunState session; tip `loadChangelogThumbs` module-warms `changelog-thumbs.json`. Still on-tree GET first (no SSR QUERY). **Host theme (same ship):** `syncHtmlThemeClass` prefers `<html data-pt-theme>` over WASM `get_current_theme_name` so catalog remounts keep park dark/light (runtime JS + client-web vendor).
-2. **QUERY result cache (gateway)** — **Done (2026-08-02):** in-process LRU (`git/query_cache.rs`) keyed by `(repo, tipHead, collection, query, limit, order)`, TTL ~45s, max 64 entries; skipped for `order=random`. Tip HEAD is part of the key (new tip → miss).
-3. **Repo-opt-in SCHEMA / custom tables** — Allow tip `search.yaml` (or `.relay/schema.yaml`) to declare extra SQLite tables (e.g. `articles`: `path`, `title`, `content_kind`, `_updated`, `image_src`, `summary`) filled at index warm from `path_tree` + sidecar fields. QUERY `collection: articles` stays thin via `@relay/search/sqlite`. Default repos keep today’s single `docs` table.
-4. **Front-page directory + article list** — Prefer on-tree GET of `nav-index.txt` / thumbs (CDN-friendly). After (3), optional hydrate QUERY `collection: articles` with `order=-_updated&limit=120` when the repo opts in — still never during SSR (same-Host deadlock).
-5. **Comment-scenario caching** — If/when comments are a QUERY collection (thread id + article path), cache list-by-path and count aggregations in the same QUERY LRU; invalidate on comment write / tip bump. Do not fold comment bodies into site-shell SSR HTML cache.
+### Hydrate QUERY specs (park tip)
 
-### Out of scope for tip-only thumbs
+| Surface | QUERY |
+|---|---|
+| ChangeLog Articles | `collection:index`, `query:{content_kind:article}`, `order:-_updated`, `limit:8` |
+| Investigations / Blog | same, `investigation` / `blog` |
+| Recent | `query:{content_kind:["article","investigation","blog"]}`, `order:-_updated`, `limit:8` |
+| DirNav / neighbors / AutoIndex | `query:{content_kind:{$ne:exclude}}`, `order:path`, `limit:10000`, then `@relay/catalog.buildDirTree` |
+| Feeling Lucky | `order:random`, `limit:40`, kind IN article/investigation/blog |
 
-ChangeLog card images now use **`changelog-thumbs.json`** (stem/slug map, Vercel parity). They do **not** require a custom articles table or gateway binary deploy.
+Tree helpers stay in `@relay/catalog` (`buildDirTree`, `dirExpandPaths`, `neighborPaths`). Do **not** import `@relay/search/sqlite` in client hooks.
+
+### Still done / still out of scope
+
+- **QUERY result cache (gateway)** — in-process LRU (`git/query_cache.rs`) keyed by `(repo, tipHead, collection, query, limit, order)`, TTL ~45s, max 64 entries; skipped for `order=random`.
+- **Comment-scenario caching** — if/when comments are a QUERY collection, cache list-by-path in the same LRU; do not fold comment bodies into site-shell SSR HTML cache.
+- **No `collection: articles` table** that copies `path_tree`.
+
+ChangeLog card images use **`image_src`** on markdown `path_tree` docs (stem/slug match at ingest).
 
 ## Related
 
@@ -227,4 +237,4 @@ ChangeLog card images now use **`changelog-thumbs.json`** (stem/slug map, Vercel
 - [RELAY_POLICY_AND_PERFORMANCE.md](./RELAY_POLICY_AND_PERFORMANCE.md) — SSR HTML cache vs hydrate catalog work
 - Park tip: `hooks/CLEVERSCRIPT_TIP.md` — P0–P3; catalog SSR anti-pattern
 
-*Last updated: 2026-08-02*
+*Last updated: 2026-09-12*

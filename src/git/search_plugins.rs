@@ -5,7 +5,8 @@ use crate::git::index_store;
 use crate::git::indexing::branch_index_paths;
 use crate::git::search_config;
 use crate::git::search_store::{
-    effective_filter_fields, store_for_bare_repo, store_key_for_bare, SearchStore,
+    effective_filter_fields, effective_sort_fields, store_for_bare_repo, store_key_for_bare,
+    SearchStore,
 };
 use crate::git::sqlite_index;
 use crate::types::RelayConfig;
@@ -73,10 +74,19 @@ pub fn run_plugin_ordered(
                 .and_then(|r| crate::git::repo::read_relay_config(&r, &head))
                 .unwrap_or_default();
             let cfg = search_config::load_search_config(repo_full_path, &head, &relay, None);
-            let filter_fields = cfg
-                .collection(collection)
+            let coll_cfg = cfg.collection(collection);
+            let filter_fields = coll_cfg
                 .map(|c| effective_filter_fields(c.filter_fields.as_deref()))
                 .unwrap_or_else(|| effective_filter_fields(None));
+            let sort_fields = coll_cfg
+                .map(|c| effective_sort_fields(c.sort_fields.as_deref()))
+                .unwrap_or_else(|| effective_sort_fields(None));
+            if !order.allowed_for_sort_fields(&sort_fields) {
+                anyhow::bail!(
+                    "QUERY_BAD_ORDER: order {:?} is not in collection sortFields",
+                    order.as_str()
+                );
+            }
             store.query(
                 &key,
                 collection,

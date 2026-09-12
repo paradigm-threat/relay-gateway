@@ -74,14 +74,14 @@ Site-shell HTML from `ssrClientHookFromGetContext` is expensive (full client-hoo
 
 Tip hygiene remains authoritative: **P0 article + P1 static chrome** on SSR; **P2 catalog / P3 interactive** on hydrate only (see park `hooks/CLEVERSCRIPT_TIP.md`). Cache does not excuse heavy catalog work inside the hook.
 
-**Catalog SSR is an anti-pattern** even with this cache. Tip OID is in the key, so every push is a miss — a miss path that parses `nav-index.txt`, fans out ChangeLog cards, or same-Host QUERY recreates the old multi-second (~10s) cold render. Optimal:
+**Catalog SSR is an anti-pattern** even with this cache. Tip OID is in the key, so every push is a miss — a miss path that QUERY’s the catalog, fans out ChangeLog cards, or same-Host QUERY recreates the old multi-second (~10s) cold render. Optimal:
 
 | Layer | Role for park |
 |-------|----------------|
 | **`ssr_html_cache`** | Cheap P0+P1 HTML only (article + static chrome + catalog *placeholders*) |
-| Runtime **`tip_cached_get` / `tip_cached_nav_index_rows`** | Hydrate-session warm of on-tree `nav-index.txt` (shared by DirNav / ChangeLog) |
-| Gateway **QUERY LRU** | Search / optional articles QUERY after live — never site-shell SSR |
-| CDN blob GET | `nav-index.txt`, thumbs, assets — high QPS, no CleverScript |
+| Tip module QUERY warm | Hydrate-session catalog (`loadArticles.jsx`: DirNav / ChangeLog / Lucky) |
+| Gateway **QUERY LRU** | Search + hydrate catalog QUERY after live — never site-shell SSR |
+| CDN blob GET | Article md, images, sitemap — high QPS, no CleverScript |
 
 Same-Host HTTP `fetch` / QUERY from the site-shell worker still deadlocks (or stalls on index lock). Use in-process tip GET for P0 markdown only. Normative tip table: park `hooks/CLEVERSCRIPT_TIP.md` § SSR priority tiers. QUERY roadmap: [`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md).
 

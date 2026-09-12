@@ -24,9 +24,10 @@ pub const DEFAULT_FILTER_FIELDS: &[&str] = &[
     "channel",
     "author",
     "title",
+    "_keywords",
 ];
 /// Website-default sortable keys when `search.yaml` omits `sortFields`.
-pub const DEFAULT_SORT_FIELDS: &[&str] = &["path", "sort_key", "md_path", "created"];
+pub const DEFAULT_SORT_FIELDS: &[&str] = &["path", "sort_key", "md_path", "created", "_updated"];
 /// Default FTS field names when `search.yaml` omits `ftsFields`.
 pub const DEFAULT_FTS_FIELDS: &[&str] = &[
     "_title",
@@ -785,6 +786,12 @@ fn order_by_sql_fragment(order: QueryOrder) -> &'static str {
         QueryOrder::PathDesc => "ORDER BY path DESC",
         QueryOrder::SortKeyAsc => "ORDER BY coalesce(sort_key, md_path, path) ASC, doc_id ASC",
         QueryOrder::SortKeyDesc => "ORDER BY coalesce(sort_key, md_path, path) DESC, doc_id DESC",
+        QueryOrder::UpdatedAsc => {
+            "ORDER BY json_extract(json, '$._updated') ASC, path ASC, doc_id ASC"
+        }
+        QueryOrder::UpdatedDesc => {
+            "ORDER BY json_extract(json, '$._updated') DESC, path DESC, doc_id DESC"
+        }
     }
 }
 
@@ -1543,5 +1550,40 @@ mod tests {
             )
             .unwrap();
         assert_eq!(hits.len(), 5);
+    }
+
+    #[test]
+    fn query_order_updated_desc_newest_first() {
+        let dir = tempdir().unwrap();
+        let store = SqliteSearchStore::open(&dir.path().join("s.db")).unwrap();
+        let key = StoreKey::new("r", "main");
+        let docs = vec![
+            json!({
+                "path": "old.md",
+                "content_kind": "article",
+                "_updated": "2026-09-06T10:14:56-04:00"
+            }),
+            json!({
+                "path": "new.md",
+                "content_kind": "article",
+                "_updated": "2026-09-12T12:55:38Z"
+            }),
+        ];
+        store
+            .replace_collection(&key, "index", &docs, None, None, Some("h"))
+            .unwrap();
+        let hits = store
+            .query(
+                &key,
+                "index",
+                Some(&json!({"content_kind": "article"})),
+                None,
+                Some(8),
+                QueryOrder::UpdatedDesc,
+                &effective_filter_fields(None),
+            )
+            .unwrap();
+        assert_eq!(hits[0]["path"], "new.md");
+        assert_eq!(hits[1]["path"], "old.md");
     }
 }
