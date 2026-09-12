@@ -9,7 +9,7 @@ Registered in `relay-runtime/src/relay_modules.rs` (SSR + WASM). Spec table: `re
 | Module | Role |
 |--------|------|
 | `@relay/util` | `sortBy`, `take`, `prop`, `omitUndefined`, `slugify`, `uniqueId`, `includes`, `splitSentences`, `takeSentenceChunk` |
-| `@relay/path` | path join/normalize, `siteHref`, asset URL rewrite, gallery `#img=` / DOM id / portrait index lookup |
+| `@relay/path` | path join/normalize, `siteHref`, asset URL rewrite, gallery `#img=` / DOM id / portrait index lookup, `normalizeHttpHref` / `lookupHttpHref` (dead-URL maps) |
 | `@relay/date` | ChangeLog / feed date formats |
 | `@relay/catalog` | nav-index parse, TOC extract, dir tree, Feeling Lucky |
 | `@relay/ui` | `cachedGet`, `Link`, `RadioTabs`, `safeProps` |
@@ -29,6 +29,8 @@ Registered in `relay-runtime/src/relay_modules.rs` (SSR + WASM). Spec table: `re
 
 Park tip already follows this for GET (`hooks/server/get.cs` is a thin chain) and QUERY (`query.cs`).
 
+`@relay/path.normalizeHttpHref` / `lookupHttpHref` canonicalize third-party `http(s)` hrefs for park dead-link maps (`hooks/dead-urls.json`). Same rules as the files checker (`scripts/lib/dead-urls.mjs`): lowercase scheme+host, drop fragment and default ports, drop trailing `/` except origin-only, keep query, no `http`↔`https` / `www` rewrite. `lookupHttpHref(map, href)` tries the exact key then the normalized key; missing/non-object map returns `null`.
+
 ## Next helper candidates (prefer Rust)
 
 When tip code grows loops that look like libraries, extract here and add **`relay-runtime` tests** (`tests/stdlib_relay_modules.rs` or new cases) **before** tip call sites.
@@ -41,6 +43,7 @@ When tip code grows loops that look like libraries, extract here and add **`rela
 | **Gallery hash / `#img=` / DOM id** | **Shipped** — `@relay/path` `readHashImgSrc` / `galleryImgHash` / `safeImgDomId` / `galleryDisplaySrc` / `portraitSiblingIfPresent(map)` |
 | **TTS sentence chunking** | **Shipped** — `@relay/util.splitSentences` / `takeSentenceChunk` |
 | **TOC ATX extract** | **Shipped** — tip is thin wrap over `@relay/catalog.extractMarkdownHeadings` |
+| **HTTP href normalize / dead-URL lookup** | **Shipped** — `@relay/path.normalizeHttpHref` / `lookupHttpHref` |
 | Sitemap / nav-index **writers** | Stay in Python/CI; **readers** already `@relay/catalog` |
 
 ## Rules for new helpers
@@ -58,4 +61,4 @@ When tip code grows loops that look like libraries, extract here and add **`rela
 - Policy: [`RELAY_POLICY_AND_PERFORMANCE.md`](./RELAY_POLICY_AND_PERFORMANCE.md)
 - Server hooks: [`SERVER_HOOKS.md`](./SERVER_HOOKS.md)
 
-*Last updated: 2026-08-08*
+*Last updated: 2026-09-12*
