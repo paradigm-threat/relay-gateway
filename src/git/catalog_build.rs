@@ -306,7 +306,10 @@ fn path_content_kind(path: &str) -> &'static str {
     let basename = normalized.rsplit('/').next().unwrap_or(normalized);
     if basename == "page.md"
         || basename.eq_ignore_ascii_case("readme.md")
+        || basename.eq_ignore_ascii_case("agents.md")
         || normalized.starts_with("docs/")
+        || normalized.starts_with("hooks/")
+        || normalized.starts_with("page-sections/")
     {
         return "exclude";
     }
@@ -1253,6 +1256,28 @@ mod tests {
         let docs = build_path_tree_docs(&repo, &commit).unwrap();
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0]["content_kind"], "exclude");
+    }
+
+    #[test]
+    fn path_tree_excludes_hooks_and_agents_from_articles() {
+        let (_dir, repo, commit) = commit_files(&[
+            ("hooks/CLEVERSCRIPT_TIP.md", "# Tip\n\nHello\n"),
+            ("page-sections/investigations.md", "# Inv\n\nHello\n"),
+            ("AGENTS.md", "# Agents\n\nHello\n"),
+            ("cosmos/mars.md", "# Mars\n\nHello\n"),
+        ]);
+        let docs = build_path_tree_docs(&repo, &commit).unwrap();
+        let kind = |path: &str| {
+            docs.iter()
+                .find(|d| d["path"] == path)
+                .unwrap()["content_kind"]
+                .as_str()
+                .unwrap()
+        };
+        assert_eq!(kind("hooks/CLEVERSCRIPT_TIP.md"), "exclude");
+        assert_eq!(kind("page-sections/investigations.md"), "exclude");
+        assert_eq!(kind("AGENTS.md"), "exclude");
+        assert_eq!(kind("cosmos/mars.md"), "article");
     }
 
     #[test]
