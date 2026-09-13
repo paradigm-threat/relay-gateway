@@ -72,6 +72,10 @@ Site-shell HTML from `ssrClientHookFromGetContext` is expensive (full client-hoo
 | **Invalidation** | New tip commit or new `relay-web-assets` tip → new key (no stale cross-tip bleed) |
 | **Disable** | `RELAY_DISABLE_SSR_HTML_CACHE=1` |
 
+**Related SSR env (gateway):** `RELAY_SSR_TIMEOUT_SECS` (default 12; `0` disables wall timeout), `RELAY_SSR_MAX_CONCURRENT` (default 2). Coalesce + cooperative cancel live in `ssr_limits` / `relay_runtime::ssr_cancel`.
+
+**Runtime performance strategies** (preferred vs alternate, `RELAY_PERF_*`): [`relay-runtime/docs/PERF_FEATURE_FLAGS.md`](../../relay-runtime/docs/PERF_FEATURE_FLAGS.md).
+
 Tip hygiene remains authoritative: **P0 article + P1 static chrome** on SSR; **P2 catalog / P3 interactive** on hydrate only (see park `hooks/CLEVERSCRIPT_TIP.md`). Cache does not excuse heavy catalog work inside the hook.
 
 **Catalog SSR is an anti-pattern** even with this cache. Tip OID is in the key, so every push is a miss — a miss path that QUERY’s the catalog, fans out ChangeLog cards, or same-Host QUERY recreates the old multi-second (~10s) cold render. Optimal:
