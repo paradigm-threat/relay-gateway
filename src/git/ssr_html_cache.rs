@@ -61,6 +61,11 @@ fn tip_commit_oid(repo_path: &Path, branch: &str) -> Option<String> {
     Some(commit.id().to_string())
 }
 
+/// Tip commit OID for SSR coalesce / cache identity (empty when unreadable).
+pub fn tip_oid_for_ssr(repo_path: &Path, branch: &str) -> String {
+    tip_commit_oid(repo_path, branch).unwrap_or_default()
+}
+
 /// Web-assets tip OID from the parent of a content bare (empty string when unset).
 fn web_assets_oid_from_content_bare(content_bare: &Path) -> String {
     let Some(root) = content_bare.parent() else {

@@ -112,6 +112,9 @@ gateway_env() {
   export RELAY_PARKED_DOMAINS_PATH="$STATE_DIR/parked-domains.txt"
   export RELAY_HTTP_PORT="$HTTP_PORT"
   export RELAY_PUBLIC_HOSTNAME="${RELAY_PUBLIC_HOSTNAME:-localhost}"
+  # Commit-pinned embed/WASM from the local bare (park sync updates `main`).
+  export RELAY_WEB_ASSETS_REPO="${RELAY_WEB_ASSETS_REPO:-relay-web-assets}"
+  export RELAY_WEB_ASSETS_BRANCH="${RELAY_WEB_ASSETS_BRANCH:-main}"
   # Local park: no fleet allowlist / trust root — tip is the operator's mirror.
   unset RELAY_AUTHORIZED_REPOS_PATH RELAY_MASTER_CATALOG_PATH RELAY_SERVER_ID || true
 }

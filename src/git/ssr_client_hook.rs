@@ -23,6 +23,7 @@ pub struct ClientHookSsrRequest<'a> {
 }
 
 /// Successful SSR output.
+#[derive(Clone)]
 pub struct ClientHookSsrResult {
     pub body_html: String,
     /// Generated stylesheet for no-JS / SSR (may be empty).
@@ -399,23 +400,64 @@ fn panic_payload_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 
 /// Try to SSR the client GET hook. Returns `None` on any failure (caller falls back to empty shell).
 /// Panics inside the renderer are caught so HTTP handlers can return 500 instead of dropping the connection.
+///
+/// Runs on a dedicated OS thread under [`crate::git::ssr_limits`] with per-path coalesce and
+/// cooperative cancel on wall-clock timeout.
 pub fn try_ssr_client_hook(req: &ClientHookSsrRequest<'_>) -> Option<ClientHookSsrResult> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        try_ssr_client_hook_inner(req)
-    })) {
-        Ok(v) => v,
-        Err(payload) => {
-            let msg = panic_payload_message(&payload);
-            tracing::error!(
-                target: "relay_ssr",
-                panic = %msg,
-                path = %req.initial_path,
-                hook = %req.client_hook_rel,
-                "client hook SSR panicked"
-            );
-            None
+    let tip = crate::git::ssr_html_cache::tip_oid_for_ssr(req.repo_path, req.branch);
+    let key = crate::git::ssr_limits::coalesce_key(
+        req.repo_path,
+        &tip,
+        req.branch,
+        req.initial_path,
+        req.client_hook_rel,
+    );
+    let owned = OwnedSsrRequest {
+        repo_path: req.repo_path.clone(),
+        branch: req.branch.to_string(),
+        client_hook_rel: req.client_hook_rel.to_string(),
+        asset_base_url: req.asset_base_url.to_string(),
+        initial_path: req.initial_path.to_string(),
+    };
+    static REG: std::sync::OnceLock<
+        std::sync::Arc<crate::git::ssr_limits::CoalesceRegistry<ClientHookSsrResult>>,
+    > = std::sync::OnceLock::new();
+    let reg = REG
+        .get_or_init(|| std::sync::Arc::new(crate::git::ssr_limits::CoalesceRegistry::new()))
+        .clone();
+    crate::git::ssr_limits::run_ssr_coalesced(reg, key, move || {
+        let req = ClientHookSsrRequest {
+            repo_path: &owned.repo_path,
+            branch: &owned.branch,
+            client_hook_rel: &owned.client_hook_rel,
+            asset_base_url: &owned.asset_base_url,
+            initial_path: &owned.initial_path,
+        };
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            try_ssr_client_hook_inner(&req)
+        })) {
+            Ok(v) => v,
+            Err(payload) => {
+                let msg = panic_payload_message(&payload);
+                tracing::error!(
+                    target: "relay_ssr",
+                    panic = %msg,
+                    path = %owned.initial_path,
+                    hook = %owned.client_hook_rel,
+                    "client hook SSR panicked"
+                );
+                None
+            }
         }
-    }
+    })
+}
+
+struct OwnedSsrRequest {
+    repo_path: PathBuf,
+    branch: String,
+    client_hook_rel: String,
+    asset_base_url: String,
+    initial_path: String,
 }
 
 fn try_ssr_client_hook_inner(req: &ClientHookSsrRequest<'_>) -> Option<ClientHookSsrResult> {
@@ -476,6 +518,10 @@ fn try_ssr_client_hook_inner(req: &ClientHookSsrRequest<'_>) -> Option<ClientHoo
     });
     relay_runtime::clear_cs_global_this_extras();
     let run = run.ok()?;
+    if relay_runtime::ssr_is_cancelled() {
+        tracing::warn!(target: "relay_ssr", path = %req.initial_path, "client hook SSR cancelled");
+        return None;
+    }
     let ms_hook = t_hook.elapsed().as_millis() as u64;
 
     let t_html = std::time::Instant::now();
