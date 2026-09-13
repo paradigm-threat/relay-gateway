@@ -747,11 +747,20 @@ fn ssr_public_origin(ctx: &HashMap<String, CsValue>) -> String {
     if host.is_empty() {
         return String::new();
     }
+    let host_l = host.to_ascii_lowercase();
+    let default_proto =
+        if host_l.contains("localhost") || host_l.starts_with("127.0.0.1") || host_l.starts_with("[::1]")
+        {
+            // park-local / loopback are plain HTTP; https://…localhost:9080 fails SSL.
+            "http"
+        } else {
+            "https"
+        };
     let proto = nested_obj_str(ctx, "requestHeaders", "x-forwarded-proto")
         .and_then(|p| p.split(',').next())
         .map(str::trim)
         .filter(|p| *p == "http" || *p == "https")
-        .unwrap_or("https");
+        .unwrap_or(default_proto);
     format!("{proto}://{host}")
 }
 
