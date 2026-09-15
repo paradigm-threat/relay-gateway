@@ -309,6 +309,21 @@ fn is_spa_virtual_path(rel: &str) -> bool {
     p.is_empty() || p.eq_ignore_ascii_case("search")
 }
 
+/// Missing `DIR/page.md` when `DIR` is a git Tree → directory auto-index (HTTP 200 shell).
+fn auto_index_dir_if_tree(tree: &git2::Tree, rel: &str) -> Option<String> {
+    let p = rel.trim().trim_start_matches('/');
+    let dir = p.strip_suffix("/page.md")?;
+    if dir.is_empty() {
+        return None;
+    }
+    let entry = tree.get_path(std::path::Path::new(dir)).ok()?;
+    if entry.kind() == Some(ObjectType::Tree) {
+        Some(dir.to_string())
+    } else {
+        None
+    }
+}
+
 fn mark_missing_shell_noindex(mut resp: axum::response::Response) -> axum::response::Response {
     *resp.status_mut() = StatusCode::NOT_FOUND;
     if let Ok(hv) = HeaderValue::try_from("noindex, follow") {
@@ -460,17 +475,29 @@ pub fn git_resolve_and_respond(
                     .to_string();
                 // Multi-page CS shells: missing non-asset paths with HTML Accept / ?embed=1
                 // get the same siteShellRequest opt-in as repo-host `/` (relPath → initialPath).
-                // Non-allowlisted missing paths are soft-404: HTML shell + HTTP 404 + noindex.
+                // Soft-404 (404+noindex) unless DIR/page.md is missing but DIR is a git Tree
+                // (directory auto-index — HTTP 200 shell; tip fills Categories/Documents at P2).
                 let wants_shell = has_get_hook
                     && !asset_like
                     && (accept_prefers_html(headers) || embed_query_flag(&qmap));
                 let spa_virtual = is_spa_virtual_path(rel);
-                let missing_for_seo = wants_shell && !spa_virtual;
+                let auto_index_dir = auto_index_dir_if_tree(&tree, rel);
+                let missing_for_seo =
+                    wants_shell && !spa_virtual && auto_index_dir.is_none();
                 let extra = if wants_shell {
-                    serde_json::json!({
-                        "siteShellRequest": true,
-                        "siteShellMissingPath": missing_for_seo,
-                    })
+                    let mut map = serde_json::Map::new();
+                    map.insert("siteShellRequest".into(), serde_json::json!(true));
+                    map.insert(
+                        "siteShellMissingPath".into(),
+                        serde_json::json!(missing_for_seo),
+                    );
+                    if let Some(ref d) = auto_index_dir {
+                        map.insert(
+                            "siteShellAutoIndexDir".into(),
+                            serde_json::json!(d),
+                        );
+                    }
+                    serde_json::Value::Object(map)
                 } else {
                     serde_json::json!({})
                 };
@@ -1473,5 +1500,42 @@ export default function run(ctx, next) {
         );
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         assert_eq!(bytes.as_ref(), br#"{"ok":true}"#);
+    }
+
+    #[test]
+    fn auto_index_dir_if_tree_when_page_md_missing() {
+        let dir = tempdir().unwrap();
+        let repo_path = dir.path().join("hub.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+        let md_oid = repo.blob(b"# A\n").unwrap();
+        let mut tb_ff = repo.treebuilder(None).unwrap();
+        tb_ff.insert("a.md", md_oid, 0o100644).unwrap();
+        let ff_tid = tb_ff.write().unwrap();
+        let mut tb_ev = repo.treebuilder(None).unwrap();
+        tb_ev.insert("false_flag", ff_tid, 0o040000).unwrap();
+        let ev_tid = tb_ev.write().unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert("events", ev_tid, 0o040000).unwrap();
+        let tree_id = tb.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        assert_eq!(
+            auto_index_dir_if_tree(&tree, "events/false_flag/page.md").as_deref(),
+            Some("events/false_flag")
+        );
+        assert_eq!(
+            auto_index_dir_if_tree(&tree, "events/false_flag/a.md"),
+            None,
+            "existing blob path is not an auto-index hub"
+        );
+        assert_eq!(
+            auto_index_dir_if_tree(&tree, "missing/page.md"),
+            None,
+            "missing parent tree → no auto-index"
+        );
+        assert_eq!(auto_index_dir_if_tree(&tree, "page.md"), None);
     }
 }
