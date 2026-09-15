@@ -885,7 +885,12 @@ pub async fn warm_stale_indexes(
                 }
             ));
             for s in stale {
-                let url = format!("https://{}/api/index/warm/{}", n.fqdn, s.repo);
+                // Branch names from probe are safe path segments; pass through so warm
+                // indexes the publish branch (e.g. clevertree-site@release), not only main.
+                let url = format!(
+                    "https://{}/api/index/warm/{}?branch={}",
+                    n.fqdn, s.repo, s.branch
+                );
                 match client.post(&url).json(&serde_json::json!({})).send().await {
                     Ok(r) if r.status().is_success() => {
                         round_warmed += 1;

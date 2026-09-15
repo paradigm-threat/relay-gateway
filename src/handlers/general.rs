@@ -9,7 +9,7 @@ use axum::{
     Json,
 };
 use git2::Repository;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{authorized_repos, catalog_policy, git, helpers, notify, types::*};
 
@@ -943,13 +943,54 @@ pub async fn post_ensure_bare(
     }
 }
 
-/// `POST /api/index/warm/:repo` — full SearchStore regen from git (default branch `main`).
+/// Query for `POST /api/index/warm/:repo`.
+#[derive(Debug, Deserialize)]
+pub struct IndexWarmQuery {
+    /// Git branch to index. When omitted, uses catalog publish branch, then bare HEAD, then `main`.
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+fn branch_name_is_safe(branch: &str) -> bool {
+    !branch.is_empty()
+        && branch
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '/')
+        && !branch.contains("..")
+        && !branch.starts_with('/')
+        && !branch.ends_with('/')
+}
+
+/// Resolve which branch `/api/index/warm` should index.
+/// Prefer explicit `?branch=`, then catalog publish branch, then bare symbolic HEAD, then `main`.
+pub(crate) fn resolve_index_warm_branch(
+    slug: &str,
+    query_branch: Option<&str>,
+    catalog_publish_branch: Option<&str>,
+    bare_head_branch: Option<&str>,
+) -> String {
+    if let Some(b) = query_branch.map(str::trim).filter(|b| !b.is_empty()) {
+        return b.to_string();
+    }
+    if let Some(b) = catalog_publish_branch.map(str::trim).filter(|b| !b.is_empty()) {
+        return b.to_string();
+    }
+    if let Some(b) = bare_head_branch.map(str::trim).filter(|b| !b.is_empty()) {
+        return b.to_string();
+    }
+    let _ = slug;
+    crate::types::DEFAULT_BRANCH.to_string()
+}
+
+/// `POST /api/index/warm/:repo` — full SearchStore regen from git.
+/// Optional `?branch=`; when omitted, indexes the catalog publish branch (not always `main`).
 /// Always rebuilds; leftover `index.db.json` / a matching store head must not skip ingest.
 /// Node FQDN / loopback only (not parked Hosts).
 pub async fn post_index_warm(
     State(state): State<AppState>,
     headers: HeaderMap,
     AxPath(repo): AxPath<String>,
+    Query(query): Query<IndexWarmQuery>,
 ) -> impl IntoResponse {
     #[derive(Serialize)]
     struct WarmResponse {
@@ -983,7 +1024,34 @@ pub async fn post_index_warm(
         }
     };
 
-    let branch = crate::types::DEFAULT_BRANCH.to_string();
+    let catalog_branch = state
+        .authorized_repos
+        .as_ref()
+        .and_then(|a| a.repos.get(&slug))
+        .map(|anchor| anchor.branch.as_str());
+    let bare_head = git::default_branch_from_bare_head(&state.repo_path, &slug);
+    let requested_branch = resolve_index_warm_branch(
+        &slug,
+        query.branch.as_deref(),
+        catalog_branch,
+        bare_head.as_deref(),
+    );
+
+    if !branch_name_is_safe(&requested_branch) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(WarmResponse {
+                ok: false,
+                repo: slug,
+                branch: requested_branch,
+                tip: None,
+                error: Some("invalid branch name".into()),
+            }),
+        )
+            .into_response();
+    }
+
+    let branch = requested_branch;
     let root = state.repo_path.clone();
     let slug_out = slug.clone();
     let branch_out = branch.clone();
@@ -1048,5 +1116,51 @@ pub async fn post_index_warm(
             }),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod index_warm_branch_tests {
+    use super::{branch_name_is_safe, resolve_index_warm_branch};
+
+    #[test]
+    fn query_branch_wins_over_catalog() {
+        assert_eq!(
+            resolve_index_warm_branch("clevertree-site", Some("main"), Some("release"), Some("release")),
+            "main"
+        );
+    }
+
+    #[test]
+    fn catalog_publish_branch_when_no_query() {
+        assert_eq!(
+            resolve_index_warm_branch("clevertree-site", None, Some("release"), Some("main")),
+            "release"
+        );
+    }
+
+    #[test]
+    fn bare_head_when_no_catalog() {
+        assert_eq!(
+            resolve_index_warm_branch("orphan", None, None, Some("develop")),
+            "develop"
+        );
+    }
+
+    #[test]
+    fn defaults_to_main() {
+        assert_eq!(
+            resolve_index_warm_branch("x", None, None, None),
+            "main"
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_branch_names() {
+        assert!(!branch_name_is_safe("../x"));
+        assert!(!branch_name_is_safe("/main"));
+        assert!(!branch_name_is_safe("main/"));
+        assert!(branch_name_is_safe("release"));
+        assert!(branch_name_is_safe("feature/foo"));
     }
 }
