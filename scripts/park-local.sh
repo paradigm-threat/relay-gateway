@@ -150,6 +150,7 @@ cmd_unit() {
   (cd "$GW_DIR/../relay-runtime" && cargo test --locked \
     --test stdlib_relay_modules \
     --test paradigm_files_render \
+    --test dirnav_expand \
     --test json_builtins \
     --test cleverscript_sugar)
   log "relay-gateway park Host / SSR failure regressions"

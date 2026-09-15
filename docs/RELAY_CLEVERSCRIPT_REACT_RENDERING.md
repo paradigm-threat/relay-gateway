@@ -102,3 +102,4 @@ Hosts should map native input into a **small, documented event record** (see pla
 - [`RELAY_MARKDOWN_IR.md`](RELAY_MARKDOWN_IR.md) — markdown + `anchorOnClick` contract.
 - [`RELAY_EMBED_CLIENT_GET_INTERCEPT.md`](RELAY_EMBED_CLIENT_GET_INTERCEPT.md) — parked-site embed is WASM-only (no npm React); React-as-native deferred.
 - [`relay-runtime/docs/CROSS_PLATFORM_OS_SUPPORT_PLAN.md`](../../relay-runtime/docs/CROSS_PLATFORM_OS_SUPPORT_PLAN.md) — native components and host-owned media/UI.
+- [`relay-runtime/docs/CLEVERSCRIPT_COMPONENT_TESTING.md`](../../relay-runtime/docs/CLEVERSCRIPT_COMPONENT_TESTING.md) — test clicks via `HandlerId` / `invoke_handler` and re-run (not DOM/OS as the primary suite).

@@ -33,7 +33,7 @@ Park tip already follows this for GET (`hooks/server/get.cs` is a thin chain) an
 
 ## Next helper candidates (prefer Rust)
 
-When tip code grows loops that look like libraries, extract here and add **`relay-runtime` tests** (`tests/stdlib_relay_modules.rs` or new cases) **before** tip call sites.
+When tip code grows loops that look like libraries, extract here and add a **layer-1** test (`tests/stdlib_relay_modules.rs` or a mini-hook vnode/`invoke_handler` case — see [`relay-runtime/docs/CLEVERSCRIPT_COMPONENT_TESTING.md`](../../relay-runtime/docs/CLEVERSCRIPT_COMPONENT_TESTING.md)) **before** tip call sites.
 
 | Candidate | Why |
 |-----------|-----|

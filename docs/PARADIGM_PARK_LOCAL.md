@@ -83,7 +83,7 @@ No fleet `RELAY_AUTHORIZED_REPOS_PATH` / catalog trust root — local mirrors ar
 | Check | Command | Covers |
 |-------|---------|--------|
 | `@relay/*` tip helpers | `park-local.sh unit` → `stdlib_relay_modules` | path/date/catalog/util |
-| PT shell fixture render | `paradigm_files_render` | get.jsx / Layout fixture |
+| PT shell fixture render | `paradigm_files_render` | get.jsx / Layout fixture; click recipe in [`CLEVERSCRIPT_COMPONENT_TESTING.md`](../../relay-runtime/docs/CLEVERSCRIPT_COMPONENT_TESTING.md) |
 | CS language / JSON | `cleverscript_sugar`, `json_builtins` | G-001/002/008 |
 | Park Host → repo | `test_parked_domain_routes_to_repo` | routing |
 | Unknown Host ≠ fallback | `test_unknown_host_does_not_fall_back_when_parked` | G-005 neighbor |
@@ -109,7 +109,7 @@ No fleet `RELAY_AUTHORIZED_REPOS_PATH` / catalog trust root — local mirrors ar
 - [`SERVER_HOOKS.md`](./SERVER_HOOKS.md) — heavy work in Rust; CS thin
 - [`QUERY_CLEVERSCRIPT.md`](./QUERY_CLEVERSCRIPT.md) — QUERY routes only
 - [`CS_HOST_HELPERS.md`](./CS_HOST_HELPERS.md) — next Rust helper candidates; remaining CS gaps: JSX prop spread and mutable `push`/`pop` (intentionally deferred)
+- [`relay-runtime/docs/CLEVERSCRIPT_COMPONENT_TESTING.md`](../../relay-runtime/docs/CLEVERSCRIPT_COMPONENT_TESTING.md) — vnode + handler unit tests for DirNav/Nav (OS smoke second)
 - [`DOCKER_IPFS_DEV.md`](./DOCKER_IPFS_DEV.md) — thin media canary (separate from park SSR)
-- [`CS_HOST_HELPERS.md`](./CS_HOST_HELPERS.md) — next Rust helper candidates
 
 *Last updated: 2026-08-02*
