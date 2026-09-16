@@ -306,7 +306,49 @@ fn want_static_markdown_html(
 /// Virtual SPA routes that have no tip blob but should stay HTTP 200 (indexable chrome).
 fn is_spa_virtual_path(rel: &str) -> bool {
     let p = rel.trim().trim_matches('/');
-    p.is_empty() || p.eq_ignore_ascii_case("search")
+    if p.is_empty() {
+        return true;
+    }
+    if p.eq_ignore_ascii_case("search") {
+        return true;
+    }
+    // /search/{topic} — park SearchPage SSR (no tip blob).
+    let lower = p.to_ascii_lowercase();
+    lower.starts_with("search/")
+}
+
+/// Sanitize `?q=` for `/search/{topic}` (letters, digits, `_`, `-`; spaces → `_`).
+fn sanitize_search_topic(q: &str) -> String {
+    let mut out = String::new();
+    for ch in q.trim().chars() {
+        if ch.is_ascii_whitespace() {
+            if !out.is_empty() && !out.ends_with('_') {
+                out.push('_');
+            }
+            continue;
+        }
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Bare `/search?q=topic` → tip path `search/topic` so SSR seeds SearchPage.
+fn spa_search_rel_from_query(rel: &str, qmap: &HashMap<String, String>) -> Option<String> {
+    let p = rel.trim().trim_matches('/');
+    if !p.eq_ignore_ascii_case("search") {
+        return None;
+    }
+    let raw = qmap.get("q")?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let topic = sanitize_search_topic(raw);
+    if topic.is_empty() {
+        return None;
+    }
+    Some(format!("search/{topic}"))
 }
 
 /// Missing `DIR/page.md` when `DIR` is a git Tree → directory auto-index (HTTP 200 shell).
@@ -480,7 +522,9 @@ pub fn git_resolve_and_respond(
                 let wants_shell = has_get_hook
                     && !asset_like
                     && (accept_prefers_html(headers) || embed_query_flag(&qmap));
-                let spa_virtual = is_spa_virtual_path(rel);
+                let rel_for_shell = spa_search_rel_from_query(rel, &qmap)
+                    .unwrap_or_else(|| rel.to_string());
+                let spa_virtual = is_spa_virtual_path(&rel_for_shell);
                 let auto_index_dir = auto_index_dir_if_tree(&tree, rel);
                 let missing_for_seo =
                     wants_shell && !spa_virtual && auto_index_dir.is_none();
@@ -502,7 +546,17 @@ pub fn git_resolve_and_respond(
                     serde_json::json!({})
                 };
                 if let Some(resp) = try_server_get_hook(
-                    &repo, branch, repo_name, rel, headers, &commit, None, &ct, None, &qmap, extra,
+                    &repo,
+                    branch,
+                    repo_name,
+                    &rel_for_shell,
+                    headers,
+                    &commit,
+                    None,
+                    &ct,
+                    None,
+                    &qmap,
+                    extra,
                 ) {
                     if wants_shell {
                         if response_content_type_is_html(&resp) {
@@ -1227,6 +1281,20 @@ export default function run(ctx, next) {
         assert!(html.contains("data-relay-ssr=\"1\""), "{html}");
         assert!(html.contains("Opt-in SSR"), "{html}");
         assert!(html.contains("/assets/embed.js"), "{html}");
+    }
+
+    #[test]
+    fn spa_search_query_rewrites_to_topic_path() {
+        let mut q = HashMap::new();
+        q.insert("q".into(), "cia ops".into());
+        assert_eq!(
+            spa_search_rel_from_query("search", &q).as_deref(),
+            Some("search/cia_ops")
+        );
+        assert!(spa_search_rel_from_query("search/cia", &q).is_none());
+        assert!(is_spa_virtual_path("search/cia_ops"));
+        assert!(is_spa_virtual_path("search"));
+        assert!(!is_spa_virtual_path("science/computing"));
     }
 
     #[tokio::test]
