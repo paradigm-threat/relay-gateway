@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Relay production ops (SSH, autossh, deploy, debug)
 
-Use this when the user asks to deploy, restart, inspect logs, or debug **relay-gateway** on production masters (**iad1**, **sjc1**, **hkg1** Rackspace Spot VMs). Paths below are relative to this crate root (**`relay-gateway/`**).
+Use this when the user asks to deploy, restart, inspect logs, or debug **relay-gateway** on production masters (**iad1**, **ord1**, **hkg1** Rackspace Spot VMs). Paths below are relative to this crate root (**`relay-gateway/`**).
 
 **Provision / first install:** **[`docs/RELAY_INFRA_OPS.md`](../docs/RELAY_INFRA_OPS.md)** + **`./scripts/relay-master-deploy.sh`**. **Ongoing updates:** **`./scripts/relay-fleet.sh`** (see **[`docs/RELAY_OPS.md`](../docs/RELAY_OPS.md)**).
 
@@ -48,7 +48,7 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
 
    ```bash
    TGZ=target/relay-linode-deploy.tgz
-   HOST=iad1.relaygateway.net   # or sjc1 / hkg1
+   HOST=iad1.relaygateway.net   # or ord1 / hkg1
    scp -i ~/.ssh/id_ed25519_relay_gateway -o IdentitiesOnly=yes -o BatchMode=yes "$TGZ" "ubuntu@${HOST}:/tmp/relay-linode-deploy.tgz"
    ssh -i ~/.ssh/id_ed25519_relay_gateway -o IdentitiesOnly=yes -o BatchMode=yes "ubuntu@${HOST}" 'sudo bash -s' <<'REMOTE'
    set -euo pipefail
@@ -62,7 +62,7 @@ Use this when the user asks to deploy, restart, inspect logs, or debug **relay-g
    REMOTE
    ```
 
-3. **All production masters (no seed):** **`./scripts/relay-fleet.sh --build deploy-all`** (or **`./scripts/deploy-all-masters.sh`**, which wraps fleet with **`--build`**). Tarball + `install.sh update` on **iad1**, **sjc1**, and **hkg1**, restart **`relay-gateway`** / **`relay-git-daemon`** / **`relay-git-proxy`**. **SSH and deploy scripts should use the hostname** (**`iad1.relaygateway.net`**, etc.), not a literal IPv4 from old notes.
+3. **All production masters (no seed):** **`./scripts/relay-fleet.sh --build deploy-all`** (or **`./scripts/deploy-all-masters.sh`**, which wraps fleet with **`--build`**). Tarball + `install.sh update` on **iad1**, **ord1**, and **hkg1**, restart **`relay-gateway`** / **`relay-git-daemon`** / **`relay-git-proxy`**. **SSH and deploy scripts should use the hostname** (**`iad1.relaygateway.net`**, etc.), not a literal IPv4 from old notes.
 
    ```bash
    ./scripts/relay-fleet.sh --build deploy-all

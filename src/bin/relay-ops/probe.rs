@@ -51,6 +51,12 @@ pub struct NodeProbe {
     /// `Some(false)` = SSH worked and `/opt/relay` is missing (empty VM).
     #[serde(default)]
     pub install_present: Option<bool>,
+    /// Parked apex TLS via this node's IP (`--resolve` SNI). `None` = not probed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub park_tls_ok: Option<bool>,
+    /// Domain used for `park_tls_ok` (first `health.sslDomains` entry).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub park_tls_domain: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -284,10 +290,17 @@ pub async fn probe_fleet(
 ) -> (Vec<NodeProbe>, Option<IngressProbe>, Vec<String>) {
     let git_port = fleet.git_port();
     let repos = fleet.git_repos.clone();
+    let park_domain = fleet
+        .health
+        .ssl_domains
+        .first()
+        .cloned()
+        .or_else(|| Some("paradigmthreat.net".into()));
     let mut set = tokio::task::JoinSet::new();
     for n in fleet.nodes.clone() {
         let repos = repos.clone();
-        set.spawn(async move { probe_node(&n, git_port, &repos).await });
+        let park_domain = park_domain.clone();
+        set.spawn(async move { probe_node(&n, git_port, &repos, park_domain.as_deref()).await });
     }
     let mut nodes = Vec::new();
     while let Some(res) = set.join_next().await {
@@ -359,10 +372,17 @@ fn unreachable_probe(
         ssh_ok: None,
         host_key_changed: false,
         install_present: None,
+        park_tls_ok: None,
+        park_tls_domain: None,
     }
 }
 
-async fn probe_node(node: &FleetNode, git_port: u16, repos: &[String]) -> NodeProbe {
+async fn probe_node(
+    node: &FleetNode,
+    git_port: u16,
+    repos: &[String],
+    park_domain: Option<&str>,
+) -> NodeProbe {
     let fqdn = node.fqdn.clone();
     // DNS first: empty result is a laptop-resolver miss (boot race). No SYNs, no HTTPS.
     let dns = resolve_ips(&fqdn).await;
@@ -400,6 +420,8 @@ async fn probe_node(node: &FleetNode, git_port: u16, repos: &[String]) -> NodePr
         .as_ref()
         .map(|st| index_stale_from_status(st))
         .unwrap_or((Vec::new(), true));
+    let (park_tls_ok, park_tls_domain) =
+        park_tls_via_node_ip(park_domain, dns.first().map(|s| s.as_str())).await;
     NodeProbe {
         fqdn,
         dns,
@@ -421,7 +443,48 @@ async fn probe_node(node: &FleetNode, git_port: u16, repos: &[String]) -> NodePr
         ssh_ok: None,
         host_key_changed: false,
         install_present: None,
+        park_tls_ok,
+        park_tls_domain,
     }
+}
+
+/// HTTPS GET with SNI=`domain` forced to `ip` — catches missing park-tls on one master
+/// while multi-A DNS still looks fine from other nodes.
+async fn park_tls_via_node_ip(
+    domain: Option<&str>,
+    ip: Option<&str>,
+) -> (Option<bool>, Option<String>) {
+    let Some(domain) = domain.map(str::trim).filter(|d| !d.is_empty()) else {
+        return (None, None);
+    };
+    let Some(ip) = ip.map(str::trim).filter(|d| !d.is_empty()) else {
+        return (None, Some(domain.to_string()));
+    };
+    let resolve = format!("{domain}:443:{ip}");
+    let url = format!("https://{domain}/");
+    let out = Command::new("curl")
+        .args([
+            "-sS",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "--max-time",
+            "6",
+            "--resolve",
+            &resolve,
+            &url,
+        ])
+        .output()
+        .await;
+    let ok = match out {
+        Ok(o) if o.status.success() => {
+            let code = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            matches!(code.as_str(), "200" | "301" | "302" | "303" | "307" | "308")
+        }
+        _ => false,
+    };
+    (Some(ok), Some(domain.to_string()))
 }
 
 fn merge_status_into_config(cfg: &mut ConfigProbe, st: &StatusProbe) {
@@ -1316,6 +1379,8 @@ mod tests {
             ssh_ok: None,
             host_key_changed: false,
             install_present: None,
+            park_tls_ok: Some(true),
+            park_tls_domain: Some("paradigmthreat.net".into()),
         }
     }
 

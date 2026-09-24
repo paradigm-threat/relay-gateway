@@ -57,7 +57,7 @@ pub fn write_parked_caddyfile(domains: &HashMap<String, String>) -> std::io::Res
             }
         }
         out.push_str(&format!(
-            "{host} {{\n\ttls {chain} {key}\n\treverse_proxy 127.0.0.1:{upstream}\n}}\n\n",
+            "{host} {{\n\ttls {chain} {key}\n\treverse_proxy 127.0.0.1:{upstream} {{\n\t\ttransport http {{\n\t\t\tdial_timeout 2s\n\t\t\tresponse_header_timeout 8s\n\t\t}}\n\t}}\n}}\n\n",
             host = host,
             chain = chain.display(),
             key = key.display(),

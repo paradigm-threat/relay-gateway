@@ -17,6 +17,7 @@ cargo build --bin relay-brain --bin relay-ops
 cp ops/systemd/relay-brain.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now relay-brain.service
+# Or: relay-ops install-service (copies relay-brain + write execute-mode unit with checkout/GitLab env)
 ```
 
 Default bind: `http://127.0.0.1:7781`  
@@ -24,6 +25,8 @@ Token: `RELAY_BRAIN_TOKEN` or auto-created `~/.local/state/relay-brain/token`
 Feed: `~/.local/state/relay-brain/feed.jsonl`
 
 Brain stops when the laptop sleeps/off (user systemd).
+
+UI **`observe-only`** means auto-run is off (`RELAY_BRAIN_EXECUTE` unset / missing `--execute`) or the unit is misconfigured — probes may still run, but safe leaves (`catalog_missing`, `index_stale`) will not execute.
 
 ## Operator workflow
 

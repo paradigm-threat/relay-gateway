@@ -28,7 +28,7 @@ Prefer **tip-notify** (`POST /hooks/peer`) over enabling **`git.autoPush`** unti
 
 ### Post-push mesh sync (agents / go-live)
 
-On catalog repos with **`publish_origin=iad1`**, **`git push iad1 HEAD:<branch>`** blocks in the **`update` hook** until **sjc1/hkg1** (from **`RELAY_MASTER_PEER_LIST`**) match the new tip, or the wait budget expires. **Success** = normal `git push` exit 0. **Timeout / partial** = push fails (`ng`) with `remote: mesh sync failed: …` on stderr.
+On catalog repos with **`publish_origin=iad1`**, **`git push iad1 HEAD:<branch>`** blocks in the **`update` hook** until **ord1/hkg1** (from **`RELAY_MASTER_PEER_LIST`**) match the new tip, or the wait budget expires. **Success** = normal `git push` exit 0. **Timeout / partial** = push fails (`ng`) with `remote: mesh sync failed: …` on stderr.
 
 Then push **GitLab** (forge backup). No client polling script required for normal agent go-live.
 
@@ -56,12 +56,12 @@ Content-repo agent canon: **`paradigm-threat-files/AGENTS.md`** and **`docs/GIT_
 2. If the client hangs: `git ls-remote <remote> refs/heads/main` — if the tip already moved, **kill the client**; the pack was accepted and `post-receive` side effects may still be running or a dead peer notify is timing out on an **old** binary.
 3. Do **not** assume GitLab tip == Relay tip; check all three Relays.
 
-## Dead peer (e.g. sjc1 Spot down)
+## Dead peer (e.g. ord1 Spot down)
 
 Symptoms:
 
 - `peer notify HTTP failed` toward that FQDN
-- Laptop `git push sjc1` hangs / times out
+- Laptop `git push ord1` hangs / times out
 - `POST /api/status?strict=1` → 503
 
 Actions:
@@ -75,7 +75,7 @@ Actions:
 
 1. `./scripts/relay-fleet.sh ssh-check`
 2. `./scripts/relay-fleet.sh status` (optional: `curl -sS -X POST 'https://<host>/api/status?strict=1'`)
-3. Deploy **non-primary** peers first: e.g. `--only=sjc1…` then `hkg1…`, smoke `health`, then **iad1** (publisher)
+3. Deploy **non-primary** peers first: e.g. `--only=ord1…` then `hkg1…`, smoke `health`, then **iad1** (publisher)
 4. Or full `./scripts/relay-fleet.sh --build update` — after each host update+restart, the script runs a **post-host health gate** (`POST /api/config`) before continuing when **`RELAY_FLEET_UPDATE_HEALTH=1`** (default **on**). Pre/post **`ssl`** checks report park Host HTTPS (warn by default; **`RELAY_FLEET_SSL_GATE=1`** to hard-fail).
 
 Always **`--build`** after Rust changes so `relay-hook-handler` (push path) ships with `relay-gateway`.

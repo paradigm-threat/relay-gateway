@@ -537,6 +537,7 @@ fn input_for_node<'a>(n: &'a NodeProbe, spot_ip: Option<&str>) -> RecommendInput
         sync_anomalies: &n.sync_anomalies,
         dns_mismatch: recommend::dns_mismatch(&n.dns, spot_ip),
         tcp22: n.tcp22,
+        tcp443: n.tcp443,
         https_ok: n.https_config.as_ref().map(|c| c.ok).unwrap_or(false),
         ssh_ok: n.ssh_ok,
         host_key_changed: n.host_key_changed,
@@ -544,6 +545,7 @@ fn input_for_node<'a>(n: &'a NodeProbe, spot_ip: Option<&str>) -> RecommendInput
         has_spot_ip: spot_ip.is_some(),
         index_ok: n.index_ok,
         index_stale_count: n.index_stale_repos.len(),
+        park_tls_broken: n.park_tls_ok == Some(false),
     }
 }
 

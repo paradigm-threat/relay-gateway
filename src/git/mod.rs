@@ -36,6 +36,7 @@ pub mod sqlite_index;
 pub mod ssr_client_hook;
 pub mod ssr_html_cache;
 pub mod ssr_limits;
+pub mod ssr_policy;
 pub mod web_assets;
 pub mod worktree;
 

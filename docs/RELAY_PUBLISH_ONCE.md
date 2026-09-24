@@ -3,7 +3,7 @@
 **Status:** client write fence is implemented (`enforce_publish_origin_fence` on `pre-receive` and HTTP PUT/DELETE). Replica skip (`enforce_push_range` on peer-fetch) is **not**. Gateways parse catalog `publish_origin` and reject client writes on non-publishers when the field is set. Empty/omitted = no fence (compat).  
 **Settled product model:** **update the SearchStore on commit**, not on QUERY. QUERY / MCP are **read-only**. If `docs_indexed_head` lags the git tip, they return rows with **`indexFresh: false`** — they never JIT-rebuild.
 
-**This fleet:** `publish_branch` is **`main`**. `publish_origin` is **`iad1.relaygateway.net`** (a hostname, not a git branch). Authors `git push` `main` to iad1; sjc1/hkg1 fast-forward `main`. Do not add a second publish ref.
+**This fleet:** `publish_branch` is **`main`**. `publish_origin` is **`iad1.relaygateway.net`** (a hostname, not a git branch). Authors `git push` `main` to iad1; ord1/hkg1 fast-forward `main`. Do not add a second publish ref.
 
 This document analyzes a **publish-once** mesh: run the expensive full cycle **once** on the publishing node, advance `publish_branch` under an existing catalog signature, let replicas **take Git immediately**, and **warm each replica’s SearchStore in the background**. It does **not** propose a new server signing key.
 
@@ -380,7 +380,7 @@ Do **not** introduce per-commit SQLite files.
 
 ## Pushing to multiple remotes at once
 
-`git push iad1 sjc1 hkg1` (or a parallel `xargs -P` / `push.parallel`) does **not** go through the mesh. Each URL is a separate `receive-pack`. From Git’s point of view **every listed remote is a publisher**, not a replica. Publish-once only applies to nodes that **learn the tip via peer-fetch**, not via the client’s pack.
+`git push iad1 ord1 hkg1` (or a parallel `xargs -P` / `push.parallel`) does **not** go through the mesh. Each URL is a separate `receive-pack`. From Git’s point of view **every listed remote is a publisher**, not a replica. Publish-once only applies to nodes that **learn the tip via peer-fetch**, not via the client’s pack.
 
 [`RELAY_MESH_OPS.md`](./RELAY_MESH_OPS.md) already says push **one Relay at a time** and let the mesh catch up. That becomes the **intended** client path under this plan, not just a hung-push workaround.
 
@@ -425,7 +425,7 @@ Pushing **different** commits to different remotes is the existing fast-forward 
 
 ### Draft vs `publish_branch`
 
-Multi-remote to **`dev`** is the same story: each direct push is a full check. There is no “I already pushed iad1, so sjc1 can skip.” For **`publish_branch`**, only `publish_origin` accepts client `receive-pack`; other remotes reject. Authors use the stable git hostname, not a list of masters, and not GitLab.
+Multi-remote to **`dev`** is the same story: each direct push is a full check. There is no “I already pushed iad1, so ord1 can skip.” For **`publish_branch`**, only `publish_origin` accepts client `receive-pack`; other remotes reject. Authors use the stable git hostname, not a list of masters, and not GitLab.
 
 ### What not to do
 

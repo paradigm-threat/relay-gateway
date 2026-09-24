@@ -118,6 +118,38 @@ pub fn get(
     guard.entries.get(&key).cloned()
 }
 
+/// Prefer a `/` shell for this tip, then any same-tip entry (stale path under load).
+pub fn get_shell_or_any(repo_path: &Path, branch: &str, client_hook: &str) -> Option<String> {
+    if let Some(html) = get(repo_path, branch, "/", client_hook) {
+        return Some(html);
+    }
+    if let Some(html) = get(repo_path, branch, "", client_hook) {
+        return Some(html);
+    }
+    if !cache_enabled() {
+        return None;
+    }
+    let tip = tip_commit_oid(repo_path, branch)?;
+    let repo = repo_path.to_string_lossy().into_owned();
+    let hook = client_hook.trim_start_matches('/').to_string();
+    let web_assets_oid = web_assets_oid_from_content_bare(repo_path);
+    let Ok(guard) = state().lock() else {
+        return None;
+    };
+    guard.entries.iter().find_map(|(k, html)| {
+        if k.repo == repo
+            && k.branch == branch
+            && k.tip_commit == tip
+            && k.client_hook == hook
+            && k.web_assets_oid == web_assets_oid
+        {
+            Some(html.clone())
+        } else {
+            None
+        }
+    })
+}
+
 /// Store a rendered SSR HTML document (FIFO eviction when full).
 pub fn put(repo_path: &Path, branch: &str, initial_path: &str, client_hook: &str, html: String) {
     if !cache_enabled() {
@@ -204,5 +236,9 @@ mod tests {
         assert_eq!(hit.as_deref(), Some("<html/>"));
         let miss = get(dir.path(), "main", "/other.md", "hooks/client/get.jsx");
         assert!(miss.is_none());
+        assert_eq!(
+            get_shell_or_any(dir.path(), "main", "hooks/client/get.jsx").as_deref(),
+            Some("<html/>")
+        );
     }
 }

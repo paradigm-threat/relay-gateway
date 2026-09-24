@@ -1,0 +1,12 @@
+[Unit]
+Description=Relay gateway loopback liveness every minute
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=60s
+AccuracySec=15s
+Persistent=true
+Unit=relay-gateway-liveness.service
+
+[Install]
+WantedBy=timers.target

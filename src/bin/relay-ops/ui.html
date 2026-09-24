@@ -257,8 +257,8 @@ function nodeCardHtml(n, d) {
   const extraTips = tips.filter(t => !names.includes(t.repo)).map(t =>
     `<li class="muted">${esc(t.repo)} ${t.sha ? esc(shortSha(t.sha)) : esc(t.error || '')}</li>`
   ).join('');
-  const syncClass = !n.healthy ? 'bad' : (anomalies.length ? 'bad' : (!n.sync_ok ? 'warn' : (!n.index_ok ? 'warn' : 'ok')));
-  const syncLabel = !n.healthy ? 'down' : (anomalies.length ? 'anomaly' : (!n.sync_ok ? 'sync' : (!n.index_ok ? 'index' : 'up')));
+  const syncClass = !n.healthy ? 'bad' : (anomalies.length ? 'bad' : (n.park_tls_ok === false ? 'warn' : (!n.sync_ok ? 'warn' : (!n.index_ok ? 'warn' : 'ok'))));
+  const syncLabel = !n.healthy ? 'down' : (anomalies.length ? 'anomaly' : (n.park_tls_ok === false ? 'tls' : (!n.sync_ok ? 'sync' : (!n.index_ok ? 'index' : 'up'))));
   const repoCountLabel = repos.length
     ? (repos.length + ' repo' + (repos.length === 1 ? '' : 's'))
     : (tips.length ? (tips.length + ' repo' + (tips.length === 1 ? '' : 's')) : '0 repos');
@@ -266,6 +266,9 @@ function nodeCardHtml(n, d) {
     ? `<div class="warn">${missing.length ? ('missing ' + missing.join(', ')) : ''}` +
       `${missing.length && driftRows.length ? ' · ' : ''}` +
       `${driftRows.length ? ('drift ' + driftRows.map(x => x.repo + '@' + x.branch + (x.kind === 'replica_ahead' ? ' (ahead)' : '')).join(', ')) : ''}</div>`
+    : '';
+  const parkTlsDetail = n.park_tls_ok === false
+    ? `<div class="warn">park TLS broken${n.park_tls_domain ? (' (' + esc(n.park_tls_domain) + ' via node IP)') : ''} — run SSL</div>`
     : '';
   const anomalyDetail = anomalies.length
     ? `<div class="bad">${anomalies.map(a => esc(a.repo + '@' + a.branch + ': publisher ' + a.publisher_fqdn + ' behind ' + a.replica_fqdn)).join(' · ')}</div>`
@@ -300,6 +303,9 @@ function nodeCardHtml(n, d) {
     const ip = spot ? esc(spot.ip) : esc((n.dns && n.dns[0]) || '');
     actions.push(btn('reclaim', 'Reclaim', 'warn', `confirmJob('Reclaim (Spot install-only) ' + '${esc(n.fqdn)}', {kind:'reclaim', fqdn:'${esc(n.fqdn)}', ip: '${ip}'} )`));
   }
+  if (n.park_tls_ok === false) {
+    actions.push(btn('ssl', 'SSL report', '', `job({kind:'ssl'})`));
+  }
   return `
       <div class="row"><strong>${esc(n.fqdn)}</strong><span class="${syncClass}">${syncLabel}</span></div>
       <div class="muted">DNS ${ (n.dns||[]).join(', ') || '—' }</div>
@@ -311,6 +317,7 @@ function nodeCardHtml(n, d) {
         <span class="link" onclick="openBrowser('${esc(n.fqdn)}')">${(repos.length || tips.length) ? 'Browse' : ''}</span>
       </div>
       ${syncDetail}
+      ${parkTlsDetail}
       ${anomalyDetail}
       ${indexDetail}
       ${spot ? `<div class="${drift ? 'bad' : 'ok'}">Spot ${esc(spot.ip)}${drift ? ' (DNS mismatch)' : ''}</div>` : ''}
@@ -420,7 +427,8 @@ const ACTION_TITLES = {
   'index-warm': 'Rebuild SearchStore for repos whose indexed_head lags git tip (after peer fetch without post-receive).',
   'repair': 'Run install.sh repair on an existing /opt/relay install. Use when units are broken. Not for host-key change, empty VMs, or git tip drift.',
   'reclaim': 'Spot install-only (relay-master-deploy.sh). Use when SSH works but /opt/relay is missing (new empty VM). Reinstalls; not for git tip drift.',
-  'known-hosts': 'Resets SSH host keys for the whole fleet so Repair/Reclaim can connect after Spot replacement.'
+  'known-hosts': 'Resets SSH host keys for the whole fleet so Repair/Reclaim can connect after Spot replacement.',
+  'ssl': 'HTTPS report for node FQDNs and parked domains (per-IP SNI). Use when park TLS is broken on a master.'
 };
 
 function paintBrowserShell() {

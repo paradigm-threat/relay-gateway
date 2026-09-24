@@ -202,6 +202,19 @@ pub struct EmbedSeoExtras<'a> {
     pub site_name: Option<&'a str>,
     /// When true (typically `/`), emit `WebSite` + `SearchAction` JSON-LD instead of `Article`.
     pub is_website_home: bool,
+    /// `#root` holds a pre-hydrate notice only — do **not** set `data-relay-ssr` so embed.js
+    /// CSR-mounts the client hook and replaces the notice.
+    pub csr_placeholder: bool,
+}
+
+/// Visible `#root` body when SSR did not finish. Embed.js replaces this on CSR mount.
+pub fn ssr_timeout_notice_html() -> &'static str {
+    r#"<div id="relay-ssr-fallback" data-relay-ssr-fallback="timeout" role="status"><p><strong>This page is still loading.</strong> Server-side render timed out; the live page should appear in a moment.</p></div>"#
+}
+
+/// Same shape when SSR slots are full (not a wall-clock timeout).
+pub fn ssr_busy_notice_html() -> &'static str {
+    r#"<div id="relay-ssr-fallback" data-relay-ssr-fallback="busy" role="status"><p><strong>This page is still loading.</strong> The server is busy pre-rendering; the live page should appear in a moment.</p></div>"#
 }
 
 /// Like [`embed_html_document_with_assets_and_title`], with optional description + canonical.
@@ -262,9 +275,18 @@ pub fn embed_html_document_with_assets_and_seo_extras(
     let title_repo = document_title(repo, site_title);
     let (root_attrs, root_inner) = match ssr_body_html {
         Some(body) if !body.trim().is_empty() => {
-            (" data-relay-ssr=\"1\"", sanitize_ssr_body_html(body))
+            if extras.csr_placeholder {
+                ("", sanitize_ssr_body_html(body))
+            } else {
+                (" data-relay-ssr=\"1\"", sanitize_ssr_body_html(body))
+            }
         }
         _ => ("", String::new()),
+    };
+    let placeholder_style = if extras.csr_placeholder {
+        r#"#relay-ssr-fallback{box-sizing:border-box;font:16px/1.45 system-ui,sans-serif;max-width:40rem;margin:2rem auto;padding:1rem 1.25rem;border:1px solid #8884;border-radius:8px;background:#fff8e6;color:#1a1a1a}#relay-ssr-fallback p{margin:0}@media (prefers-color-scheme:dark){#relay-ssr-fallback{background:#3d3518;color:#f4efe4;border-color:#c4a035}}"#
+    } else {
+        ""
     };
     let theme_style = match ssr_css {
         Some(css) if !css.trim().is_empty() => {
@@ -361,7 +383,7 @@ pub fn embed_html_document_with_assets_and_seo_extras(
   <meta name="color-scheme" content="light dark"/>
   <title>{title_repo}</title>{seo_tags}
   <link rel="stylesheet" href="{assets}/embed.css"/>
-  <style>html,body,#root{{margin:0;height:100%;}}</style>{theme_style}
+  <style>html,body,#root{{margin:0;height:100%;}}{placeholder_style}</style>{theme_style}
 </head>
 <body>
   <div id="root"{root_attrs}>{root_inner}</div>
@@ -834,5 +856,33 @@ mod tests {
         );
         assert!(html.contains(r#""@type":"WebSite""#), "{html}");
         assert!(html.contains("SearchAction"), "{html}");
+    }
+
+    #[test]
+    fn csr_placeholder_notice_does_not_mark_ssr() {
+        let html = embed_html_document_with_assets_and_seo_extras(
+            "r",
+            "main",
+            "/",
+            "/hooks/client/get.jsx",
+            Some(ssr_timeout_notice_html()),
+            None,
+            None,
+            Some("Site"),
+            None,
+            None,
+            EmbedSeoExtras {
+                csr_placeholder: true,
+                ..Default::default()
+            },
+        );
+        assert!(html.contains("Server-side render timed out"), "{html}");
+        assert!(html.contains("id=\"relay-ssr-fallback\""), "{html}");
+        assert!(html.contains("id=\"relay-embed-config\""), "{html}");
+        assert!(html.contains("embed.js"), "{html}");
+        assert!(
+            !html.contains("data-relay-ssr="),
+            "placeholder must CSR-mount, not hydrate: {html}"
+        );
     }
 }

@@ -69,12 +69,20 @@ pub struct Fingerprint {
     pub healthy_in_sync: Option<bool>,
     #[serde(default)]
     pub tcp22: Option<bool>,
+    /// Public HTTPS listener (Caddy). Combined with https_ok=false → SSR wedge.
+    #[serde(default)]
+    pub tcp443: Option<bool>,
+    #[serde(default)]
+    pub https_ok: Option<bool>,
     /// SSH diagnose failed (banner hang, auth fail, timeout) with TCP 22 open.
     #[serde(default)]
     pub ssh_failed: Option<bool>,
     /// Spot API returned an assigned IP for this node's cloudspace.
     #[serde(default)]
     pub has_spot_ip: Option<bool>,
+    /// Parked apex TLS via this node's IP failed (multi-A intermittent outage).
+    #[serde(default)]
+    pub park_tls_broken: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,8 +101,11 @@ pub struct InputFlags {
     pub unknown_down: bool,
     pub healthy_in_sync: bool,
     pub tcp22: bool,
+    pub tcp443: bool,
+    pub https_ok: bool,
     pub ssh_failed: bool,
     pub has_spot_ip: bool,
+    pub park_tls_broken: bool,
 }
 
 impl InputFlags {
@@ -109,7 +120,13 @@ impl InputFlags {
         let show_repair = crate::recommend::input_show_repair(input);
         let show_reclaim = crate::recommend::input_show_reclaim(input);
         let index_stale = input.healthy && !input.index_ok && input.index_stale_count > 0;
-        let healthy_in_sync = input.healthy && input.sync_ok && !index_stale && !has_sync_anomaly && !input.dns_mismatch;
+        let park_tls_broken = input.park_tls_broken;
+        let healthy_in_sync = input.healthy
+            && input.sync_ok
+            && !index_stale
+            && !has_sync_anomaly
+            && !input.dns_mismatch
+            && !park_tls_broken;
         let ssh_failed = input.ssh_ok == Some(false) && !input.host_key_changed;
         // "unknown_down": unhealthy without a more specific diagnosis leaf
         let unknown_down = !input.healthy
@@ -134,8 +151,11 @@ impl InputFlags {
             unknown_down,
             healthy_in_sync,
             tcp22: input.tcp22,
+            tcp443: input.tcp443,
+            https_ok: input.https_ok,
             ssh_failed,
             has_spot_ip: input.has_spot_ip,
+            park_tls_broken,
         }
     }
 }
@@ -163,8 +183,11 @@ impl Fingerprint {
             && flag_match(self.unknown_down, f.unknown_down)
             && flag_match(self.healthy_in_sync, f.healthy_in_sync)
             && flag_match(self.tcp22, f.tcp22)
+            && flag_match(self.tcp443, f.tcp443)
+            && flag_match(self.https_ok, f.https_ok)
             && flag_match(self.ssh_failed, f.ssh_failed)
             && flag_match(self.has_spot_ip, f.has_spot_ip)
+            && flag_match(self.park_tls_broken, f.park_tls_broken)
     }
 }
 
@@ -357,6 +380,7 @@ mod tests {
             sync_anomalies: &[],
             dns_mismatch: false,
             tcp22: true,
+            tcp443: true,
             https_ok: true,
             ssh_ok: None,
             host_key_changed: false,
@@ -364,6 +388,7 @@ mod tests {
             has_spot_ip: false,
             index_ok: true,
             index_stale_count: 0,
+            park_tls_broken: false,
         }
     }
 
@@ -460,6 +485,7 @@ mod tests {
             sync_anomalies: &anomalies,
             dns_mismatch: false,
             tcp22: true,
+            tcp443: true,
             https_ok: true,
             ssh_ok: None,
             host_key_changed: false,
@@ -467,6 +493,7 @@ mod tests {
             has_spot_ip: false,
             index_ok: true,
             index_stale_count: 0,
+            park_tls_broken: false,
         };
         let hit = store.match_input(&input).expect("hit");
         assert_eq!(hit.id, "publisher_behind_replica");
@@ -497,5 +524,23 @@ mod tests {
         let hit = store.match_input(&zombie).expect("hit");
         assert_eq!(hit.id, "tcp22_open_unresponsive");
         assert_eq!(hit.primary_action.as_deref(), Some("reclaim"));
+    }
+
+    #[test]
+    fn gateway_wedged_beats_repair_when_443_up() {
+        let store = load_default(Some(Path::new(env!("CARGO_MANIFEST_DIR"))));
+        if store.scenarios.is_empty() {
+            return;
+        }
+        let mut wedge = base(&[], &[]);
+        wedge.healthy = false;
+        wedge.https_ok = false;
+        wedge.tcp443 = true;
+        wedge.ssh_ok = Some(true);
+        wedge.install_present = Some(true);
+        wedge.has_spot_ip = true;
+        let hit = store.match_input(&wedge).expect("hit");
+        assert_eq!(hit.id, "gateway_wedged");
+        assert!(!hit.requires_confirm);
     }
 }

@@ -71,6 +71,11 @@ fn try_server_get_hook(
     if let Some(bytes) = body_bytes {
         ctx["bodyBase64"] = serde_json::json!(B64.encode(bytes));
     }
+    let method = headers
+        .get("x-relay-http-method")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("GET");
+    ctx["httpMethod"] = serde_json::json!(method);
     if let serde_json::Value::Object(ref mut map) = ctx {
         if let serde_json::Value::Object(extra) = extra_ctx {
             for (k, v) in extra {

@@ -17,7 +17,7 @@ set -euo pipefail
 TIMEOUT="${RELAY_FLEET_SSL_TIMEOUT:-20}"
 STRICT="${RELAY_FLEET_SSL_STRICT:-0}"
 LABEL="${RELAY_FLEET_SSL_LABEL:-ssl}"
-DOMAINS="${RELAY_FLEET_SSL_DOMAINS:-relay.paradigmthreat.net clevertree.net www.clevertree.net relay.clevertree.net}"
+DOMAINS="${RELAY_FLEET_SSL_DOMAINS:-paradigmthreat.net www.paradigmthreat.net relay.paradigmthreat.net clevertree.net www.clevertree.net relay.clevertree.net}"
 NODES="${RELAY_FLEET_SSL_NODES:-}"
 
 if [[ -z "$NODES" ]]; then

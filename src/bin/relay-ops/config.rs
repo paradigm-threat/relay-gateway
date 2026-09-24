@@ -98,12 +98,17 @@ impl OpsConfig {
             })
     }
 
-    /// Bootstrap URL: config/env, else a GitLab-looking git remote on the checkout.
+    /// Bootstrap URL: config/env, else a GitLab-looking git remote on the checkout
+    /// (`RELAY_OPS_CHECKOUT` / config), else cwd.
     pub fn gitlab_url_resolved(&self) -> Option<String> {
         self.gitlab_url
             .clone()
             .filter(|s| !s.trim().is_empty())
-            .or_else(detect_gitlab_remote)
+            .or_else(|| {
+                self.checkout_path()
+                    .and_then(|root| gitlab_remote_in(&root))
+                    .or_else(detect_gitlab_remote)
+            })
     }
 
     pub fn checkout_path(&self) -> Option<PathBuf> {
@@ -190,10 +195,13 @@ fn detect_checkout() -> Option<PathBuf> {
 }
 
 fn detect_gitlab_remote() -> Option<String> {
-    let root = detect_checkout()?;
+    detect_checkout().and_then(|root| gitlab_remote_in(&root))
+}
+
+fn gitlab_remote_in(root: &Path) -> Option<String> {
     let out = Command::new("git")
         .args(["-C"])
-        .arg(&root)
+        .arg(root)
         .args(["remote", "-v"])
         .output()
         .ok()?;
@@ -231,6 +239,31 @@ mod tests {
         assert_eq!(
             cfg.gitlab_url_resolved().as_deref(),
             Some("https://gitlab.example/g/p")
+        );
+    }
+
+    #[test]
+    fn gitlab_url_resolved_from_checkout_env() {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        // This crate root is the relay-gateway checkout with a git remote.
+        if !manifest.join(".git").exists() && !manifest.join("ops/fleet.json").is_file() {
+            return;
+        }
+        let cfg = OpsConfig {
+            gitlab_url: None,
+            gateway_checkout: Some(manifest.display().to_string()),
+            ..Default::default()
+        };
+        let url = cfg.gitlab_url_resolved();
+        assert!(
+            url.is_some(),
+            "expected git remote from checkout {}",
+            manifest.display()
+        );
+        let url = url.unwrap();
+        assert!(
+            url.contains("gitlab") || url.contains("relay-gateway") || url.contains("clevertree"),
+            "unexpected remote {url}"
         );
     }
 }

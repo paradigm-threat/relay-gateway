@@ -5,7 +5,7 @@ use axum::{
     body::Bytes,
     extract::{Path as AxPath, Query, State},
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     Json,
 };
 use git2::Repository;
@@ -695,7 +695,7 @@ pub async fn get_root(
     State(state): State<AppState>,
     headers: HeaderMap,
     query: Option<Query<HashMap<String, String>>>,
-) -> impl IntoResponse {
+) -> Response {
     let qmap = query.as_ref().map(|q| &q.0);
     if git::wants_relay_tree(&headers) {
         return respond_relay_tree_root(&state, &headers, qmap);
@@ -705,9 +705,12 @@ pub async fn get_root(
         .or_else(|| helpers::repo_from_parked_domain(&state, &headers));
     if let Some(repo_name) = routed_repo {
         let branch = helpers::branch_for_request(&headers, &state, Some(&repo_name));
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            git::try_site_shell_for_root(&state, &headers, &branch, &repo_name, qmap)
-        })) {
+        let shell = tokio::task::block_in_place(|| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                git::try_site_shell_for_root(&state, &headers, &branch, &repo_name, qmap)
+            }))
+        });
+        match shell {
             Ok(Some(resp)) => return resp,
             Ok(None) => return site_shell_ssr_failed_response(),
             Err(payload) => {

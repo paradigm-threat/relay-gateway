@@ -13,7 +13,7 @@ This is the canonical DNS strategy for a Relay network whose masters may be repl
 
 Use three layers:
 
-1. **Node names:** `iad1.relaygateway.net`, `sjc1.relaygateway.net`, and `hkg1.relaygateway.net`.
+1. **Node names:** `iad1.relaygateway.net`, `ord1.relaygateway.net`, and `hkg1.relaygateway.net`.
    Each name has the current A record for exactly one master. `relay-master-deploy.sh` updates the node A record after provisioning or replacing that node.
 2. **Network ingress:** `fleet.relaygateway.net`.
    Its A/AAAA set is the materialized set of healthy fleet-node addresses. A fleet DNS reconciler resolves the configured node names and replaces stale addresses. Node names remain the source; do not copy provider IPs into configuration or documentation.
@@ -30,10 +30,10 @@ Example network zone:
 
 ```text
 iad1.relaygateway.net   A      <current iad1 IPv4>
-sjc1.relaygateway.net   A      <current sjc1 IPv4>
+ord1.relaygateway.net   A      <current ord1 IPv4>
 hkg1.relaygateway.net   A      <current hkg1 IPv4>
 fleet.relaygateway.net  A      <resolved iad1 IPv4>
-fleet.relaygateway.net  A      <resolved sjc1 IPv4>
+fleet.relaygateway.net  A      <resolved ord1 IPv4>
 fleet.relaygateway.net  A      <resolved hkg1 IPv4>
 ```
 
@@ -147,7 +147,7 @@ A single-node CNAME/ALIAS to `iad1.relaygateway.net` is safe with the existing p
 
 ```bash
 dig +short iad1.relaygateway.net A
-dig +short sjc1.relaygateway.net A
+dig +short ord1.relaygateway.net A
 dig +short fleet.relaygateway.net A
 dig +short clevertree.net A
 dig +short www.clevertree.net CNAME

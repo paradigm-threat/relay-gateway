@@ -1,0 +1,14 @@
+id: park_tls_broken
+title: Parked-domain TLS broken on this node
+kind: ops
+priority: 75
+fingerprint:
+  healthy: true
+  park_tls_broken: true
+steps: []
+primary_action: ssl
+requires_confirm: true
+message: >-
+  Parked apex TLS fails via this node's IP (multi-A clients will intermittently
+  hang). Seed park-tls certs from a peer and reload Caddy, or run the fleet SSL
+  job for per-IP detail.

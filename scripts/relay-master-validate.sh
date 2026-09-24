@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./scripts/relay-master-validate.sh --fqdn iad1.relaygateway.net
-#   ./scripts/relay-master-validate.sh --fqdn sjc1.relaygateway.net --mirror paradigm-threat-files
+#   ./scripts/relay-master-validate.sh --fqdn ord1.relaygateway.net --mirror paradigm-threat-files
 set -euo pipefail
 
 FQDN=""

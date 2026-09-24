@@ -44,7 +44,7 @@ IPFS_SWARM_PORT="${RELAY_IPFS_SWARM_PORT:-4001}"
 IPFS_PATH_DIR="${RELAY_IPFS_PATH:-$INSTALL/ipfs}"
 
 # Semicolon-separated FQDNs; used when RELAY_MASTER_PEER_LIST is unset (non-interactive) or when the operator accepts the interactive default (Enter).
-DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-iad1.relaygateway.net;sjc1.relaygateway.net;hkg1.relaygateway.net}"
+DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-iad1.relaygateway.net;ord1.relaygateway.net;hkg1.relaygateway.net}"
 DEFAULT_RELAY_MASTER_CATALOG_PATH="${DEFAULT_RELAY_MASTER_CATALOG_PATH:-/opt/relay/src/relay-master}"
 DEFAULT_RELAY_MASTER_CATALOG_GIT_URL="${DEFAULT_RELAY_MASTER_CATALOG_GIT_URL:-https://gitlab.com/clevertree/relay-master.git}"
 
@@ -557,6 +557,12 @@ install_binaries() {
   fi
   chmod +x "$INSTALL/bin/$RELAY_HTTP_BIN" "$INSTALL/bin/relay-hook-handler" "$INSTALL/bin/relay-git-proxy"
   [[ -f "$INSTALL/bin/relay-startup-catalog-sync.sh" ]] && chmod +x "$INSTALL/bin/relay-startup-catalog-sync.sh"
+  if [[ -f "$src/relay-gateway-liveness.sh" ]]; then
+    _copy_bin_if_needed "$src/relay-gateway-liveness.sh" "$INSTALL/bin/relay-gateway-liveness.sh"
+  elif [[ -f "$SCRIPT_DIR/relay-gateway-liveness.sh" ]]; then
+    cp -f "$SCRIPT_DIR/relay-gateway-liveness.sh" "$INSTALL/bin/relay-gateway-liveness.sh"
+  fi
+  [[ -f "$INSTALL/bin/relay-gateway-liveness.sh" ]] && chmod +x "$INSTALL/bin/relay-gateway-liveness.sh"
   if [[ -f "$src/relay-reconcile.sh" ]]; then
     _copy_bin_if_needed "$src/relay-reconcile.sh" "$INSTALL/bin/relay-reconcile.sh"
   elif [[ -f "$SCRIPT_DIR/relay-reconcile.sh" ]]; then
@@ -815,9 +821,17 @@ Environment=RELAY_BIND=0.0.0.0:$HTTP_PORT
 Environment=RELAY_FEATURES_STATE_PATH=$FEATURES_JSON
 Environment=RUST_LOG=info
 EnvironmentFile=-$INSTALL/relay.env
-TimeoutStartSec=600
-ExecStartPre=$INSTALL/bin/relay-startup-catalog-sync.sh
+# Soft/hard memory caps scale with the VM (Spot medium ~4Gi vs large ~16Gi).
+# 80% was too high: SSR wedges at ~10Gi RSS on Large (Recv-Q 129) before MemoryMax.
+MemoryHigh=45%
+MemoryMax=55%
+OOMPolicy=stop
+# Forge sync only in Pre (peers run after HTTP is up). Allow greenfield catalog clone.
+TimeoutStartSec=300
+ExecStartPre=$INSTALL/bin/relay-startup-catalog-sync.sh --phase=pre
 ExecStart=$INSTALL/bin/$RELAY_HTTP_BIN serve
+# Leading '-' : peer-fetch failures must not fail the unit; HTTP already serves.
+ExecStartPost=-$INSTALL/bin/relay-startup-catalog-sync.sh --phase=peers
 Restart=always
 RestartSec=3
 
@@ -868,8 +882,10 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
   write_reconcile_systemd
+  write_gateway_liveness_systemd
   systemctl daemon-reload
   systemctl enable relay-gateway relay-git-daemon relay-git-proxy 2>/dev/null || true
+  systemctl enable --now relay-gateway-liveness.timer 2>/dev/null || true
 }
 
 ensure_reconcile_seed() {
@@ -915,6 +931,34 @@ OnUnitActiveSec=15min
 RandomizedDelaySec=3min
 Unit=relay-reconcile.service
 Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
+write_gateway_liveness_systemd() {
+  [[ -f "$INSTALL/bin/relay-gateway-liveness.sh" ]] || return 0
+  cat >/etc/systemd/system/relay-gateway-liveness.service <<EOF
+[Unit]
+Description=Relay gateway loopback liveness (SSR accept-queue wedge)
+After=relay-gateway.service
+
+[Service]
+Type=oneshot
+ExecStart=$INSTALL/bin/relay-gateway-liveness.sh
+EnvironmentFile=-$INSTALL/relay.env
+EOF
+  cat >/etc/systemd/system/relay-gateway-liveness.timer <<'EOF'
+[Unit]
+Description=Relay gateway loopback liveness every minute
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=60s
+AccuracySec=15s
+Persistent=true
+Unit=relay-gateway-liveness.service
 
 [Install]
 WantedBy=timers.target
@@ -1335,6 +1379,21 @@ append_relay_env_web_assets_defaults() {
   fi
 }
 
+# Parked SSR budget. Write-if-missing so reclaim/update get the wedge-safe defaults.
+append_relay_env_ssr_defaults() {
+  local f="$INSTALL/relay.env"
+  touch "$f"
+  if ! grep -q '^RELAY_SSR_TIMEOUT_SECS=' "$f" 2>/dev/null; then
+    echo "RELAY_SSR_TIMEOUT_SECS=${RELAY_SSR_TIMEOUT_SECS:-4}" >>"$f"
+  fi
+  if ! grep -q '^RELAY_SSR_MAX_CONCURRENT=' "$f" 2>/dev/null; then
+    echo "RELAY_SSR_MAX_CONCURRENT=${RELAY_SSR_MAX_CONCURRENT:-2}" >>"$f"
+  fi
+  if ! grep -q '^RELAY_SSR_SHELL_ONLY=' "$f" 2>/dev/null; then
+    echo "RELAY_SSR_SHELL_ONLY=${RELAY_SSR_SHELL_ONLY:-1}" >>"$f"
+  fi
+}
+
 # Park/embed RUM (TTFC + CWV-ish beacons → /api/rum). Write-if-missing so operators can set 0.
 append_relay_env_rum_defaults() {
   local f="$INSTALL/relay.env"
@@ -1444,6 +1503,7 @@ do_install() {
   append_relay_env_git_ensure_bare_default
   append_relay_env_catalog_defaults
   append_relay_env_web_assets_defaults
+  append_relay_env_ssr_defaults
   append_relay_env_rum_defaults
   merge_relay_env_mesh_from_env
   lock_relay_env_permissions
@@ -1478,6 +1538,7 @@ do_update() {
   refresh_features_inventory
   append_relay_env_catalog_defaults
   append_relay_env_web_assets_defaults
+  append_relay_env_ssr_defaults
   append_relay_env_rum_defaults
   merge_relay_env_mesh_from_env
   ensure_ipfs_kubo
@@ -1541,6 +1602,7 @@ do_repair() {
   refresh_features_inventory
   append_relay_env_catalog_defaults
   append_relay_env_web_assets_defaults
+  append_relay_env_ssr_defaults
   append_relay_env_rum_defaults
   merge_relay_env_mesh_from_env
   lock_relay_env_permissions

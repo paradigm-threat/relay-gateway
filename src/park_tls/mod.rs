@@ -174,6 +174,18 @@ async fn run_once(state: &AppState) -> anyhow::Result<()> {
     }
     if need.is_empty() {
         tracing::debug!(count = domains.len(), "park_tls: certs fresh");
+        // Still fan-out so reclaimed peers that missed issuance get file certs
+        // (multi-A apex must not fall through to on-demand ACME).
+        for d in domains.keys() {
+            let (chain_path, key_path) = crate::park_tls::store::cert_paths(d);
+            let (Ok(fullchain), Ok(privkey)) = (
+                std::fs::read_to_string(&chain_path),
+                std::fs::read_to_string(&key_path),
+            ) else {
+                continue;
+            };
+            spawn_fanout_cert(state, d, &fullchain, &privkey);
+        }
         return Ok(());
     }
     tracing::info!(?need, "park_tls: issuing/renewing certificates");

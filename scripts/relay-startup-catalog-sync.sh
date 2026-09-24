@@ -12,18 +12,36 @@
 #   RELAY_GIT_PORT               peer git daemon port (default: 9418)
 #   RELAY_PUBLIC_HOSTNAME        this node FQDN — used to skip self in RELAY_MASTER_PEER_LIST
 #   RELAY_MASTER_PEER_LIST       semicolon-separated master FQDNs (other peers to fetch from)
-#   RELAY_PEER_FETCH_TIMEOUT_SECS  per peer `git fetch` timeout seconds (default: 30)
+#   RELAY_PEER_FETCH_TIMEOUT_SECS  per peer `git fetch` timeout seconds (default: 12)
+#   RELAY_STARTUP_PHASE          pre (forge+publish-origin; default for ExecStartPre) |
+#                                peers (peer fetch only; ExecStartPost) | all (legacy one-shot)
 #   RELAY_SERVER_ID              optional, included in Slack lines
 #   RELAY_NOTIFY_SLACK_WEBHOOK_URL  optional; progress posted as Incoming Webhook JSON
 #
 # Always exits 0 so relay-gateway HTTP still starts; failures are recorded in
 #   $RELAY_INSTALL_ROOT/state/startup_catalog_sync.json
 # and surfaced in POST /api/config → startup_catalog_sync. Peer fetch errors are warned only.
+#
+# Usage: relay-startup-catalog-sync.sh [--phase=pre|peers|all]
 set -euo pipefail
 
 # Do not `source` relay.env here: values like RELAY_MASTER_PEER_LIST contain `;` and break bash unless
 # every such line is quoted. systemd already applies EnvironmentFile=-/opt/relay/relay.env to ExecStartPre.
 INSTALL="${RELAY_INSTALL_ROOT:-/opt/relay}"
+
+PHASE="${RELAY_STARTUP_PHASE:-pre}"
+for arg in "$@"; do
+  case "$arg" in
+    --phase=*) PHASE="${arg#--phase=}" ;;
+    --peers-only) PHASE=peers ;;
+    --all) PHASE=all ;;
+    -h|--help)
+      echo "usage: $0 [--phase=pre|peers|all]" >&2
+      exit 0
+      ;;
+  esac
+done
+PHASE="${PHASE,,}"
 
 RELAY_STARTUP_CATALOG_SYNC="${RELAY_STARTUP_CATALOG_SYNC:-1}"
 case "${RELAY_STARTUP_CATALOG_SYNC,,}" in
@@ -210,8 +228,9 @@ peer_fetch_other_masters() {
 
   slack ":arrows_counterclockwise: *Relay startup sync* — \`${node_label:-unknown}\` — fetching catalog repos from peers: \`${peers[*]}\`"
 
-  local name peer url summary_ok summary_fail
-  local fetch_timeout="${RELAY_PEER_FETCH_TIMEOUT_SECS:-30}"
+  local name peer url summary_ok summary_fail got_one
+  # Keep short: on OOM recovery, waiting on a dead peer must not stretch the outage.
+  local fetch_timeout="${RELAY_PEER_FETCH_TIMEOUT_SECS:-12}"
   summary_ok=0
   summary_fail=0
   while IFS= read -r name; do
@@ -221,17 +240,23 @@ peer_fetch_other_masters() {
       echo "[relay-startup-catalog-sync] WARN: no bare at $bare; skip peer fetch for $name" >&2
       continue
     fi
+    got_one=0
     for peer in "${peers[@]}"; do
       url="git://${peer}:${git_port}/${name}.git"
       # Fast-forward only. A `+` refspec rewinds a publisher that is ahead of a lagging peer.
       if timeout "${fetch_timeout}s" git --git-dir="$bare" fetch "$url" 'refs/heads/*:refs/heads/*' --prune 2>/dev/null; then
         echo "[relay-startup-catalog-sync] fetched $name from $peer" >&2
         ((summary_ok++)) || true
+        got_one=1
+        break
       else
         echo "[relay-startup-catalog-sync] WARN: fetch $name from $peer failed (peer may be down or repo missing)" >&2
         ((summary_fail++)) || true
       fi
     done
+    if [[ "$got_one" -eq 0 ]]; then
+      echo "[relay-startup-catalog-sync] WARN: no peer succeeded for $name" >&2
+    fi
   done < <(list_catalog_repo_names)
 
   if [[ "$summary_fail" -gt 0 ]]; then
@@ -250,7 +275,7 @@ fetch_publish_origin_catalog_repos() {
   [[ -n "$catalog" && -d "$catalog/catalog/repos" ]] || return 0
   [[ -n "$self" ]] || return 0
   command -v jq >/dev/null 2>&1 || return 0
-  local fetch_timeout="${RELAY_PEER_FETCH_TIMEOUT_SECS:-30}"
+  local fetch_timeout="${RELAY_PEER_FETCH_TIMEOUT_SECS:-12}"
   local f repo origin branch bare url
   for f in "$catalog/catalog/repos"/*.json; do
     [[ -f "$f" ]] || continue
@@ -273,28 +298,66 @@ fetch_publish_origin_catalog_repos() {
   done
 }
 
-slack ":rocket: *Relay startup sync* — \`${node_label:-unknown}\` — starting (publish-origin prefetch, catalog forge, then peers)"
-
 export RELAY_REPO_PATH="$repo_path"
 PEER_FETCH_OK=0
 PEER_FETCH_FAIL=0
-fetch_publish_origin_catalog_repos
-if ! out="$(bash "$sync_script" 2>&1)"; then
+
+run_peers_phase() {
+  slack ":arrows_counterclockwise: *Relay startup sync* — \`${node_label:-unknown}\` — peer fetch phase (HTTP already up)"
+  peer_fetch_other_masters
+  mkdir -p "$INSTALL/state"
+  INSTALL_Q="$INSTALL" POK="${PEER_FETCH_OK:-0}" PFAIL="${PEER_FETCH_FAIL:-0}" python3 -c '
+import json, os, pathlib, time
+p = pathlib.Path(os.environ["INSTALL_Q"]) / "state" / "startup_catalog_sync.json"
+try:
+    obj = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {}
+except Exception:
+    obj = {}
+obj["finished_at_unix"] = int(time.time())
+obj["peer_fetch"] = {"ok": int(os.environ["POK"]), "failed": int(os.environ["PFAIL"])}
+obj.setdefault("catalog_forge_sync_ok", True)
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
+' || true
+  slack ":checkered_flag: *Relay startup sync* — \`${node_label:-unknown}\` — peer phase finished"
+}
+
+run_pre_phase() {
+  slack ":rocket: *Relay startup sync* — \`${node_label:-unknown}\` — starting (publish-origin prefetch + catalog forge; peers deferred)"
+  fetch_publish_origin_catalog_repos
+  local out
+  if ! out="$(bash "$sync_script" 2>&1)"; then
+    echo "$out" >&2
+    slack ":warning: *Relay startup sync* — \`${node_label:-unknown}\` — *catalog forge sync failed* (HTTP still starts). Fix catalog/GitLab, then \`systemctl restart relay-gateway\`.\n\`\`\`${out:0:1500}\`\`\`"
+    write_startup_sync_state 0 "sync-relay-catalog.sh exited non-zero" "$out" 0 0
+    slack ":checkered_flag: *Relay startup sync* — \`${node_label:-unknown}\` — pre phase finished (with errors); starting relay-gateway"
+    git -C "$catalog" checkout -q -- .gitmodules 2>/dev/null || true
+    return 0
+  fi
   echo "$out" >&2
-  slack ":warning: *Relay startup sync* — \`${node_label:-unknown}\` — *catalog forge sync failed* (HTTP still starts). Fix catalog/GitLab, then \`systemctl restart relay-gateway\`.\n\`\`\`${out:0:1500}\`\`\`"
-  write_startup_sync_state 0 "sync-relay-catalog.sh exited non-zero" "$out" 0 0
-  slack ":checkered_flag: *Relay startup sync* — \`${node_label:-unknown}\` — finished (with errors); starting relay-gateway"
   git -C "$catalog" checkout -q -- .gitmodules 2>/dev/null || true
-  exit 0
-fi
-echo "$out" >&2
-git -C "$catalog" checkout -q -- .gitmodules 2>/dev/null || true
-slack ":package: *Relay startup sync* — \`${node_label:-unknown}\` — catalog mirrors updated from forge (relay-catalog.json + relay-master per sync-relay-catalog)"
+  slack ":package: *Relay startup sync* — \`${node_label:-unknown}\` — catalog mirrors updated from forge (relay-catalog.json + relay-master per sync-relay-catalog)"
+  write_startup_sync_state 1 "" "$out" 0 0
+  slack ":checkered_flag: *Relay startup sync* — \`${node_label:-unknown}\` — pre phase finished; starting relay-gateway"
+}
 
-peer_fetch_other_masters
-
-write_startup_sync_state 1 "" "$out" "${PEER_FETCH_OK:-0}" "${PEER_FETCH_FAIL:-0}"
-
-slack ":checkered_flag: *Relay startup sync* — \`${node_label:-unknown}\` — finished; starting relay-gateway"
+case "$PHASE" in
+  peers)
+    run_peers_phase
+    ;;
+  all)
+    run_pre_phase
+    peer_fetch_other_masters
+    # Re-write with peer counts after all
+    if [[ -f "$INSTALL/state/startup_catalog_sync.json" ]]; then
+      out_tail="$(python3 -c 'import json;print(json.load(open("'"$INSTALL/state/startup_catalog_sync.json"'")).get("catalog_output_tail") or "")' 2>/dev/null || true)"
+      forge_ok="$(python3 -c 'import json;print(1 if json.load(open("'"$INSTALL/state/startup_catalog_sync.json"'")).get("catalog_forge_sync_ok",True) else 0)' 2>/dev/null || echo 1)"
+      write_startup_sync_state "$forge_ok" "" "$out_tail" "${PEER_FETCH_OK:-0}" "${PEER_FETCH_FAIL:-0}"
+    fi
+    ;;
+  pre|*)
+    run_pre_phase
+    ;;
+esac
 
 exit 0

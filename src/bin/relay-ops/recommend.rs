@@ -15,6 +15,8 @@ pub struct RecommendInput<'a> {
     pub sync_anomalies: &'a [SyncAnomaly],
     pub dns_mismatch: bool,
     pub tcp22: bool,
+    /// Public HTTPS listener (Caddy). True with `https_ok: false` is an SSR wedge.
+    pub tcp443: bool,
     pub https_ok: bool,
     pub ssh_ok: Option<bool>,
     pub host_key_changed: bool,
@@ -22,6 +24,8 @@ pub struct RecommendInput<'a> {
     pub has_spot_ip: bool,
     pub index_ok: bool,
     pub index_stale_count: usize,
+    /// Parked apex TLS via this node's IP failed.
+    pub park_tls_broken: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -73,6 +77,7 @@ pub fn for_node(n: &NodeProbe, spot_ip: Option<&str>) -> (Option<Recommendation>
         sync_anomalies: &n.sync_anomalies,
         dns_mismatch: dns_mismatch(&n.dns, spot_ip),
         tcp22: n.tcp22,
+        tcp443: n.tcp443,
         https_ok: n.https_config.as_ref().map(|c| c.ok).unwrap_or(false),
         ssh_ok: n.ssh_ok,
         host_key_changed: n.host_key_changed,
@@ -80,6 +85,7 @@ pub fn for_node(n: &NodeProbe, spot_ip: Option<&str>) -> (Option<Recommendation>
         has_spot_ip: spot_ip.is_some(),
         index_ok: n.index_ok,
         index_stale_count: n.index_stale_repos.len(),
+        park_tls_broken: n.park_tls_ok == Some(false),
     };
     let vis = visible_actions(&input);
     (recommend(input), vis)
@@ -159,6 +165,9 @@ fn specialize_message(input: &RecommendInput<'_>, hit: &ScenarioHit) -> String {
         }
         "tcp22_open_unresponsive" => {
             "TCP 22 is open but SSH failed — zombie Spot VM; Reclaim a new bid rather than waiting on Repair.".into()
+        }
+        "gateway_wedged" => {
+            "Gateway HTTP is 502 while :443 is up (SSR accept-queue wedge) — on-box liveness restarts relay-gateway; do not Reclaim.".into()
         }
         "replica_ahead_of_publisher" => {
             let ahead: Vec<_> = input
@@ -279,6 +288,7 @@ mod tests {
             sync_anomalies: &[],
             dns_mismatch: false,
             tcp22: true,
+            tcp443: true,
             https_ok: true,
             ssh_ok: None,
             host_key_changed: false,
@@ -286,6 +296,7 @@ mod tests {
             has_spot_ip: false,
             index_ok: true,
             index_stale_count: 0,
+            park_tls_broken: false,
         }
     }
 
@@ -399,6 +410,7 @@ mod tests {
         let mut input = base(&[], &[]);
         input.healthy = false;
         input.https_ok = false;
+        input.tcp443 = false;
         input.ssh_ok = Some(true);
         input.install_present = Some(true);
         let rec = recommend(input.clone()).unwrap();
@@ -508,6 +520,7 @@ mod tests {
             sync_anomalies: &anomalies,
             dns_mismatch: false,
             tcp22: true,
+            tcp443: true,
             https_ok: true,
             ssh_ok: None,
             host_key_changed: false,
@@ -515,11 +528,41 @@ mod tests {
             has_spot_ip: false,
             index_ok: true,
             index_stale_count: 0,
+            park_tls_broken: false,
         };
         let rec = recommend(input.clone()).unwrap();
         assert_eq!(rec.primary_action, None);
         assert!(rec.message.contains("Publish origin behind replica"));
         assert!(!shown(&input).sync);
+    }
+
+    #[test]
+    fn ssr_wedge_443_up_https_502_is_not_reclaim() {
+        let mut input = base(&[], &[]);
+        input.healthy = false;
+        input.https_ok = false;
+        input.tcp443 = true;
+        input.ssh_ok = Some(true);
+        input.install_present = Some(true);
+        input.has_spot_ip = true;
+        let rec = recommend(input.clone()).unwrap();
+        assert_eq!(rec.scenario_id.as_deref(), Some("gateway_wedged"));
+        assert!(rec.message.contains("wedge") || rec.message.contains("liveness"), "{}", rec.message);
+        assert!(rec.message.contains("do not Reclaim"), "{}", rec.message);
+        assert_ne!(rec.primary_action.as_deref(), Some("reclaim"));
+        let vis = shown(&input);
+        assert!(vis.repair);
+        assert!(!vis.reclaim);
+    }
+
+    #[test]
+    fn park_tls_broken_recommends_ssl() {
+        let mut input = base(&[], &[]);
+        input.park_tls_broken = true;
+        let rec = recommend(input.clone()).unwrap();
+        assert_eq!(rec.scenario_id.as_deref(), Some("park_tls_broken"));
+        assert_eq!(rec.primary_action.as_deref(), Some("ssl"));
+        assert!(rec.message.contains("Parked apex TLS") || rec.message.contains("park-tls"), "{}", rec.message);
     }
 
     #[test]

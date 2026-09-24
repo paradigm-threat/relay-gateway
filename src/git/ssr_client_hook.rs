@@ -467,6 +467,14 @@ fn try_ssr_client_hook_inner(req: &ClientHookSsrRequest<'_>) -> Option<ClientHoo
     let ms_read = t0.elapsed().as_millis() as u64;
     let t_mods = std::time::Instant::now();
     let (modules, mut hooks_val) = load_module_map(req.repo_path, req.branch, entry);
+    if relay_runtime::ssr_is_cancelled() {
+        tracing::warn!(
+            target: "relay_ssr",
+            path = %req.initial_path,
+            "client hook SSR cancelled after module load"
+        );
+        return None;
+    }
     if let Value::Object(ref mut map) = hooks_val {
         let base = req.asset_base_url.trim_end_matches('/');
         map.insert(

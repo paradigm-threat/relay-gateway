@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Upsert wildcard A record *.{node} on relaygateway.net (repo vhosts: repo.{node}.relaygateway.net).
-# Usage: VERCEL_API_TOKEN=... ./vercel-dns-wildcard.sh sjc1 203.0.113.10
+# Usage: VERCEL_API_TOKEN=... ./vercel-dns-wildcard.sh ord1 203.0.113.10
 set -euo pipefail
 
-NODE="${1:?node slug required (e.g. sjc1)}"
+NODE="${1:?node slug required (e.g. ord1)}"
 IP="${2:?IPv4 required}"
 TTL="${RELAY_DNS_TTL:-60}"
 TOKEN="${VERCEL_API_TOKEN:-${VERCEL_TOKEN:-}}"

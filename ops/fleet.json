@@ -10,10 +10,10 @@
       "spotCloudspace": "relay-network-iad"
     },
     {
-      "fqdn": "sjc1.relaygateway.net",
+      "fqdn": "ord1.relaygateway.net",
       "sshUser": "ubuntu",
-      "deployTarget": "spot-sjc1",
-      "spotCloudspace": "relay-network-sjc"
+      "deployTarget": "spot-ord1",
+      "spotCloudspace": "relay-network-ord"
     },
     {
       "fqdn": "hkg1.relaygateway.net",
@@ -31,6 +31,14 @@
     "repos": [
       "paradigm-threat-files",
       "paradigm-threat-timeline"
+    ],
+    "sslDomains": [
+      "paradigmthreat.net",
+      "www.paradigmthreat.net",
+      "relay.paradigmthreat.net",
+      "clevertree.net",
+      "www.clevertree.net",
+      "relay.clevertree.net"
     ]
   }
 }

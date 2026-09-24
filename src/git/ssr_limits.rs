@@ -1,7 +1,7 @@
 //! SSR concurrency, wall-clock timeout with cooperative cancel, and per-key coalesce.
 //!
 //! Env:
-//! - `RELAY_SSR_TIMEOUT_SECS` — default 12 (clamp 2..=120). `0` disables the wall-clock timeout
+//! - `RELAY_SSR_TIMEOUT_SECS` — default **4** (clamp 2..=120). `0` disables the wall-clock timeout
 //!   (concurrency limit + coalesce still apply).
 //! - `RELAY_SSR_MAX_CONCURRENT` — default 2 (clamp 1..=64).
 //!
@@ -20,10 +20,10 @@ fn timeout_secs() -> Option<u64> {
     match std::env::var("RELAY_SSR_TIMEOUT_SECS") {
         Ok(s) if s.trim() == "0" => None,
         Ok(s) => {
-            let n: u64 = s.trim().parse().unwrap_or(12);
+            let n: u64 = s.trim().parse().unwrap_or(4);
             Some(n.clamp(2, 120))
         }
-        Err(_) => Some(12),
+        Err(_) => Some(4),
     }
 }
 
@@ -36,6 +36,18 @@ fn max_concurrent() -> usize {
 }
 
 static INFLIGHT: AtomicUsize = AtomicUsize::new(0);
+/// Workers still running after their waiter deadline (cooperative cancel in flight).
+static OVERDUE: AtomicUsize = AtomicUsize::new(0);
+
+/// True when a new SSR leader would fail-fast (slots full).
+pub fn ssr_slots_full() -> bool {
+    INFLIGHT.load(Ordering::Acquire) >= max_concurrent()
+}
+
+/// Count of timed-out workers that have not yet dropped their permit.
+pub fn ssr_overdue() -> usize {
+    OVERDUE.load(Ordering::Acquire)
+}
 
 struct Permit;
 
@@ -99,10 +111,15 @@ fn await_with_timeout<T>(
         Some(secs) => match rx.recv_timeout(Duration::from_secs(secs)) {
             Ok(v) => v,
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                let already = cancel.load(Ordering::Acquire);
                 relay_runtime::signal_ssr_cancel(cancel);
+                if !already {
+                    OVERDUE.fetch_add(1, Ordering::AcqRel);
+                }
                 tracing::warn!(
                     target: "relay_ssr",
                     timeout_secs = secs,
+                    overdue = ssr_overdue(),
                     "SSR wall-clock timeout; cancel signaled so worker can free concurrency slot"
                 );
                 None
@@ -163,6 +180,12 @@ where
             } else {
                 work()
             };
+            if cancel_worker.load(Ordering::Acquire) {
+                OVERDUE.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                    Some(n.saturating_sub(1))
+                })
+                .ok();
+            }
             relay_runtime::install_ssr_cancel(None);
 
             // Remove under the map lock, then fan-out so a late joiner cannot
@@ -263,8 +286,14 @@ where
     if builder
         .spawn(move || {
             let _permit = permit;
-            relay_runtime::install_ssr_cancel(Some(cancel_worker));
+            relay_runtime::install_ssr_cancel(Some(cancel_worker.clone()));
             let out = work();
+            if cancel_worker.load(Ordering::Acquire) {
+                OVERDUE.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                    Some(n.saturating_sub(1))
+                })
+                .ok();
+            }
             relay_runtime::install_ssr_cancel(None);
             let _ = tx.send(out);
         })

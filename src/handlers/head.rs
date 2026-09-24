@@ -55,9 +55,13 @@ fn headify_response(resp: Response, branch: &str, repo: &str) -> Response {
 /// HEAD / - returns same headers as GET but no body. Returns 204 No Content.
 pub async fn head_root(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    mut headers: HeaderMap,
     query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
+    headers.insert(
+        HeaderName::from_static("x-relay-http-method"),
+        HeaderValue::from_static("HEAD"),
+    );
     let qmap = query.as_ref().map(|q| &q.0);
     if git::wants_relay_tree(&headers) {
         return headify_response(respond_relay_tree_root(&state, &headers, qmap), "", "");
@@ -87,10 +91,14 @@ pub async fn head_root(
 /// Returns 200 if file exists, 404 if not found or repo doesn't exist.
 pub async fn head_file(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    mut headers: HeaderMap,
     AxPath(path): AxPath<String>,
     query: Option<Query<HashMap<String, String>>>,
 ) -> impl IntoResponse {
+    headers.insert(
+        HeaderName::from_static("x-relay-http-method"),
+        HeaderValue::from_static("HEAD"),
+    );
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
     let qmap = query.as_ref().map(|q| &q.0);
 

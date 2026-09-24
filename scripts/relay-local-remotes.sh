@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Add git:// remotes for Spot fleet masters (iad1, sjc1, hkg1) on local catalog checkouts.
+# Add git:// remotes for Spot fleet masters (iad1, ord1, hkg1) on local catalog checkouts.
 # Renames GitLab origin → gitlab (backup); default push targets first mesh origin (iad1).
 #
 # Usage (from relay-gateway/):
@@ -15,7 +15,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MAP="${RELAY_LOCAL_REPOS_MAP:-$ROOT/scripts/relay-local-repos.map}"
 GIT_PORT="${RELAY_GIT_PORT:-9418}"
-NODES=(iad1 sjc1 hkg1)
+NODES=(iad1 ord1 hkg1)
 STALE_NODES=(lon1)
 PRIMARY_NODE="${RELAY_PRIMARY_ORIGIN:-iad1}"
 GITLAB_REMOTE="${RELAY_GITLAB_REMOTE_NAME:-gitlab}"

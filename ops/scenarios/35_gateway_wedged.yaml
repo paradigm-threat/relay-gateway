@@ -1,0 +1,14 @@
+id: gateway_wedged
+title: Gateway wedged (TLS up, HTTP 502)
+kind: ops
+priority: 35
+fingerprint:
+  show_repair: true
+  https_ok: false
+  tcp443: true
+steps: []
+requires_confirm: false
+message: >-
+  :443 is up but gateway HTTP is 502 (SSR / accept-queue wedge). On-box
+  liveness restarts relay-gateway; do not Reclaim. Repair only if restart
+  does not restore POST /api/status.

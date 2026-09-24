@@ -7,7 +7,7 @@
 | Path | Role |
 |------|------|
 | [`terraform/linode-relay/`](../terraform/linode-relay/) | Linode **`linode/linode`** — atlanta2 (import, do not reprovision) |
-| [`terraform/rackspace-spot-vm/`](../terraform/rackspace-spot-vm/) | Rackspace Spot **VM** (iad1 / sjc1 / hkg1); see [`PROVIDER_SPIKE.md`](../terraform/rackspace-spot-vm/PROVIDER_SPIKE.md) |
+| [`terraform/rackspace-spot-vm/`](../terraform/rackspace-spot-vm/) | Rackspace Spot **VM** (iad1 / ord1 / hkg1); see [`PROVIDER_SPIKE.md`](../terraform/rackspace-spot-vm/PROVIDER_SPIKE.md) |
 | [`terraform/shared-dns/`](../terraform/shared-dns/) | Vercel DNS helpers |
 | [`scripts/relay-master-deploy.sh`](../scripts/relay-master-deploy.sh) | First-time / rebuild install |
 | [`scripts/relay-master-validate.sh`](../scripts/relay-master-validate.sh) | HTTPS + API + mirror smoke tests |
@@ -25,21 +25,21 @@ Archived Kubernetes Spot path: [`docs/archive/rackspace-spot-k8s/`](archive/rack
 
 Do **not** run full **`relay-master-deploy.sh install`** on atlanta2 without explicit approval (risk to `/opt/relay/data`).
 
-### Rackspace Spot sjc1 (VM, San Jose)
+### Rackspace Spot ord1 (VM, Chicago)
 
-1. Create **VM Cloudspace** **`relay-network-sjc`** in **`us-west-sjc-1`** (Spot UI; MCP `createVMPool` is currently broken)
+1. Create **VM Cloudspace** **`relay-network-ord`** in **`us-central-ord-1`** (Spot UI; MCP `createVMPool` is currently broken)
 2. **`export RXTSPOT_TOKEN=...`** or **`rackspace_spot_token`** in tfvars (never commit)
 3. ```bash
    cd relay-gateway
-   ./scripts/relay-master-deploy.sh --target spot-sjc1 --install-only --build
-   ./scripts/relay-master-validate.sh --fqdn sjc1.relaygateway.net
+   ./scripts/relay-master-deploy.sh --target spot-ord1 --install-only --build
+   ./scripts/relay-master-validate.sh --fqdn ord1.relaygateway.net
    ```
 
-Publisher for catalog repos is **`iad1.relaygateway.net`** (`publish_origin`). After Spot preemption on a replica: reclaim with **`--target spot-sjc1`** / **`spot-iad1`** / **`spot-hkg1`**.
+Publisher for catalog repos is **`iad1.relaygateway.net`** (`publish_origin`). After Spot preemption on a replica: reclaim with **`--target spot-ord1`** / **`spot-iad1`** / **`spot-hkg1`**.
 
 ### Retired: Spot Dallas / K8s interim
 
-Former Dallas publisher / cloudspace **`relay-network`** is retired (replaced by **sjc1**). Historical notes: [`docs/archive/rackspace-spot-k8s/`](archive/rackspace-spot-k8s/) and interim TLS under `terraform/` (do not apply).
+Former Dallas publisher / cloudspace **`relay-network`** is retired (replaced by **ord1**). Historical notes: [`docs/archive/rackspace-spot-k8s/`](archive/rackspace-spot-k8s/) and interim TLS under `terraform/` (do not apply).
 
 ## Ongoing operations
 
@@ -50,7 +50,7 @@ Former Dallas publisher / cloudspace **`relay-network`** is retired (replaced by
 | Piper off/on | `./scripts/relay-fleet.sh features-set --only=… --piper=1` |
 | Piper HTTPS `/voices` `/tts` | After enabling Piper, Caddy must proxy those paths to **:5590** — `install-caddy-tls.sh` (in tarball). Refresh fleet: `RELAY_SSH_USER=ubuntu ./scripts/relay-fleet-refresh-caddy-piper.sh` |
 
-Spot VMs SSH as **`ubuntu`** (not `ari`). Production fleet: **iad1** (publisher), **sjc1**, **hkg1**.
+Spot VMs SSH as **`ubuntu`** (not `ari`). Production fleet: **iad1** (publisher), **ord1**, **hkg1**.
 
 See **[`RELAY_OPS.md`](./RELAY_OPS.md)**.
 
@@ -72,5 +72,5 @@ See **[`RELAY_OPS.md`](./RELAY_OPS.md)**.
 
 ## Manual follow-up
 
-- **paradigm-threat-site** Vercel env for iad1/sjc1/hkg1 mirrors/TTS after validate
+- **paradigm-threat-site** Vercel env for iad1/ord1/hkg1 mirrors/TTS after validate
 - Thin IPFS catalog cutover (out of scope)

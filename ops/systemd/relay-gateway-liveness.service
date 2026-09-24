@@ -1,0 +1,7 @@
+[Unit]
+Description=Relay gateway loopback liveness (SSR accept-queue wedge)
+After=relay-gateway.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/relay/bin/relay-gateway-liveness.sh

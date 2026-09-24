@@ -209,42 +209,45 @@ pub async fn ssl_check(cfg: &OpsConfig, fleet: &FleetFile) -> Result<String> {
             domains = env_d.split_whitespace().map(|s| s.to_string()).collect();
         }
     }
-    // Only invoke the checkout SSL script when the operator opted into extra Hosts.
-    // The script's built-in parked-domain list is project-specific and can hang DNS.
-    if !domains.is_empty() {
-        if let Ok(root) = checkout(cfg) {
-            let script = root.join("scripts/relay-fleet-ssl-check.sh");
-            if script.is_file() {
-                let nodes = fleet
-                    .nodes
-                    .iter()
-                    .map(|n| n.fqdn.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let out = Command::new("bash")
-                    .arg(&script)
-                    .current_dir(&root)
-                    .env("RELAY_FLEET_SSL_LABEL", "ssl")
-                    .env("RELAY_FLEET_SSL_NODES", nodes)
-                    .env("RELAY_FLEET_SSL_DOMAINS", domains.join(" "))
-                    .env(
-                        "RELAY_FLEET_SSL_TIMEOUT",
-                        std::env::var("RELAY_FLEET_SSL_TIMEOUT").unwrap_or_else(|_| "15".into()),
-                    )
-                    .output()?;
-                let log = output_text(&out);
-                if !out.status.success() {
-                    anyhow::bail!("{log}");
-                }
-                return Ok(log);
+    if domains.is_empty() {
+        domains = DEFAULT_SSL_DOMAINS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+    }
+    // Prefer the checkout SSL script (per-node SNI checks catch park-tls gaps).
+    if let Ok(root) = checkout(cfg) {
+        let script = root.join("scripts/relay-fleet-ssl-check.sh");
+        if script.is_file() {
+            let nodes = fleet
+                .nodes
+                .iter()
+                .map(|n| n.fqdn.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let out = Command::new("bash")
+                .arg(&script)
+                .current_dir(&root)
+                .env("RELAY_FLEET_SSL_LABEL", "ssl")
+                .env("RELAY_FLEET_SSL_NODES", nodes)
+                .env("RELAY_FLEET_SSL_DOMAINS", domains.join(" "))
+                .env(
+                    "RELAY_FLEET_SSL_TIMEOUT",
+                    std::env::var("RELAY_FLEET_SSL_TIMEOUT").unwrap_or_else(|_| "15".into()),
+                )
+                .output()?;
+            let log = output_text(&out);
+            if !out.status.success() {
+                anyhow::bail!("{log}");
             }
+            return Ok(log);
         }
     }
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()?;
     let mut hosts: Vec<String> = fleet.nodes.iter().map(|n| n.fqdn.clone()).collect();
-    hosts.extend(fleet.health.ssl_domains.iter().cloned());
+    hosts.extend(domains);
     if let Some(ing) = &fleet.fleet_ingress {
         hosts.push(ing.clone());
     }
@@ -279,6 +282,16 @@ pub async fn ssl_check(cfg: &OpsConfig, fleet: &FleetFile) -> Result<String> {
     }
     Ok(log)
 }
+
+/// Default parked Hosts for SSL jobs when `health.sslDomains` is empty.
+pub const DEFAULT_SSL_DOMAINS: &[&str] = &[
+    "paradigmthreat.net",
+    "www.paradigmthreat.net",
+    "relay.paradigmthreat.net",
+    "clevertree.net",
+    "www.clevertree.net",
+    "relay.clevertree.net",
+];
 
 pub fn drift(cfg: &OpsConfig, fleet: &FleetFile, interactive: bool) -> Result<String> {
     let ssh = SshCtx {

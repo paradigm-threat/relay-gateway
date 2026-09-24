@@ -27,7 +27,7 @@ pub async fn handle_get_file(
     headers: axum::http::HeaderMap,
     axum::extract::Path(path): axum::extract::Path<String>,
     query: Option<Query<HashMap<String, String>>>,
-) -> impl IntoResponse {
+) -> Response {
     info!(%path, "get_file called");
     let decoded = helpers::url_decode(&path).decode_utf8_lossy().to_string();
     info!(decoded = %decoded, "decoded path");
@@ -123,9 +123,11 @@ pub async fn handle_get_file(
 
     info!(%branch, "resolved branch");
 
-    let git_result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        git::git_resolve_and_respond(&state, &headers, &branch, &repo_name, &decoded, qmap)
-    })) {
+    let git_result = match tokio::task::block_in_place(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            git::git_resolve_and_respond(&state, &headers, &branch, &repo_name, &decoded, qmap)
+        }))
+    }) {
         Ok(r) => r,
         Err(payload) => {
             let msg = if let Some(s) = payload.downcast_ref::<&str>() {
@@ -245,12 +247,17 @@ async fn run_get_clever_or_404(
         .first_or_octet_stream()
         .essence_str()
         .to_string();
+    let method = headers
+        .get("x-relay-http-method")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("GET");
     let mut ctx = serde_json::json!({
         "relPath": rel_missing,
         "branch": branch,
         "repo": repo_name,
         "commitSha": head,
         "contentType": content_type,
+        "httpMethod": method,
         "cacheRoot": std::env::var("RELAY_IPFS_CACHE_ROOT").unwrap_or_else(|_| DEFAULT_IPFS_CACHE_ROOT.to_string()),
     });
     if let Some(q) = query {
@@ -259,13 +266,15 @@ async fn run_get_clever_or_404(
         }
     }
     crate::git::clever_script_host::augment_get_context_headers(&mut ctx, headers);
-    let val = match git::clever_hooks::run_clever_hook(
-        &source,
-        &ctx,
-        repo_full.clone(),
-        branch.to_string(),
-        true,
-    ) {
+    let val = match tokio::task::block_in_place(|| {
+        git::clever_hooks::run_clever_hook(
+            &source,
+            &ctx,
+            repo_full.clone(),
+            branch.to_string(),
+            true,
+        )
+    }) {
         Ok(v) => v,
         Err(e) => {
             error!(?e, "GET CleverScript hook failed");

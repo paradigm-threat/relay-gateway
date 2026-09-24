@@ -61,7 +61,7 @@ Optional overrides:
 
 ## Rackspace Spot (retired Kubernetes path)
 
-Kubernetes Spot manifests are **archived** under [`docs/archive/rackspace-spot-k8s/`](archive/rackspace-spot-k8s/). Production masters (**iad1** / **sjc1** / **hkg1**) use a **bare VM** + the same Linode tarball/Caddy flow:
+Kubernetes Spot manifests are **archived** under [`docs/archive/rackspace-spot-k8s/`](archive/rackspace-spot-k8s/). Production masters (**iad1** / **ord1** / **hkg1**) use a **bare VM** + the same Linode tarball/Caddy flow:
 
 - **[`RELAY_INFRA_OPS.md`](./RELAY_INFRA_OPS.md)**
 - **`./scripts/relay-master-deploy.sh --target spot-iad1`**

@@ -2,14 +2,15 @@
 # Provision (optional) and install a relay master on Linode or Rackspace Spot VM.
 #
 # Usage (from relay-gateway/):
-#   ./scripts/relay-master-deploy.sh --target spot-sjc1
+#   ./scripts/relay-master-deploy.sh --target spot-ord1
 #   ./scripts/relay-master-deploy.sh --target linode-atlanta2 --install-only
 #   ./scripts/relay-master-deploy.sh --target spot-iad1 --install-only --build
 #
-# Targets: spot-iad1 | spot-sjc1 | spot-hkg1 | linode-atlanta2
+# Targets: spot-iad1 | spot-ord1 | spot-hkg1 | linode-atlanta2
 #
 # Steps: terraform apply (unless --install-only) → SSH → pack tarball → install.sh →
-#        Vercel apex + wildcard DNS → install-caddy-tls → reconfigure-features (Piper) → peer-clone PT repos
+#        Vercel apex + wildcard DNS → install-caddy-tls → seed park-tls from peer →
+#        reconfigure-features (Piper) → peer-clone PT repos
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,7 +31,7 @@ TERRAFORM="${TERRAFORM:-terraform}"
 
 usage() {
   sed -n '1,35p' <<'EOF'
-Usage: ./scripts/relay-master-deploy.sh --target <spot-iad1|spot-sjc1|spot-hkg1|linode-atlanta2> [flags]
+Usage: ./scripts/relay-master-deploy.sh --target <spot-iad1|spot-ord1|spot-hkg1|linode-atlanta2> [flags]
 
 Flags:
   --install-only     Skip terraform apply; read IP from terraform output / DNS
@@ -66,22 +67,22 @@ done
 
 stack_dir() {
   case "$1" in
-    spot-iad1|spot-sjc1|spot-hkg1) echo "$ROOT/terraform/rackspace-spot-vm" ;;
+    spot-iad1|spot-ord1|spot-hkg1) echo "$ROOT/terraform/rackspace-spot-vm" ;;
     linode-atlanta2) echo "$ROOT/terraform/linode-relay" ;;
-    *) echo "Unknown --target: $1 (use spot-iad1|spot-sjc1|spot-hkg1 or linode-atlanta2)" >&2; return 1 ;;
+    *) echo "Unknown --target: $1 (use spot-iad1|spot-ord1|spot-hkg1 or linode-atlanta2)" >&2; return 1 ;;
   esac
 }
 
 default_ssh_user() {
   case "$1" in
-    spot-iad1|spot-sjc1|spot-hkg1) echo "ubuntu" ;;
+    spot-iad1|spot-ord1|spot-hkg1) echo "ubuntu" ;;
     linode-atlanta2) echo "ari" ;;
   esac
 }
 
 spot_node_slug() {
   case "$1" in
-    spot-sjc1) echo "sjc1" ;;
+    spot-ord1) echo "ord1" ;;
     spot-iad1) echo "iad1" ;;
     spot-hkg1) echo "hkg1" ;;
     *) echo "" ;;
@@ -90,7 +91,7 @@ spot_node_slug() {
 
 spot_ip_override() {
   case "$1" in
-    spot-sjc1) echo "${SPOT_SJC1_IP:-}" ;;
+    spot-ord1) echo "${SPOT_ORD1_IP:-}" ;;
     spot-iad1) echo "${SPOT_IAD1_IP:-}" ;;
     spot-hkg1) echo "${SPOT_HKG1_IP:-}" ;;
     *) echo "" ;;
@@ -132,8 +133,15 @@ resolve_node_meta() {
   ip="$(tf_output "$dir" public_ip)"
   [[ -n "$ssh_user" ]] || ssh_user="$(default_ssh_user "$target")"
   [[ -n "$node_slug" ]] || node_slug="${fqdn%%.*}"
-  [[ -n "$fqdn" ]] || fqdn="${node_slug}.relaygateway.net"
-  [[ -n "$relay_id" ]] || relay_id="relay-${node_slug}"
+  # Spot targets: always derive identity from --target slug (shared terraform.tfvars
+  # may still describe a retired node).
+  if [[ "$target" == spot-* && -n "$node_slug" ]]; then
+    fqdn="${node_slug}.relaygateway.net"
+    relay_id="relay-${node_slug}"
+  else
+    [[ -n "$fqdn" ]] || fqdn="${node_slug}.relaygateway.net"
+    [[ -n "$relay_id" ]] || relay_id="relay-${node_slug}"
+  fi
   # Per-target env wins over shared terraform.tfvars (legacy shared file may hold one node IP only).
   ip="$(spot_ip_override "$target")"
   [[ "$target" == linode-atlanta2 ]] && ip="${LINODE_ATLANTA2_IP:-$ip}"
@@ -179,7 +187,7 @@ reconcile_fleet_dns() {
     echo "[deploy] Skip fleet DNS: no VERCEL_API_TOKEN" >&2
     return 0
   }
-  local peers="${RELAY_MASTER_PEER_LIST:-${RELAY_OPERATOR_FLEET:-iad1.relaygateway.net;sjc1.relaygateway.net;hkg1.relaygateway.net}}"
+  local peers="${RELAY_MASTER_PEER_LIST:-${RELAY_OPERATOR_FLEET:-iad1.relaygateway.net;ord1.relaygateway.net;hkg1.relaygateway.net}}"
   # shellcheck disable=SC2086
   IFS=';' read -ra peer_arr <<<"$peers"
   echo "[deploy] reconcile fleet.relaygateway.net from ${peer_arr[*]}"
@@ -250,7 +258,7 @@ for v in RELAY_MASTER_MESH_SECRET RELAY_PEER_SECRET RELAY_MASTER_TRUST_ROOT \
   [[ -n "${!v:-}" ]] && MESH_VARS+=("$v=${!v}")
 done
 
-RELAY_MASTER_PEER_LIST="${RELAY_MASTER_PEER_LIST:-iad1.relaygateway.net;sjc1.relaygateway.net;hkg1.relaygateway.net}"
+RELAY_MASTER_PEER_LIST="${RELAY_MASTER_PEER_LIST:-iad1.relaygateway.net;ord1.relaygateway.net;hkg1.relaygateway.net}"
 # Ensure this spot master is in the mesh list.
 if [[ "$TARGET" == spot-* ]]; then
   _mesh_self="${NODE_SLUG}.relaygateway.net"
@@ -320,6 +328,34 @@ set -euo pipefail
 export RELAY_PUBLIC_HOSTNAME=${FQDN} CADDY_EMAIL=${CADDY_EMAIL}
 bash /opt/relay/bin/install-caddy-tls.sh 2>/dev/null || bash /root/.relay-deploy-staging/install-caddy-tls.sh
 REMOTE
+fi
+
+# Seed park-tls file certs from a live peer. New Spot VMs otherwise fall through to
+# Caddy on-demand TLS for multi-A apex names (paradigmthreat.net → fleet), which
+# fails ACME tls-alpn against other masters that already use park-tls file certs.
+if [[ "$SKIP_CADDY" != 1 && -n "$PEER_SOURCE" && "$PEER_SOURCE" != "$FQDN" ]]; then
+  echo "[deploy] seed park-tls from ${PEER_SOURCE}"
+  if "${SSH[@]}" -o ConnectTimeout=15 "${SSH_USER}@${PEER_SOURCE}" \
+      "sudo test -f /opt/relay/state/park-tls/Caddyfile.parked && sudo tar -C /opt/relay/state/park-tls -czf - certs Caddyfile.parked" \
+      > /tmp/relay-park-tls-seed.tgz; then
+    "${SCP[@]}" /tmp/relay-park-tls-seed.tgz "${SSH_TARGET}:/tmp/relay-park-tls-seed.tgz"
+    "${SSH[@]}" "$SSH_TARGET" sudo bash -s <<'REMOTE'
+set -euo pipefail
+if [[ -f /tmp/relay-park-tls-seed.tgz ]]; then
+  install -d -m 755 /opt/relay/state/park-tls
+  tar -C /opt/relay/state/park-tls -xzf /tmp/relay-park-tls-seed.tgz
+  chown -R relay:relay /opt/relay/state/park-tls
+  chmod -R a+rX /opt/relay/state/park-tls
+  rm -f /tmp/relay-park-tls-seed.tgz
+  systemctl reload caddy 2>/dev/null || systemctl restart caddy
+  echo "[deploy] park-tls seeded and caddy reloaded"
+fi
+REMOTE
+    rm -f /tmp/relay-park-tls-seed.tgz
+  else
+    rm -f /tmp/relay-park-tls-seed.tgz
+    echo "[deploy] WARN: could not seed park-tls from ${PEER_SOURCE} (peer down or no certs yet)" >&2
+  fi
 fi
 
 echo "[deploy] reconfigure-features (Piper on)"

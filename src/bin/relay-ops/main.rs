@@ -643,17 +643,20 @@ fn install_service(cfg: &OpsConfig) -> Result<()> {
         fs::write(&unit, body)?;
 
         if brain_dest.is_file() {
-            let mut brain_env = String::new();
+            let mut brain_workdir = String::new();
+            let mut brain_env = String::from("Environment=RUST_LOG=info\nEnvironment=RELAY_BRAIN_EXECUTE=1\n");
+            brain_env.push_str(&format!("Environment=RELAY_OPS_GITLAB_URL={gitlab}\n"));
             if let Some(root) = cfg.checkout_path() {
+                brain_workdir = format!("WorkingDirectory={}\n", root.display());
                 brain_env.push_str(&format!(
-                    "Environment=RELAY_OPS_CHECKOUT={}\nEnvironment=RELAY_SCENARIOS_DIR={}/ops/scenarios\n",
+                    "Environment=RELAY_OPS_CHECKOUT={}\nEnvironment=RELAY_OPS_PREFER_LOCAL_FLEET=1\nEnvironment=RELAY_SCENARIOS_DIR={}/ops/scenarios\n",
                     root.display(),
                     root.display()
                 ));
             }
             let brain_unit = unit_dir.join("relay-brain.service");
             let brain_body = format!(
-                "[Unit]\nDescription=Relay fleet brain (local)\nAfter=network-online.target\n\n[Service]\n{brain_env}ExecStart={}\nRestart=always\nRestartSec=5\nKillMode=process\n\n[Install]\nWantedBy=default.target\n",
+                "[Unit]\nDescription=Relay fleet brain (local probe + scenarios + private feed)\nAfter=network-online.target\nPartOf=default.target\n\n[Service]\n{brain_workdir}{brain_env}ExecStart={}\nRestart=always\nRestartSec=5\nKillMode=process\n\n[Install]\nWantedBy=default.target\n",
                 brain_dest.display()
             );
             fs::write(&brain_unit, brain_body)?;
