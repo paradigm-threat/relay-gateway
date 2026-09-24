@@ -238,12 +238,60 @@ fn fts_token_from_raw(raw: &str) -> String {
         .replace('"', "")
 }
 
+/// Split PascalCase / path slugs so `#TenCommandments` is also searchable as `commandments`.
+pub(crate) fn expand_fts_text(raw: &str) -> String {
+    let split = split_ident_tokens(raw);
+    if split == raw || split.is_empty() {
+        raw.to_string()
+    } else {
+        format!("{raw} {split}")
+    }
+}
+
+fn split_ident_tokens(raw: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = raw.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '/' || c == '_' || c == '-' || c == '.' {
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+            continue;
+        }
+        if i > 0 && c.is_uppercase() {
+            let prev = chars[i - 1];
+            let next_lower = chars.get(i + 1).map(|n| n.is_lowercase()).unwrap_or(false);
+            if prev.is_lowercase() || (prev.is_uppercase() && next_lower) {
+                if !out.ends_with(' ') {
+                    out.push(' ');
+                }
+            }
+        }
+        out.push(c);
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Drop a long `-ing` suffix so `monolithing` MATCH-es indexed `Monolith`.
+fn query_stem_token(raw: &str) -> String {
+    let t = raw.to_lowercase();
+    if t.len() >= 11
+        && t.ends_with("ing")
+        && t.chars().all(|c| c.is_ascii_alphabetic())
+    {
+        return t[..t.len() - 3].to_string();
+    }
+    t
+}
+
 /// FTS5 MATCH string: AND of cleaned tokens, morphological duplicates dropped,
 /// ASCII stems of length ≥ 4 emitted as prefix queries so `iran` matches `iranian`.
 pub(crate) fn fts_match_query(raw: &str) -> String {
     let cleaned: Vec<String> = raw
         .split_whitespace()
         .map(fts_token_from_raw)
+        .filter(|t| !t.is_empty())
+        .map(|t| query_stem_token(&t))
         .filter(|t| !t.is_empty())
         .collect();
     collapse_prefix_redundant_terms(cleaned)
@@ -750,6 +798,7 @@ mod tests {
         assert_eq!(fts_match_query("iran iranian"), "iran*");
         assert_eq!(fts_match_query("Iran Iranian"), "iran*");
         assert_eq!(fts_match_query("mud flood"), "\"mud\" AND flood*");
+        assert_eq!(fts_match_query("monolithing"), "monolith*");
         assert!(fts_match_query("!!!").is_empty());
         assert_eq!(
             collapse_prefix_redundant_terms(vec!["iran".into(), "iranian".into(), "iran".into()]),
@@ -790,6 +839,52 @@ mod tests {
         assert!(titles.contains(&"Iran war"), "{titles:?}");
         assert!(titles.contains(&"Iranian navy"), "{titles:?}");
         assert!(!titles.contains(&"Oman corridor"), "{titles:?}");
+    }
+
+    #[test]
+    fn fts_pascal_keyword_matches_inner_word() {
+        let dir = tempdir().unwrap();
+        let json_path = dir.path().join("index.db.json");
+        let db_path = dir.path().join("index.db");
+        std::fs::write(
+            &json_path,
+            json!({
+                "metadata": { "indexed_head": "h" },
+                "collections": {
+                    "index": [
+                        {
+                            "title": "Working Definition",
+                            "path": "history/antisemitism.md",
+                            "_keywords": ["TenCommandments", "Monolith"]
+                        },
+                        { "title": "Unrelated", "path": "other.md", "_keywords": ["Mars"] }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        sync_json_to_sqlite(&json_path, &db_path).unwrap();
+        let by_cmd = query_collection(
+            &db_path,
+            "index",
+            Some(&Value::String("commandments".into())),
+            None,
+            Some(10),
+        )
+        .unwrap();
+        assert_eq!(by_cmd.len(), 1, "{by_cmd:?}");
+        assert_eq!(by_cmd[0]["path"], "history/antisemitism.md");
+        let by_ing = query_collection(
+            &db_path,
+            "index",
+            Some(&Value::String("monolithing".into())),
+            None,
+            Some(10),
+        )
+        .unwrap();
+        assert_eq!(by_ing.len(), 1, "{by_ing:?}");
+        assert_eq!(by_ing[0]["path"], "history/antisemitism.md");
     }
 
     #[test]

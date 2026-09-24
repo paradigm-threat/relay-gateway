@@ -4,7 +4,7 @@
 //! Postgres/NoSQL impl must preserve the same QUERY contract.
 
 use crate::git::sqlite_index::{
-    clamp_query_limit, fts_match_query, QueryOrder, QUERY_FILTER_IN_MAX,
+    clamp_query_limit, expand_fts_text, fts_match_query, QueryOrder, QUERY_FILTER_IN_MAX,
 };
 use anyhow::Context;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -495,16 +495,23 @@ fn doc_id_for(doc: &Value, fallback_index: usize, id_fields: Option<&[String]>) 
     format!("row-{fallback_index}")
 }
 
+fn push_fts_part(parts: &mut Vec<String>, s: &str) {
+    let expanded = expand_fts_text(s);
+    if !expanded.is_empty() {
+        parts.push(expanded);
+    }
+}
+
 fn search_text_for(doc: &Value, fts_fields: Option<&[String]>) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(fields) = fts_fields {
         for key in fields {
             if let Some(s) = doc.get(key).and_then(|v| v.as_str()) {
-                parts.push(s.to_string());
+                push_fts_part(&mut parts, s);
             } else if let Some(arr) = doc.get(key).and_then(|v| v.as_array()) {
                 for k in arr {
                     if let Some(s) = k.as_str() {
-                        parts.push(s.to_string());
+                        push_fts_part(&mut parts, s);
                     }
                 }
             }
@@ -521,7 +528,7 @@ fn search_text_for(doc: &Value, fts_fields: Option<&[String]>) -> String {
         "body",
     ] {
         if let Some(s) = doc.get(key).and_then(|v| v.as_str()) {
-            parts.push(s.to_string());
+            push_fts_part(&mut parts, s);
         }
     }
     if let Some(arr) = doc
@@ -531,12 +538,12 @@ fn search_text_for(doc: &Value, fts_fields: Option<&[String]>) -> String {
     {
         for k in arr {
             if let Some(s) = k.as_str() {
-                parts.push(s.to_string());
+                push_fts_part(&mut parts, s);
             }
         }
     }
     if let Some(s) = doc.get("searchText").and_then(|v| v.as_str()) {
-        parts.push(s.to_string());
+        push_fts_part(&mut parts, s);
     }
     if let Some(obj) = doc.as_object() {
         for (k, v) in obj {
@@ -544,8 +551,8 @@ fn search_text_for(doc: &Value, fts_fields: Option<&[String]>) -> String {
                 continue;
             }
             if let Some(s) = v.as_str() {
-                if !parts.iter().any(|p| p == s) {
-                    parts.push(s.to_string());
+                if !parts.iter().any(|p| p == s || p.contains(s)) {
+                    push_fts_part(&mut parts, s);
                 }
             }
         }
