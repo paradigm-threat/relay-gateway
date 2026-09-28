@@ -1389,8 +1389,9 @@ append_relay_env_ssr_defaults() {
   if ! grep -q '^RELAY_SSR_MAX_CONCURRENT=' "$f" 2>/dev/null; then
     echo "RELAY_SSR_MAX_CONCURRENT=${RELAY_SSR_MAX_CONCURRENT:-2}" >>"$f"
   fi
-  if ! grep -q '^RELAY_SSR_SHELL_ONLY=' "$f" 2>/dev/null; then
-    echo "RELAY_SSR_SHELL_ONLY=${RELAY_SSR_SHELL_ONLY:-1}" >>"$f"
+  # Drop the homepage-for-every-URL rewrite if a previous install wrote it.
+  if grep -q '^RELAY_SSR_SHELL_ONLY=' "$f" 2>/dev/null; then
+    sed -i '/^RELAY_SSR_SHELL_ONLY=/d' "$f"
   fi
 }
 

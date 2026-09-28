@@ -1,28 +1,17 @@
-//! When to skip or cheapen parked SSR (bots, HEAD, prefetch, shell-only).
+//! When to skip or cheapen parked SSR (bots, HEAD, prefetch).
 //!
-//! Env:
-//! - `RELAY_SSR_SHELL_ONLY` — default **on**. Client-hook render always uses `/`;
-//!   per-request SEO still wraps the document. Set `0`/`false`/`off` for per-path SSR.
-//! - Skip is header-driven (no env): `HEAD`, `Sec-Purpose: prefetch`, known crawler UAs.
+//! The client hook always receives the request path. Rendering `/` for every URL
+//! and marking it `data-relay-ssr` made hydration keep the homepage on article routes.
+//! `RELAY_SSR_SHELL_ONLY` is ignored for the hook path (kept so old env files are harmless).
+//!
+//! Skip is header-driven (no env): `HEAD`, `Sec-Purpose: prefetch`, known crawler UAs.
 
 use serde_json::Value;
 
-/// Default on: one hook render per tip (`/`), not one per article path.
-pub fn shell_only() -> bool {
-    match std::env::var("RELAY_SSR_SHELL_ONLY") {
-        Ok(s) => {
-            let t = s.trim();
-            !matches!(t, "0" | "false" | "FALSE" | "off" | "OFF" | "no" | "NO")
-        }
-        Err(_) => true,
-    }
-}
-
-/// Path passed into the client GET hook (shell vs request path).
+/// Path passed into the client GET hook. Always the request path so article URLs
+/// do not hydrate the homepage shell.
 pub fn hook_initial_path(request_path: &str) -> String {
-    if shell_only() {
-        "/".into()
-    } else if request_path.is_empty() {
+    if request_path.is_empty() || request_path == "/" {
         "/".into()
     } else if request_path.starts_with('/') {
         request_path.to_string()
@@ -176,11 +165,14 @@ mod tests {
     }
 
     #[test]
-    fn hook_path_shell_only_default() {
-        std::env::remove_var("RELAY_SSR_SHELL_ONLY");
-        assert_eq!(hook_initial_path("/events/jfk"), "/");
-        std::env::set_var("RELAY_SSR_SHELL_ONLY", "0");
-        assert_eq!(hook_initial_path("/events/jfk"), "/events/jfk");
+    fn hook_path_follows_request_even_if_shell_only_set() {
+        std::env::set_var("RELAY_SSR_SHELL_ONLY", "1");
+        assert_eq!(
+            hook_initial_path("/influence/predictive_programming/the-laugh-before-the-planet.md"),
+            "/influence/predictive_programming/the-laugh-before-the-planet.md"
+        );
+        assert_eq!(hook_initial_path("/"), "/");
+        assert_eq!(hook_initial_path(""), "/");
         std::env::remove_var("RELAY_SSR_SHELL_ONLY");
     }
 }
