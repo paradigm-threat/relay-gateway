@@ -22,7 +22,7 @@ _repatch_caddy_timeouts() {
   for p in /etc/caddy/Caddyfile /opt/relay/state/park-tls/Caddyfile.parked; do
     [[ -f "$p" ]] || continue
     grep -q response_header_timeout "$p" && continue
-    t="$(sed 's/reverse_proxy 127.0.0.1:8080/reverse_proxy 127.0.0.1:8080 {\n\t\ttransport http {\n\t\t\tdial_timeout 2s\n\t\t\tresponse_header_timeout 8s\n\t\t}\n\t}/g' "$p")"
+    t="$(sed 's/reverse_proxy 127.0.0.1:8080/reverse_proxy 127.0.0.1:8080 {\n\t\ttransport http {\n\t\t\tdial_timeout 2s\n\t\t\tresponse_header_timeout 25s\n\t\t}\n\t}/g' "$p")"
     if [[ "$t" != "$(cat "$p")" ]]; then
       printf '%s' "$t" >"$p"
       log "re-applied Caddy upstream timeouts in $p"

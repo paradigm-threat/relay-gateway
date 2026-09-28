@@ -1,7 +1,7 @@
 //! SSR concurrency, wall-clock timeout with cooperative cancel, and per-key coalesce.
 //!
 //! Env:
-//! - `RELAY_SSR_TIMEOUT_SECS` — default **4** (clamp 2..=120). `0` disables the wall-clock timeout
+//! - `RELAY_SSR_TIMEOUT_SECS` — default **20** (clamp 2..=120). `0` disables the wall-clock timeout
 //!   (concurrency limit + coalesce still apply).
 //! - `RELAY_SSR_MAX_CONCURRENT` — default 2 (clamp 1..=64).
 //!
@@ -20,10 +20,10 @@ fn timeout_secs() -> Option<u64> {
     match std::env::var("RELAY_SSR_TIMEOUT_SECS") {
         Ok(s) if s.trim() == "0" => None,
         Ok(s) => {
-            let n: u64 = s.trim().parse().unwrap_or(4);
+            let n: u64 = s.trim().parse().unwrap_or(20);
             Some(n.clamp(2, 120))
         }
-        Err(_) => Some(4),
+        Err(_) => Some(20),
     }
 }
 

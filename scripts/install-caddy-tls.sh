@@ -117,7 +117,7 @@ write_caddyfile() {
 		reverse_proxy 127.0.0.1:${UPSTREAM} {
 			transport http {
 				dial_timeout 2s
-				response_header_timeout 8s
+				response_header_timeout 25s
 			}
 		}
 	}
@@ -154,7 +154,7 @@ https:// {
 		reverse_proxy 127.0.0.1:${UPSTREAM} {
 			transport http {
 				dial_timeout 2s
-				response_header_timeout 8s
+				response_header_timeout 25s
 			}
 		}
 	}

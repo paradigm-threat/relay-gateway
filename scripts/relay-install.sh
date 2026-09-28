@@ -1383,8 +1383,12 @@ append_relay_env_web_assets_defaults() {
 append_relay_env_ssr_defaults() {
   local f="$INSTALL/relay.env"
   touch "$f"
-  if ! grep -q '^RELAY_SSR_TIMEOUT_SECS=' "$f" 2>/dev/null; then
-    echo "RELAY_SSR_TIMEOUT_SECS=${RELAY_SSR_TIMEOUT_SECS:-4}" >>"$f"
+  # Article SSR is ~4s; directory pages ~18s. A 4s cap cancels before the body
+  # exists, and the client keeps that empty/homepage shell instead of refetching.
+  if grep -q '^RELAY_SSR_TIMEOUT_SECS=' "$f" 2>/dev/null; then
+    sed -i 's/^RELAY_SSR_TIMEOUT_SECS=.*/RELAY_SSR_TIMEOUT_SECS=20/' "$f"
+  else
+    echo "RELAY_SSR_TIMEOUT_SECS=${RELAY_SSR_TIMEOUT_SECS:-20}" >>"$f"
   fi
   if ! grep -q '^RELAY_SSR_MAX_CONCURRENT=' "$f" 2>/dev/null; then
     echo "RELAY_SSR_MAX_CONCURRENT=${RELAY_SSR_MAX_CONCURRENT:-2}" >>"$f"
