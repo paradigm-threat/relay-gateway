@@ -905,35 +905,7 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
         }
 
         if skip || slots_full {
-            if let Some(cached) = crate::git::ssr_html_cache::get_shell_or_any(
-                &repo_root,
-                request_branch,
-                client_hook_path,
-            ) {
-                tracing::info!(
-                    target: "relay_ssr",
-                    path = %request_path,
-                    skip,
-                    slots_full,
-                    "SSR skipped; serving stale/shell cache"
-                );
-                let html = if cached.contains("relay-portrait-siblings") {
-                    cached
-                } else {
-                    let portraits_json =
-                        crate::git::portrait::portrait_sibling_set_json(&repo_root, request_branch);
-                    crate::git::embed_html::inject_portrait_sibling_bootstrap(
-                        &cached,
-                        &portraits_json,
-                    )
-                };
-                let missing = ctx_flag_true(ctx, "siteShellMissingPath");
-                return Ok(if missing {
-                    hook_file_object_ssr_html_with_status(html, Some(404), true)
-                } else {
-                    hook_file_object_ssr_html(html)
-                });
-            }
+            // Do not substitute another path's HTML. Hydration would keep that page.
             tracing::info!(
                 target: "relay_ssr",
                 path = %request_path,
@@ -965,33 +937,7 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                 initial_path: &initial_path,
             },
         ) else {
-            if let Some(cached) = crate::git::ssr_html_cache::get_shell_or_any(
-                &repo_root,
-                request_branch,
-                client_hook_path,
-            ) {
-                tracing::warn!(
-                    target: "relay_ssr",
-                    path = %request_path,
-                    "SSR miss/timeout; serving stale/shell cache"
-                );
-                let html = if cached.contains("relay-portrait-siblings") {
-                    cached
-                } else {
-                    let portraits_json =
-                        crate::git::portrait::portrait_sibling_set_json(&repo_root, request_branch);
-                    crate::git::embed_html::inject_portrait_sibling_bootstrap(
-                        &cached,
-                        &portraits_json,
-                    )
-                };
-                let missing = ctx_flag_true(ctx, "siteShellMissingPath");
-                return Ok(if missing {
-                    hook_file_object_ssr_html_with_status(html, Some(404), true)
-                } else {
-                    hook_file_object_ssr_html(html)
-                });
-            }
+            // A timeout must not serve some other URL's SSR document.
             tracing::warn!(
                 target: "relay_ssr",
                 path = %request_path,
