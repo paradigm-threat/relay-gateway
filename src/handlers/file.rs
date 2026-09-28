@@ -40,11 +40,7 @@ pub async fn handle_get_file(
     if crate::git::sitemap::is_seo_meta_path(&decoded) {
         if let Some(ref repo_name) = repo_name_opt {
             if let Some(resp) = crate::git::sitemap::try_seo_meta_response(
-                &state,
-                &headers,
-                &branch,
-                repo_name,
-                &decoded,
+                &state, &headers, &branch, repo_name, &decoded,
             ) {
                 return resp;
             }
@@ -123,7 +119,7 @@ pub async fn handle_get_file(
 
     info!(%branch, "resolved branch");
 
-    let git_result = match tokio::task::block_in_place(|| {
+    let git_result = match super::run_off_accept(|| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             git::git_resolve_and_respond(&state, &headers, &branch, &repo_name, &decoded, qmap)
         }))
@@ -266,7 +262,7 @@ async fn run_get_clever_or_404(
         }
     }
     crate::git::clever_script_host::augment_get_context_headers(&mut ctx, headers);
-    let val = match tokio::task::block_in_place(|| {
+    let val = match super::run_off_accept(|| {
         git::clever_hooks::run_clever_hook(
             &source,
             &ctx,

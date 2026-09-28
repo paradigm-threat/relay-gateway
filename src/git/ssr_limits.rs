@@ -1,7 +1,7 @@
 //! SSR concurrency, wall-clock timeout with cooperative cancel, and per-key coalesce.
 //!
 //! Env:
-//! - `RELAY_SSR_TIMEOUT_SECS` — default **20** (clamp 2..=120). `0` disables the wall-clock timeout
+//! - `RELAY_SSR_TIMEOUT_SECS` — default **30** (clamp 2..=120). `0` disables the wall-clock timeout
 //!   (concurrency limit + coalesce still apply).
 //! - `RELAY_SSR_MAX_CONCURRENT` — default 2 (clamp 1..=64).
 //!
@@ -20,10 +20,10 @@ fn timeout_secs() -> Option<u64> {
     match std::env::var("RELAY_SSR_TIMEOUT_SECS") {
         Ok(s) if s.trim() == "0" => None,
         Ok(s) => {
-            let n: u64 = s.trim().parse().unwrap_or(20);
+            let n: u64 = s.trim().parse().unwrap_or(30);
             Some(n.clamp(2, 120))
         }
-        Err(_) => Some(20),
+        Err(_) => Some(30),
     }
 }
 
@@ -181,17 +181,21 @@ where
                 work()
             };
             if cancel_worker.load(Ordering::Acquire) {
-                OVERDUE.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                    Some(n.saturating_sub(1))
-                })
-                .ok();
+                OVERDUE
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                        Some(n.saturating_sub(1))
+                    })
+                    .ok();
             }
             relay_runtime::install_ssr_cancel(None);
 
             // Remove under the map lock, then fan-out so a late joiner cannot
             // insert a parallel slot between remove and drain.
             let fanout = {
-                let mut map = registry_worker.map.lock().unwrap_or_else(|p| p.into_inner());
+                let mut map = registry_worker
+                    .map
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
                 map.remove(&key_worker).map(|(_, tw)| tw)
             };
             let targets = fanout.unwrap_or(waiters_fallback);
@@ -289,10 +293,11 @@ where
             relay_runtime::install_ssr_cancel(Some(cancel_worker.clone()));
             let out = work();
             if cancel_worker.load(Ordering::Acquire) {
-                OVERDUE.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                    Some(n.saturating_sub(1))
-                })
-                .ok();
+                OVERDUE
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                        Some(n.saturating_sub(1))
+                    })
+                    .ok();
             }
             relay_runtime::install_ssr_cancel(None);
             let _ = tx.send(out);

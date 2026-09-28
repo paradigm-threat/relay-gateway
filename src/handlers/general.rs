@@ -586,11 +586,10 @@ pub async fn options_capabilities(
                     relay_config = git::read_relay_config(&repo, &branch);
                 }
             }
-            let description = state.authorized_repos.as_ref().and_then(|a| {
-                a.repos
-                    .get(name)
-                    .and_then(|r| r.description.clone())
-            });
+            let description = state
+                .authorized_repos
+                .as_ref()
+                .and_then(|a| a.repos.get(name).and_then(|r| r.description.clone()));
             repos_json.push(serde_json::json!({
                 "name": name,
                 "description": description,
@@ -705,7 +704,7 @@ pub async fn get_root(
         .or_else(|| helpers::repo_from_parked_domain(&state, &headers));
     if let Some(repo_name) = routed_repo {
         let branch = helpers::branch_for_request(&headers, &state, Some(&repo_name));
-        let shell = tokio::task::block_in_place(|| {
+        let shell = super::run_off_accept(|| {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 git::try_site_shell_for_root(&state, &headers, &branch, &repo_name, qmap)
             }))
@@ -975,7 +974,10 @@ pub(crate) fn resolve_index_warm_branch(
     if let Some(b) = query_branch.map(str::trim).filter(|b| !b.is_empty()) {
         return b.to_string();
     }
-    if let Some(b) = catalog_publish_branch.map(str::trim).filter(|b| !b.is_empty()) {
+    if let Some(b) = catalog_publish_branch
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+    {
         return b.to_string();
     }
     if let Some(b) = bare_head_branch.map(str::trim).filter(|b| !b.is_empty()) {
@@ -1129,7 +1131,12 @@ mod index_warm_branch_tests {
     #[test]
     fn query_branch_wins_over_catalog() {
         assert_eq!(
-            resolve_index_warm_branch("clevertree-site", Some("main"), Some("release"), Some("release")),
+            resolve_index_warm_branch(
+                "clevertree-site",
+                Some("main"),
+                Some("release"),
+                Some("release")
+            ),
             "main"
         );
     }
@@ -1152,10 +1159,7 @@ mod index_warm_branch_tests {
 
     #[test]
     fn defaults_to_main() {
-        assert_eq!(
-            resolve_index_warm_branch("x", None, None, None),
-            "main"
-        );
+        assert_eq!(resolve_index_warm_branch("x", None, None, None), "main");
     }
 
     #[test]

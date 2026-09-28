@@ -705,10 +705,10 @@ server:
         assert_eq!(results[0]["title"], "Test Item");
     }
 
-    /// Parked Host with broken client hook → 500 SSR error, not Unknown Host.
+    /// Parked Host with a broken client hook stays a hydrate-ready shell, not Unknown Host.
     #[tokio::test]
     #[serial]
-    async fn test_parked_host_ssr_failure_returns_500_not_unknown_host() {
+    async fn test_parked_host_ssr_failure_is_hydrate_shell_not_unknown_host() {
         let dir = tempdir().unwrap();
         let root = dir.path().to_path_buf();
         let repo_path = root.join("park-site.git");
@@ -779,14 +779,14 @@ export default function run(ctx, next) {
         let (parts, body) = resp.into_response().into_parts();
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         let text = String::from_utf8_lossy(&bytes);
-        assert_eq!(
-            parts.status,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "body={text}"
+        assert_eq!(parts.status, StatusCode::OK, "body={text}");
+        assert!(
+            text.contains("data-relay-ssr-fallback"),
+            "SSR miss must be a hydrate-ready notice, got: {text}"
         );
         assert!(
-            text.contains("Site shell / SSR failed"),
-            "expected SSR wording, got: {text}"
+            !text.contains("data-relay-ssr=\"1\""),
+            "a failed render must not be kept as hydrated SSR: {text}"
         );
         assert!(
             !text.contains("Unknown Host"),
@@ -2144,7 +2144,10 @@ server:
         let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["schema_version"], 5);
-        assert!(v.get("http").is_some(), "schema 5 includes http traffic stats");
+        assert!(
+            v.get("http").is_some(),
+            "schema 5 includes http traffic stats"
+        );
         assert!(v.get("ipfs_ok").is_some());
         assert!(v.get("indexes_ok").is_some());
         assert!(v["self"].get("ipfs").is_some());

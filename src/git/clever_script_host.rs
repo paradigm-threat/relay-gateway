@@ -648,10 +648,7 @@ fn hook_file_object_ssr_html_with_status(
     file.insert("bodyUtf8".to_string(), CsValue::String(html));
     file.insert("headers".to_string(), CsValue::Object(headers));
     if let Some(code) = status {
-        file.insert(
-            "status".to_string(),
-            CsValue::Number(f64::from(code)),
-        );
+        file.insert("status".to_string(), CsValue::Number(f64::from(code)));
     }
     CsValue::Object(file)
 }
@@ -748,14 +745,15 @@ fn ssr_public_origin(ctx: &HashMap<String, CsValue>) -> String {
         return String::new();
     }
     let host_l = host.to_ascii_lowercase();
-    let default_proto =
-        if host_l.contains("localhost") || host_l.starts_with("127.0.0.1") || host_l.starts_with("[::1]")
-        {
-            // park-local / loopback are plain HTTP; https://…localhost:9080 fails SSL.
-            "http"
-        } else {
-            "https"
-        };
+    let default_proto = if host_l.contains("localhost")
+        || host_l.starts_with("127.0.0.1")
+        || host_l.starts_with("[::1]")
+    {
+        // park-local / loopback are plain HTTP; https://…localhost:9080 fails SSL.
+        "http"
+    } else {
+        "https"
+    };
     let proto = nested_obj_str(ctx, "requestHeaders", "x-forwarded-proto")
         .and_then(|p| p.split(',').next())
         .map(str::trim)
@@ -776,14 +774,12 @@ fn cheap_client_shell(
     notice: Option<&str>,
 ) -> CsValue {
     let client_hook_http = format!("/{client_hook_path}");
-    let assets_prefix = if crate::git::web_assets::content_bare_opts_into_web_assets(
-        repo_root,
-        request_branch,
-    ) {
-        crate::git::web_assets::pinned_assets_url_prefix_from_content_bare(repo_root)
-    } else {
-        None
-    };
+    let assets_prefix =
+        if crate::git::web_assets::content_bare_opts_into_web_assets(repo_root, request_branch) {
+            crate::git::web_assets::pinned_assets_url_prefix_from_content_bare(repo_root)
+        } else {
+            None
+        };
     let site_cfg =
         crate::git::relay_config_cache::read_relay_config_at_path_cached(repo_root, request_branch);
     let site_name = site_cfg
@@ -821,8 +817,7 @@ fn cheap_client_shell(
             csr_placeholder: notice.is_some(),
         },
     );
-    let portraits_json =
-        crate::git::portrait::portrait_sibling_set_json(repo_root, request_branch);
+    let portraits_json = crate::git::portrait::portrait_sibling_set_json(repo_root, request_branch);
     let html = crate::git::embed_html::inject_portrait_sibling_bootstrap(&html, &portraits_json);
     if missing {
         hook_file_object_ssr_html_with_status(html, Some(404), true)
@@ -852,7 +847,25 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                 .unwrap_or("")
                 .trim_start_matches('/')
         );
-        let initial_path = crate::git::ssr_policy::hook_initial_path(&request_path);
+        // Render path is the URL path only. Do not substitute `/` or another cached page.
+        let render_path = crate::git::ssr_policy::normalize_request_path(&request_path);
+        let initial_path = render_path.clone();
+        if crate::git::ssr_policy::hook_initial_path(&request_path) != render_path {
+            tracing::error!(
+                target: "relay_ssr",
+                path = %render_path,
+                "SSR hook path diverged from the request; refusing homepage rewrite"
+            );
+            return Ok(cheap_client_shell(
+                cs_obj_str(ctx, "repo").unwrap_or("relay"),
+                cs_obj_str(ctx, "branch").unwrap_or(&branch),
+                &render_path,
+                client_hook_path,
+                &repo_root,
+                ctx,
+                Some(crate::git::embed_html::ssr_timeout_notice_html()),
+            ));
+        }
         let skip = crate::git::ssr_policy::should_skip_ssr_from_ctx(ctx);
         let slots_full = crate::git::ssr_limits::ssr_slots_full();
         let repo = cs_obj_str(ctx, "repo").unwrap_or("relay");
@@ -865,24 +878,10 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
         let cached_exact = crate::git::ssr_html_cache::get(
             &repo_root,
             request_branch,
-            &request_path,
+            &render_path,
             client_hook_path,
         )
-        .or_else(|| {
-            if request_path == initial_path
-                || request_path == "/"
-                || request_path.is_empty()
-            {
-                crate::git::ssr_html_cache::get(
-                    &repo_root,
-                    request_branch,
-                    &initial_path,
-                    client_hook_path,
-                )
-            } else {
-                None
-            }
-        });
+        .filter(|html| crate::git::embed_html::ssr_html_matches_request(html, &render_path));
         if let Some(cached) = cached_exact {
             tracing::debug!(
                 target: "relay_ssr",
@@ -1040,7 +1039,7 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
         let html = crate::git::embed_html::embed_html_document_with_assets_and_seo_extras(
             repo,
             request_branch,
-            &request_path,
+            &render_path,
             &client_hook_http,
             Some(&rendered.body_html),
             if rendered.css.trim().is_empty() {
@@ -1065,10 +1064,26 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             crate::git::portrait::portrait_sibling_set_json(&repo_root, request_branch);
         let html =
             crate::git::embed_html::inject_portrait_sibling_bootstrap(&html, &portraits_json);
+        if !crate::git::embed_html::ssr_html_matches_request(&html, &render_path) {
+            tracing::error!(
+                target: "relay_ssr",
+                path = %render_path,
+                "SSR document path marker mismatch; not caching"
+            );
+            return Ok(cheap_client_shell(
+                repo,
+                request_branch,
+                &render_path,
+                client_hook_path,
+                &repo_root,
+                ctx,
+                Some(crate::git::embed_html::ssr_timeout_notice_html()),
+            ));
+        }
         crate::git::ssr_html_cache::put(
             &repo_root,
             request_branch,
-            &request_path,
+            &render_path,
             client_hook_path,
             html.clone(),
         );

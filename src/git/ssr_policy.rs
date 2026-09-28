@@ -8,9 +8,10 @@
 
 use serde_json::Value;
 
-/// Path passed into the client GET hook. Always the request path so article URLs
-/// do not hydrate the homepage shell.
-pub fn hook_initial_path(request_path: &str) -> String {
+/// Normalize a URL path. This must not rewrite an article path to `/`.
+/// The park client hydrates the SSR document in place and does not refetch markdown,
+/// so a homepage render stamped onto another URL stays on screen.
+pub fn normalize_request_path(request_path: &str) -> String {
     if request_path.is_empty() || request_path == "/" {
         "/".into()
     } else if request_path.starts_with('/') {
@@ -18,6 +19,11 @@ pub fn hook_initial_path(request_path: &str) -> String {
     } else {
         format!("/{request_path}")
     }
+}
+
+/// Path passed into the client GET hook. Always [`normalize_request_path`].
+pub fn hook_initial_path(request_path: &str) -> String {
+    normalize_request_path(request_path)
 }
 
 pub fn should_skip_ssr(http_method: Option<&str>, request_headers: Option<&Value>) -> bool {
@@ -42,7 +48,9 @@ pub fn should_skip_ssr(http_method: Option<&str>, request_headers: Option<&Value
     false
 }
 
-pub fn should_skip_ssr_from_ctx(ctx: &std::collections::HashMap<String, relay_runtime::value::Value>) -> bool {
+pub fn should_skip_ssr_from_ctx(
+    ctx: &std::collections::HashMap<String, relay_runtime::value::Value>,
+) -> bool {
     let method = cs_str(ctx, "httpMethod").or_else(|| cs_str(ctx, "method"));
     let headers = ctx.get("requestHeaders");
     let json_headers = headers.and_then(cs_headers_to_json);
@@ -53,11 +61,10 @@ fn method_is_head(m: Option<&str>) -> bool {
     m.map(|s| s.eq_ignore_ascii_case("HEAD")).unwrap_or(false)
 }
 
-fn header_lookup<'a>(
-    h: &'a serde_json::Map<String, Value>,
-    name: &str,
-) -> Option<&'a str> {
-    h.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).and_then(|(_, v)| v.as_str())
+fn header_lookup<'a>(h: &'a serde_json::Map<String, Value>, name: &str) -> Option<&'a str> {
+    h.iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .and_then(|(_, v)| v.as_str())
 }
 
 fn header_is_prefetch(h: &serde_json::Map<String, Value>) -> bool {
@@ -116,7 +123,10 @@ pub fn ua_looks_like_bot(ua: &str) -> bool {
     NEEDLES.iter().any(|n| u.contains(n))
 }
 
-fn cs_str(ctx: &std::collections::HashMap<String, relay_runtime::value::Value>, key: &str) -> Option<String> {
+fn cs_str(
+    ctx: &std::collections::HashMap<String, relay_runtime::value::Value>,
+    key: &str,
+) -> Option<String> {
     match ctx.get(key) {
         Some(relay_runtime::value::Value::String(s)) => Some(s.clone()),
         _ => None,
@@ -167,10 +177,10 @@ mod tests {
     #[test]
     fn hook_path_follows_request_even_if_shell_only_set() {
         std::env::set_var("RELAY_SSR_SHELL_ONLY", "1");
-        assert_eq!(
-            hook_initial_path("/influence/predictive_programming/the-laugh-before-the-planet.md"),
-            "/influence/predictive_programming/the-laugh-before-the-planet.md"
-        );
+        let article = "/influence/predictive_programming/the-laugh-before-the-planet.md";
+        assert_eq!(hook_initial_path(article), article);
+        assert_eq!(normalize_request_path(article), article);
+        assert_ne!(hook_initial_path(article), "/");
         assert_eq!(hook_initial_path("/"), "/");
         assert_eq!(hook_initial_path(""), "/");
         std::env::remove_var("RELAY_SSR_SHELL_ONLY");

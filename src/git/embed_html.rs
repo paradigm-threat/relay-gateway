@@ -207,6 +207,36 @@ pub struct EmbedSeoExtras<'a> {
     pub csr_placeholder: bool,
 }
 
+/// True when this document is the SSR/CSR shell for `request_path`.
+///
+/// A cached homepage (or any other URL) must not be returned for an article: the client
+/// keeps `data-relay-ssr` markup and will not load that path's markdown.
+/// Real SSR documents must carry `data-relay-ssr-path` equal to the embed `initialPath`.
+pub fn ssr_html_matches_request(html: &str, request_path: &str) -> bool {
+    let want = crate::git::ssr_policy::normalize_request_path(request_path);
+    let Some(got) = embed_initial_path(html) else {
+        return false;
+    };
+    if got != want {
+        return false;
+    }
+    if html.contains("data-relay-ssr=\"1\"") {
+        let marker = format!("data-relay-ssr-path=\"{}\"", escape_html_attr(&want));
+        if !html.contains(&marker) {
+            return false;
+        }
+    }
+    true
+}
+
+fn embed_initial_path(html: &str) -> Option<String> {
+    let key = "\"initialPath\":\"";
+    let start = html.find(key)? + key.len();
+    let rest = html.get(start..)?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
 /// Visible `#root` body when SSR did not finish. Embed.js replaces this on CSR mount.
 pub fn ssr_timeout_notice_html() -> &'static str {
     r#"<div id="relay-ssr-fallback" data-relay-ssr-fallback="timeout" role="status"><p><strong>This page is still loading.</strong> Server-side render timed out; the live page should appear in a moment.</p></div>"#
@@ -264,6 +294,7 @@ pub fn embed_html_document_with_assets_and_seo_extras(
     } else {
         format!("/{}", rel_path.trim_start_matches('/'))
     };
+    let ssr_path_attr = escape_html_attr(&initial_path);
     let cfg = RelayEmbedConfig {
         repo,
         branch,
@@ -276,12 +307,15 @@ pub fn embed_html_document_with_assets_and_seo_extras(
     let (root_attrs, root_inner) = match ssr_body_html {
         Some(body) if !body.trim().is_empty() => {
             if extras.csr_placeholder {
-                ("", sanitize_ssr_body_html(body))
+                (String::new(), sanitize_ssr_body_html(body))
             } else {
-                (" data-relay-ssr=\"1\"", sanitize_ssr_body_html(body))
+                (
+                    format!(" data-relay-ssr=\"1\" data-relay-ssr-path=\"{ssr_path_attr}\""),
+                    sanitize_ssr_body_html(body),
+                )
             }
         }
-        _ => ("", String::new()),
+        _ => (String::new(), String::new()),
     };
     let placeholder_style = if extras.csr_placeholder {
         r#"#relay-ssr-fallback{box-sizing:border-box;font:16px/1.45 system-ui,sans-serif;max-width:40rem;margin:2rem auto;padding:1rem 1.25rem;border:1px solid #8884;border-radius:8px;background:#fff8e6;color:#1a1a1a}#relay-ssr-fallback p{margin:0}@media (prefers-color-scheme:dark){#relay-ssr-fallback{background:#3d3518;color:#f4efe4;border-color:#c4a035}}"#
@@ -417,8 +451,7 @@ fn build_json_ld(
         serde_json::Value::String("https://schema.org".into()),
     );
     let home_like = extras.is_website_home
-        || (!extras.is_article
-            && canon.trim_end_matches('/') == origin.trim_end_matches('/'));
+        || (!extras.is_article && canon.trim_end_matches('/') == origin.trim_end_matches('/'));
     if home_like {
         obj.insert("@type".into(), serde_json::Value::String("WebSite".into()));
         obj.insert("name".into(), serde_json::Value::String(site.to_string()));
@@ -883,6 +916,49 @@ mod tests {
         assert!(
             !html.contains("data-relay-ssr="),
             "placeholder must CSR-mount, not hydrate: {html}"
+        );
+    }
+
+    #[test]
+    fn ssr_document_path_marker_rejects_other_url_and_unmarked_hydrate() {
+        let article = "/influence/predictive_programming/the-laugh-before-the-planet.md";
+        let html = embed_html_document_with_assets_and_seo_extras(
+            "r",
+            "main",
+            article,
+            "/hooks/client/get.jsx",
+            Some("<main><h1>The laugh</h1></main>"),
+            None,
+            None,
+            Some("The laugh"),
+            None,
+            None,
+            EmbedSeoExtras::default(),
+        );
+        assert!(
+            html.contains(&format!("data-relay-ssr-path=\"{article}\"")),
+            "{html}"
+        );
+        assert!(ssr_html_matches_request(&html, article), "{html}");
+        assert!(!ssr_html_matches_request(&html, "/"));
+        let home = embed_html_document_with_assets_and_seo_extras(
+            "r",
+            "main",
+            "/",
+            "/hooks/client/get.jsx",
+            Some("<main><h1>Paradigm Threat Project</h1></main>"),
+            None,
+            None,
+            Some("Home"),
+            None,
+            None,
+            EmbedSeoExtras::default(),
+        );
+        assert!(!ssr_html_matches_request(&home, article));
+        let unmarked = html.replace(" data-relay-ssr-path=", " data-x=");
+        assert!(
+            !ssr_html_matches_request(&unmarked, article),
+            "hydrate markup without a path marker must not be reused"
         );
     }
 }

@@ -22,8 +22,25 @@ pub use general::{
 };
 pub use head::{head_file, head_root};
 pub use ipfs::{handle_get_ipfs, handle_get_ipfs_prefixed};
+pub use mesh_sync::api_mesh_sync;
 pub use query::handle_query;
 pub use rum::api_rum;
 pub use status::{api_status, post_api_status};
-pub use mesh_sync::api_mesh_sync;
 pub use write::{delete_file, put_file};
+
+/// Sync SSR and git resolve must not sit on the Tokio accept path.
+/// `block_in_place` is the production path (multi-thread runtime). Current-thread
+/// runtimes — unit tests — panic inside `block_in_place`, so call `f` inline there.
+pub(crate) fn run_off_accept<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let multi = tokio::runtime::Handle::try_current()
+        .map(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+        .unwrap_or(false);
+    if multi {
+        tokio::task::block_in_place(f)
+    } else {
+        f()
+    }
+}
