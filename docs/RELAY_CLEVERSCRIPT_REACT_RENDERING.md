@@ -23,7 +23,20 @@ This document states **product and engineering requirements** for the CleverScri
    **Android (prep):** themed-styler still owns light/dark tokens, but there is no CSS cascade. Use JNI `nativeSetThemeAndRender` (re-resolve stored VNode, no hook re-run). Do not port `html.dark` tip chrome to Android. See `relay-runtime/docs/STYLE_RESOLUTION.md`.
 
 3. **Complex, state-heavy, or high-churn UI belongs in native components**  
-   When a surface needs animation, lists with constant updates, media, maps, etc., the **host** should own the widget; CleverScript supplies configuration and high-level commands, not per-frame reconciliation.
+   When a surface needs animation, lists with constant updates, media, maps, affirmation dialogs, marquees, etc., a **park-authored native** (or a distributed builtin such as `VideoPlayer`) should own the widget. CleverScript supplies configuration and high-level commands, not per-frame reconciliation.
+
+   ### CleverScript vs park-native authorship
+
+   | CleverScript (tip hooks) | Park native (per-OS host files) |
+   |--------------------------|----------------------------------|
+   | Route / path selection, SSR shell shape | Complex reusable widgets (affirmation, marquee, media chrome, maps, editors) |
+   | App/session state, flags as data | High-churn interaction, animation, media chrome |
+   | Fetch / query / index walks, wiring props | OS-specific look & persistence |
+   | Thin composition: `<Affirmation onConfirm={…} />` | Host owns inner DOM/views; modern JS/CSS allowed |
+
+   **Suggest a park native when** UI is reusable across screens/OS, needs continuous animation or media, or repeatedly fails soft-hydrate / CleverScript constraints. **Keep CleverScript** for orchestration — state, routing, general wiring, querying.
+
+   Natives are **park- (or app-) authored**. Relay distributes **support** (per-OS resolve, tag registry, builtins like `@clevertree/video`) — not every product widget. Contract: [`relay-runtime/docs/PARK_NATIVE_COMPONENTS.md`](../../relay-runtime/docs/PARK_NATIVE_COMPONENTS.md).
 
 4. **npm React is not the CleverScript renderer**  
    CleverScript JSX is executed by **relay-runtime** (WASM / JNI / desktop). Parked sites and
@@ -102,4 +115,5 @@ Hosts should map native input into a **small, documented event record** (see pla
 - [`RELAY_MARKDOWN_IR.md`](RELAY_MARKDOWN_IR.md) — markdown + `anchorOnClick` contract.
 - [`RELAY_EMBED_CLIENT_GET_INTERCEPT.md`](RELAY_EMBED_CLIENT_GET_INTERCEPT.md) — parked-site embed is WASM-only (no npm React); React-as-native deferred.
 - [`relay-runtime/docs/CROSS_PLATFORM_OS_SUPPORT_PLAN.md`](../../relay-runtime/docs/CROSS_PLATFORM_OS_SUPPORT_PLAN.md) — native components and host-owned media/UI.
+- [`relay-runtime/docs/PARK_NATIVE_COMPONENTS.md`](../../relay-runtime/docs/PARK_NATIVE_COMPONENTS.md) — park-authored natives, per-OS files, registry.
 - [`relay-runtime/docs/CLEVERSCRIPT_COMPONENT_TESTING.md`](../../relay-runtime/docs/CLEVERSCRIPT_COMPONENT_TESTING.md) — test clicks via `HandlerId` / `invoke_handler` and re-run (not DOM/OS as the primary suite).
