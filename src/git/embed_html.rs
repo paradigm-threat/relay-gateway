@@ -531,7 +531,7 @@ fn origin_from_canonical(canon: &str) -> Option<String> {
 pub fn inject_park_native_host_scripts(html: &str) -> String {
     const MARKER: &str = "data-fb-park-native=\"1\"";
     const PLACEHOLDER: &str = "data-relay-park-native";
-    const CURRENT: &str = "park-host-common.js?v=2";
+    const CURRENT: &str = "park-host-common.js?v=3";
     if !html.contains(PLACEHOLDER) {
         return html.to_string();
     }
@@ -559,10 +559,10 @@ pub fn inject_park_native_host_scripts(html: &str) -> String {
         cleaned.replace_range(hi..hi + he + 9, "");
     }
     let snip = concat!(
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=2\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=2\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/TheaterPlayer.host.js?v=2\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=2\"></script>"
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=3\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=3\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/TheaterPlayer.host.js?v=3\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=3\"></script>"
     );
     if let Some(idx) = cleaned.rfind(r#"<script type="module" src=""#) {
         let mut out = String::with_capacity(cleaned.len() + snip.len());
