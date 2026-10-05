@@ -129,7 +129,7 @@ Body schema `relay.asset-status.v1`:
 {
   "schema": "relay.asset-status.v1",
   "error": "ipfs-pending",
-  "message": "CID not on IPFS gateway yet (still seeding)",
+  "message": "This file needs to be seeded",
   "cid": "bafy…",
   "path": "book/cover.png",
   "retryable": true,
@@ -141,10 +141,12 @@ Body schema `relay.asset-status.v1`:
     "bytesTotal": null,
     "providers": 3,
     "localBlock": false,
-    "hint": "not on this gateway yet; retry while peers seed"
+    "hint": "content hash is known; bytes need to be seeded onto IPFS"
   }
 }
 ```
+
+Public UI copy for missing/pending assets: **“This file needs to be seeded”** (the CID is known; the bytes are not on the network yet). Prefer this over “file not found.”
 
 `seed.state`: `cached` | `fetching` | `missing` | `unavailable` | `unknown`.
 

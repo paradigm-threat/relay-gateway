@@ -11,8 +11,9 @@
 //! - Query **`strict=1`**: HTTP **503** if any peer is unreachable (otherwise **200** with `healthy: false`).
 //!   Missing catalog bares set `repos_ok: false` but do **not** change `healthy` / `strict`.
 //!   IPFS daemon-down sets `ipfs_ok: false` and does **not** affect `healthy` / `strict`.
-//! - Query **`light=1`** (or **`peers=0`**): skip remote peer probes and the IPFS daemon check so
-//!   clients can measure their own RTT. `healthy` is then `true` (no peers were probed).
+//! - Query **`light=1`** (or **`peers=0`**): skip remote peer probes so clients can measure
+//!   their own RTT. Local Kubo is still probed (`self.ipfs` / `ipfs_ok`) for Fleet UI.
+//!   `healthy` is then `true` (no peers were probed).
 //! - Env **`RELAY_STATUS_PEER_URL_TEMPLATE`**: default **`https://{host}/api/config`** (probed with **POST**).
 //! - Env **`RELAY_STATUS_PROBE_TIMEOUT_SECS`**: default **3**. Peer probes run **in parallel**.
 
@@ -995,8 +996,11 @@ pub async fn post_api_status(
         .clone()
         .or_else(mesh_role::node_fqdn_normalized);
 
+    // `light=1` skips remote peer fan-out for fast fleet probes, but still checks
+    // local Kubo so Fleet UI can show IPFS OK/DOWN without SSH.
     let (peers, ipfs_self) = if light {
-        (Vec::new(), collect_ipfs_self_skipped())
+        let ipfs = collect_ipfs_self().await;
+        (Vec::new(), ipfs)
     } else {
         let client = match reqwest::Client::builder().timeout(probe_timeout()).build() {
             Ok(c) => c,

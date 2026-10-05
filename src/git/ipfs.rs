@@ -1110,7 +1110,7 @@ fn do_fetch(
         } else {
             (
                 AssetErrorCode::IpfsPending,
-                "CID not on IPFS gateway yet (still seeding)".to_string(),
+                "This file needs to be seeded".to_string(),
                 Some(5),
             )
         };
