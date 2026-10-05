@@ -135,8 +135,14 @@ pub fn get_hook_json_to_response(val: &Value, branch: &str, repo_name: &str) -> 
                 .get("contentType")
                 .and_then(|v| v.as_str())
                 .unwrap_or("application/octet-stream");
-            let bytes: Vec<u8> = match val.get("bodyUtf8") {
-                Some(Value::String(s)) => s.as_bytes().to_vec(),
+            let mut bytes: Vec<u8> = match val.get("bodyUtf8") {
+                Some(Value::String(s)) => {
+                    if ct.contains("text/html") && s.contains("data-relay-park-native") {
+                        crate::git::embed_html::inject_park_native_host_scripts(s).into_bytes()
+                    } else {
+                        s.as_bytes().to_vec()
+                    }
+                }
                 _ => {
                     let b64 = val.get("bodyBase64").and_then(|v| v.as_str())?;
                     B64.decode(b64.as_bytes()).ok()?

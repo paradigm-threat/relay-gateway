@@ -524,6 +524,62 @@ fn origin_from_canonical(canon: &str) -> Option<String> {
     Some(format!("{scheme}://{host_port}"))
 }
 
+/// Inject park-native host scripts before the embed module (inside `<body>`).
+///
+/// CleverScript GET hooks may fail to place these correctly; gateway normalizes any HTML
+/// response that already contains `data-relay-park-native` placeholders.
+pub fn inject_park_native_host_scripts(html: &str) -> String {
+    const MARKER: &str = "data-fb-park-native=\"1\"";
+    const PLACEHOLDER: &str = "data-relay-park-native";
+    if !html.contains(PLACEHOLDER) {
+        return html.to_string();
+    }
+    let body_close = html.rfind("</body>");
+    if let Some(first) = html.find(MARKER) {
+        if body_close.is_none_or(|bc| first < bc) {
+            return html.to_string();
+        }
+    }
+    let mut cleaned = html.to_string();
+    if let Some(doc_end) = cleaned.rfind("</html>") {
+        let tail = &cleaned[doc_end + 7..];
+        if tail.contains(MARKER) {
+            cleaned.truncate(doc_end + 7);
+        }
+    }
+    let host_open = "<script data-fb-park-native=\"1\"";
+    loop {
+        let Some(hi) = cleaned.find(host_open) else {
+            break;
+        };
+        let Some(he) = cleaned[hi..].find("</script>") else {
+            break;
+        };
+        cleaned.replace_range(hi..hi + he + 9, "");
+    }
+    let snip = concat!(
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/TheaterPlayer.host.js\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js\"></script>"
+    );
+    if let Some(idx) = cleaned.rfind(r#"<script type="module" src=""#) {
+        let mut out = String::with_capacity(cleaned.len() + snip.len());
+        out.push_str(&cleaned[..idx]);
+        out.push_str(snip);
+        out.push_str(&cleaned[idx..]);
+        out
+    } else if let Some(idx) = cleaned.rfind("</body>") {
+        let mut out = String::with_capacity(cleaned.len() + snip.len());
+        out.push_str(&cleaned[..idx]);
+        out.push_str(snip);
+        out.push_str(&cleaned[idx..]);
+        out
+    } else {
+        format!("{cleaned}{snip}")
+    }
+}
+
 /// Inject tip portrait-sibling map for PopImage (before embed.js).
 ///
 /// Sets `globalThis.__RELAY_PORTRAIT_SIBLINGS__` to a `{ "path/to/foo-portrait.png": true }` map.
@@ -721,6 +777,22 @@ mod tests {
     fn sanitize_ssr_removes_script() {
         let s = sanitize_ssr_body_html(r#"a<script src=x></script>b</script>c"#);
         assert_eq!(s, "abc");
+    }
+
+    #[test]
+    fn inject_park_native_host_scripts_before_embed() {
+        let sample = concat!(
+            "<html><body><div data-relay-park-native=\"fb-affirmation\"></div>",
+            "<script type=\"application/json\" id=\"relay-embed-config\">{}</script>",
+            "<script type=\"module\" src=\"/assets/c/abc/embed.js\"></script></body></html>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js\"></script>"
+        );
+        let out = inject_park_native_host_scripts(sample);
+        let body_close = out.find("</body>").unwrap();
+        let first_host = out.find("data-fb-park-native=\"1\"").unwrap();
+        assert!(first_host < body_close, "hosts must be inside body: {out}");
+        assert!(out.contains("park-host-common.js"));
+        assert!(!out.contains("</html><script data-fb-park-native"));
     }
 
     #[test]
