@@ -291,6 +291,8 @@ pub const DEFAULT_SSL_DOMAINS: &[&str] = &[
     "clevertree.net",
     "www.clevertree.net",
     "relay.clevertree.net",
+    "flashbackrepository.org",
+    "www.flashbackrepository.org",
 ];
 
 pub fn drift(cfg: &OpsConfig, fleet: &FleetFile, interactive: bool) -> Result<String> {

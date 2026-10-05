@@ -531,6 +531,7 @@ pub async fn post_peer_hook(
                             r.before.clone().unwrap_or_default(),
                             sha.clone(),
                         );
+                        crate::git::ipfs::spawn_pin_repo_tip(bare.clone(), r.branch.clone());
                         if let Some(git) =
                             crate::peer_notify::git_config_from_bare_tip(&bare, &r.branch, sha)
                         {

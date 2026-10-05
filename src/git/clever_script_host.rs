@@ -4,7 +4,7 @@ use crate::git::chat_index;
 use crate::git::hooks::HookContext;
 use crate::git::image_cache::{cache_key_digest, ImageDiskCache};
 use crate::git::ipfs::{
-    self, resolve_ipfs_pointer, resolve_pointer_blob, AssetResolveError, IpfsPointer,
+    self, resolve_ipfs_pointer, resolve_pointer_http, AssetResolveError, IpfsPointer,
     IpfsResolveOptions, IpfsResolveSource, ASSET_ERROR_HEADER,
 };
 use crate::git::repo::read_file_from_repo;
@@ -402,6 +402,8 @@ struct FetchedIpfsBytes {
     bytes: Vec<u8>,
     content_type: String,
     cache_key: String,
+    status: Option<u16>,
+    extra_headers: HashMap<String, String>,
 }
 
 fn ipfs_bytes_to_cs_object(fetched: &FetchedIpfsBytes) -> CsValue {
@@ -440,6 +442,8 @@ fn fetched_bytes_from_cs_object(o: &HashMap<String, CsValue>) -> Result<FetchedI
         bytes,
         content_type,
         cache_key,
+        status: None,
+        extra_headers: HashMap::new(),
     })
 }
 
@@ -447,6 +451,26 @@ enum FetchIpfsOutcome {
     Miss,
     Ok(FetchedIpfsBytes),
     AssetErr(AssetResolveError),
+}
+
+fn range_header_from_ctx(m: &HashMap<String, CsValue>) -> Option<String> {
+    for key in ["requestHeaders", "headers"] {
+        let Some(CsValue::Object(headers)) = m.get(key) else {
+            continue;
+        };
+        for (k, v) in headers {
+            if !k.eq_ignore_ascii_case("range") {
+                continue;
+            }
+            if let CsValue::String(s) = v {
+                let t = s.trim();
+                if !t.is_empty() {
+                    return Some(t.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn fetch_ipfs_bytes_inner(
@@ -468,17 +492,26 @@ fn fetch_ipfs_bytes_inner(
     else {
         return Ok(FetchIpfsOutcome::Miss);
     };
-    match resolve_pointer_blob(&pointer, wait_secs) {
-        Ok((bytes, ct)) => {
-            let content_type = if ct.trim().is_empty() {
-                pointer_content_type(&pointer, rel)
-            } else {
-                ct
-            };
+    let range = range_header_from_ctx(m);
+    match resolve_pointer_http(&pointer, wait_secs, range.as_deref()) {
+        Ok(http) => {
+            let content_type = http
+                .content_type
+                .filter(|ct| !ct.trim().is_empty())
+                .unwrap_or_else(|| pointer_content_type(&pointer, rel));
+            let mut extra_headers = HashMap::new();
+            if let Some(cr) = http.content_range {
+                extra_headers.insert("Content-Range".to_string(), cr);
+            }
+            if let Some(ar) = http.accept_ranges {
+                extra_headers.insert("Accept-Ranges".to_string(), ar);
+            }
             Ok(FetchIpfsOutcome::Ok(FetchedIpfsBytes {
-                bytes,
+                bytes: http.bytes,
                 content_type,
                 cache_key: format!("ipfs:{}", pointer.cid),
+                status: Some(http.status.as_u16()),
+                extra_headers,
             }))
         }
         Err(e) => Ok(FetchIpfsOutcome::AssetErr(e)),
@@ -522,14 +555,26 @@ fn hook_file_object_webp(webp_bytes: &[u8]) -> CsValue {
     CsValue::Object(file)
 }
 
-fn hook_file_object_bytes(bytes: &[u8], content_type: &str, cache_control: &str) -> CsValue {
+fn hook_file_object_bytes_with_status(
+    bytes: &[u8],
+    content_type: &str,
+    cache_control: &str,
+    status: Option<u16>,
+    extra_headers: &HashMap<String, String>,
+) -> CsValue {
     let mut headers = HashMap::new();
     headers.insert(
         "Cache-Control".to_string(),
         CsValue::String(cache_control.into()),
     );
+    for (k, v) in extra_headers {
+        headers.insert(k.clone(), CsValue::String(v.clone()));
+    }
     let mut file = HashMap::new();
     file.insert("kind".to_string(), CsValue::String("file".into()));
+    if let Some(st) = status {
+        file.insert("status".to_string(), CsValue::Number(st as f64));
+    }
     file.insert(
         "contentType".to_string(),
         CsValue::String(content_type.to_string()),
@@ -547,6 +592,10 @@ fn hook_file_object_bytes(bytes: &[u8], content_type: &str, cache_control: &str)
     }
     file.insert("headers".to_string(), CsValue::Object(headers));
     CsValue::Object(file)
+}
+
+fn hook_file_object_bytes(bytes: &[u8], content_type: &str, cache_control: &str) -> CsValue {
+    hook_file_object_bytes_with_status(bytes, content_type, cache_control, None, &HashMap::new())
 }
 
 fn hook_file_object_asset_error(err: &AssetResolveError) -> CsValue {
@@ -1359,10 +1408,12 @@ fn resolve_ipfs_from_get_context_native(
         return Ok(hook_file_object_asset_error(&err));
     }
     match fetch_ipfs_bytes_inner(m, &repo_root, &branch, &opts)? {
-        FetchIpfsOutcome::Ok(fetched) => Ok(hook_file_object_bytes(
+        FetchIpfsOutcome::Ok(fetched) => Ok(hook_file_object_bytes_with_status(
             &fetched.bytes,
             &fetched.content_type,
             "public, max-age=604800",
+            fetched.status,
+            &fetched.extra_headers,
         )),
         FetchIpfsOutcome::Miss => Ok(CsValue::Null),
         FetchIpfsOutcome::AssetErr(e) => Ok(hook_file_object_asset_error(&e)),

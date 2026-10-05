@@ -1,6 +1,34 @@
 use indexmap::IndexMap;
-use serde_json::json;
+use serde_json::{json, Value};
 use crate::theme::State;
+
+fn expand_edge(styles: &mut IndexMap<String, Value>, shorthand: &str, edges: &[&str]) {
+    let Some(value) = styles.get(shorthand).cloned() else {
+        return;
+    };
+    for edge in edges {
+        styles.entry((*edge).to_string()).or_insert(value.clone());
+    }
+}
+
+/// Longhands from the style contract (`marginTop`, `paddingLeft`, …) so hosts
+/// do not special-case `marginVertical`.
+fn expand_box_shorthands(styles: &mut IndexMap<String, Value>) {
+    expand_edge(styles, "paddingHorizontal", &["paddingLeft", "paddingRight"]);
+    expand_edge(styles, "paddingVertical", &["paddingTop", "paddingBottom"]);
+    expand_edge(
+        styles,
+        "padding",
+        &["paddingTop", "paddingBottom", "paddingLeft", "paddingRight"],
+    );
+    expand_edge(styles, "marginHorizontal", &["marginLeft", "marginRight"]);
+    expand_edge(styles, "marginVertical", &["marginTop", "marginBottom"]);
+    expand_edge(
+        styles,
+        "margin",
+        &["marginTop", "marginBottom", "marginLeft", "marginRight"],
+    );
+}
 use crate::utils::{merge_android_props, parse_prefixed_class, class_to_selector};
 use crate::tailwind::dynamic_css_properties_for_class;
 use crate::units::{dp_to_px, parse_and_convert_to_px, parse_font_size_to_sp};
@@ -150,7 +178,8 @@ impl State {
 
     pub fn android_styles_for(&self, selector: &str, classes: &[String]) -> IndexMap<String, serde_json::Value> {
         let mut styles = self.android_base_styles(selector, classes);
-        
+        expand_box_shorthands(&mut styles);
+
         let density = self.display_density;
         let scaled_density = self.scaled_density;
 

@@ -156,6 +156,12 @@ fn main() -> anyhow::Result<()> {
             if let Err(e) = relay_server::git::ensure_indexed(&ctx) {
                 warn!(error = %e, "post-receive index failed");
             }
+            // Thin IPFS: pin tip CIDs into local Kubo without blocking the git ACK.
+            {
+                let bare = ctx.repo_path.clone();
+                let branch = ctx.branch.clone();
+                relay_server::git::ipfs::spawn_pin_repo_tip(bare, branch);
+            }
             // autoPush can hang on a dead peer — run with per-origin timeout in a thread.
             {
                 let ctx_ap = ctx.clone();

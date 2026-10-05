@@ -70,6 +70,7 @@ def catalog_is_thin(catalog_path: Path | None, slug: str) -> bool:
 
 def collect_cids_from_repo(repo: Path, branch: str) -> set[str]:
     cids: set[str] = set()
+    media_root: str | None = None
     proc = run(["git", "-C", str(repo), "ls-tree", "-r", "--name-only", branch])
     if proc.returncode != 0:
         return cids
@@ -89,6 +90,9 @@ def collect_cids_from_repo(repo: Path, branch: str) -> set[str]:
         if path == MANIFEST:
             try:
                 doc = json.loads(text)
+                root = (doc.get("mediaRoot") or "").strip()
+                if plausible_cid(root):
+                    media_root = root
                 for a in doc.get("assets", []):
                     cid = (a.get("ipfs") or "").strip()
                     if plausible_cid(cid):
@@ -100,6 +104,9 @@ def collect_cids_from_repo(repo: Path, branch: str) -> set[str]:
             lines = text.splitlines()
             if len(lines) >= 2 and plausible_cid(lines[1].strip()):
                 cids.add(lines[1].strip())
+    # Prefer recursive mediaRoot pin when present (covers the whole path tree).
+    if media_root:
+        return {media_root}
     return cids
 
 
@@ -119,6 +126,7 @@ def wait_for_ipfs(ipfs: str, env: dict[str, str], attempts: int = 30) -> bool:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--repo", help="Only pin CIDs for this bare-repo slug (e.g. fan-edits)")
     ap.add_argument("--self-test", action="store_true", help="fixture thin-repo CID collect")
     args = ap.parse_args()
     if args.self_test:
@@ -140,7 +148,14 @@ def main() -> int:
 
     all_cids: list[str] = []
     seen: set[str] = set()
-    for bare in sorted(repo_root.glob("*.git")):
+    bares = sorted(repo_root.glob("*.git"))
+    if args.repo:
+        slug = args.repo.removesuffix(".git")
+        bares = [repo_root / f"{slug}.git"]
+        if not bares[0].is_dir():
+            print(f"repo not found: {bares[0]}", file=sys.stderr)
+            return 1
+    for bare in bares:
         slug = bare.name.removesuffix(".git")
         if not catalog_is_thin(catalog, slug):
             continue

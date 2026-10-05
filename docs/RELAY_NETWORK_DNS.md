@@ -113,6 +113,10 @@ With the plugin enabled:
 - challenge tokens and cert/key PEMs fan out to peers over `POST /hooks/park-tls` (mesh secret);
 - Caddy loads file TLS from `/opt/relay/state/park-tls/Caddyfile.parked`.
 
+**Generation (do not hand-edit on nodes):** `relay-gateway` writes `Caddyfile.parked` via `park_tls::write_parked_caddyfile` (`src/park_tls/caddy.rs`) whenever the park worker runs, fan-out receives PEMs, or the TLS allowlist is refreshed. `/etc/caddy/Caddyfile` from `scripts/install-caddy-tls.sh` always `import`s that file **before** the catch-all on-demand TLS block so multi-A apex names (e.g. `flashbackrepository.org` on `fleet.relaygateway.net`) never stall on per-node ACME.
+
+**Fleet deploy seed:** `scripts/relay-master-deploy.sh` (and reclaim paths that call it) tar-copies `state/park-tls/certs/` + `Caddyfile.parked` from `--peer` / `RELAY_PEER_CLONE_SOURCE` (default `iad1.relaygateway.net`) onto new or reclaimed Spot nodes, then reloads Caddy. That keeps ord/hkg on file certs even before the elected issuer renews. Ops should list every park-plugin apex in [`ops/fleet.json`](../ops/fleet.json) `health.sslDomains` so `./scripts/relay-fleet.sh ssl` runs per-node SNI checks (see `scripts/relay-fleet-ssl-check.sh`).
+
 Repos without the plugin still get Host→repo HTTP routing from `domains[]`, but do not join shared ACME.
 
 ## TLS gate for multi-node ingress
@@ -143,6 +147,8 @@ A single-node CNAME/ALIAS to `iad1.relaygateway.net` is safe with the existing p
 11. Point the apex ALIAS and `www` CNAME at `fleet.relaygateway.net`.
 12. Smoke each fleet IP independently with the parked `Host`, then test normal DNS.
 
+**Thin IPFS catalogs** (Flashback Repository / `fan-edits`): movie pages are `/slug` with no tip blob; the gateway must treat `index.json` slugs as virtual shell paths (`resolve.rs`). Until that binary is on every ingress node, HTTPS may succeed while `/slug` returns **404** — deploy a gateway build that includes the slug logic, then re-run the per-IP curl smoke above.
+
 ## Verification
 
 ```bash
@@ -159,6 +165,7 @@ cd relay-gateway
 
 # Force a parked Host to one node before changing public DNS.
 curl --resolve clevertree.net:443:<node-ip> https://clevertree.net/
+curl -sI --resolve flashbackrepository.org:443:<node-ip> https://flashbackrepository.org/van-helsing-deanna-d
 
 # Caddy ask: parked host allowed, random host denied.
 curl -o /dev/null -w '%{http_code}\n' \

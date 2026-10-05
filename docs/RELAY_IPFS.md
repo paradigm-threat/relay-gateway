@@ -94,17 +94,20 @@ Public CID bytes stay **`GET /ipfs/{cid}`** on the relay. systemd: **`relay-ipfs
 | Env | Default |
 |-----|---------|
 | `RELAY_IPFS_CACHE_ROOT` | `/tmp/ipfs-cache` (fleet install: `/opt/relay/ipfs-cache`) |
-| `RELAY_IPFS_CACHE_MAX_BYTES` | 2 GiB |
+| `RELAY_IPFS_CACHE_MAX_BYTES` | 200 GiB (was 2 GiB; raised for thin-video / multi‑GB mkvs) |
 | `RELAY_IPFS_GATEWAY` | `https://ipfs.io` (fleet: `http://127.0.0.1:8081`) |
-| `RELAY_IPFS_API` | *(unset)* — Kubo HTTP API for `block/stat` + `routing/findprovs` seed probes (fleet: `http://127.0.0.1:5001`) |
+| `RELAY_IPFS_API` | *(unset)* — Kubo HTTP API for pin/stat/findprovs (fleet: `http://127.0.0.1:5001`) |
 | `RELAY_IPFS_GATEWAY_ALLOWLIST` | *(unset)* — comma-separated allowed gateway hosts |
 | `RELAY_IPFS_GATEWAY_ALLOW_PRIVATE` | `0` — set `1` for loopback Kubo (fleet install sets `1`) |
-| `RELAY_IPFS_MAX_FETCH_BYTES` | 100 MiB (max per CID fetch) |
+| `RELAY_IPFS_MAX_FETCH_BYTES` | 8 GiB (max per full-CID fetch into relay disk cache; thin-video exception) |
+| `RELAY_IPFS_MAX_RANGE_BYTES` | 64 MiB (max single HTTP Range response body — not the whole DAG) |
 | `RELAY_IPFS_FETCH_TIMEOUT` | 30s |
 | `RELAY_IPFS_WAIT_MAX` | 120s |
 | `RELAY_IPFS_GC_GRACE_DAYS` | 14 |
 
-Gateway URLs must be `http`/`https` without embedded credentials. Private/loopback hosts are rejected unless `RELAY_IPFS_GATEWAY_ALLOW_PRIVATE=1`. CIDs must match `bafy`/`bafk`/`Qm` and cannot contain path separators.
+**Playback model:** the browser only requests **same-origin logical paths** (e.g. `/FanMixes/…/….mkv`). The gateway resolves the CID from Git stubs, **`ipfs pin add`s into local Kubo** on tip update and on asset miss, then **Range-serves** from loopback Kubo (`RELAY_IPFS_GATEWAY`). Public gateways are not used for video.
+
+**Pin on tip:** `post-receive` and peer-fetch tip advance call `spawn_pin_repo_tip` (prefer `assets.manifest.json` `mediaRoot`, else stub CIDs). Timer `relay-ipfs-pin-catalog` remains a backstop (`--repo <slug>` supported).
 
 - **GET** assets — hook chooses **`resolveIpfsFromGetContext`** (full file) vs **`fetchIpfsBytesFromGetContext`** + **`optimizeRasterFromGetContext(ctx, bytes, { width })`** when **`queryWidth(ctx)`** is set.
 - **GET** `/ipfs/{cid}` — cache-backed route on the gateway node.

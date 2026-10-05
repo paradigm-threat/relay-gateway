@@ -28,6 +28,8 @@ Fetch order for topology:
 
 If any node answers `POST /api/config`, its `peers` list is unioned into the working set. GitLab is **desired** topology, not current IPs. Do not treat forge `public_ip_override` as live.
 
+**Park TLS regression:** Every host that uses `server.tls.plugin: park` (e.g. `flashbackrepository.org`, `www.flashbackrepository.org`) must appear in [`ops/fleet.json`](../ops/fleet.json) `health.sslDomains`. `./scripts/relay-fleet.sh ssl` passes that list to `relay-fleet-ssl-check.sh`, which probes HTTPS and **per-node SNI** (`openssl s_client` with `--resolve`) so one master missing file certs is visible before multi-A DNS hangs. Deploy/reclaim already seeds `state/park-tls/` from the default peer (`relay-master-deploy.sh`); the SSL list is the ops gate that catches drift after regen.
+
 ## Inventory (Admin vs read-only)
 
 `relay-ops inventory` reports local ingredients only (no live SSH):

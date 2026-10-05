@@ -149,7 +149,11 @@ def fields_from_stub(data: bytes, fallback_path: Path) -> tuple[str, str, str] |
 
 
 def ipfs_add(path: Path) -> str:
-    proc = run(["ipfs", "add", "--pin", "--quieter", "--cid-version=1", str(path)])
+    # Follow symlinks (fan-edits links renders from NAS); Kubo otherwise pins the link inode.
+    real = path.resolve()
+    if not real.is_file():
+        sys.exit(f"ipfs add: not a regular file after resolve: {path} -> {real}")
+    proc = run(["ipfs", "add", "--pin", "--quieter", "--cid-version=1", str(real)])
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr or proc.stdout or "ipfs add failed\n")
         sys.exit(1)
@@ -260,23 +264,28 @@ def unstage_logical_if_tracked(root: Path, rel: str) -> None:
 
 
 def ingest_file(root: Path, path: Path, dry_run: bool) -> bool:
-    if not path.is_file():
+    if not path.is_file() and not path.is_symlink():
         return False
     if is_assets_ipfs_stub(path, root):
         return False
-    data = path.read_bytes()
-    if is_pointer_bytes(data):
+    # Follow symlinks for sniff/size (do not load multi-GB files into RAM).
+    real = path.resolve()
+    if not real.is_file():
+        return False
+    head = real.read_bytes()[:8192]
+    if is_pointer_bytes(head):
         return False
     if not file_is_binary(path, root):
         return False
 
     mime = guess_mime(path)
-    sha = sha256_file(path)
+    sha = sha256_file(real)
+    size = real.stat().st_size
     rel = str(path.relative_to(root))
     stub_rel = str(central_stub_path(rel))
 
     if dry_run:
-        print(f"would ingest: {rel} -> {stub_rel}")
+        print(f"would ingest: {rel} -> {stub_rel} ({size} bytes via {real})")
         return True
 
     cid = ipfs_add(path)
@@ -287,18 +296,22 @@ def ingest_file(root: Path, path: Path, dry_run: bool) -> bool:
     stub_path.parent.mkdir(parents=True, exist_ok=True)
     stub_path.write_text(stub, encoding="utf-8")
 
-    local_copy = root / LOCAL / rel
-    local_copy.parent.mkdir(parents=True, exist_ok=True)
-    local_copy.write_bytes(data)
+    # Skip duplicating large videos into .relay/local-assets (NAS symlink is enough).
+    if size <= 64 * 1024 * 1024:
+        import shutil
+
+        local_copy = root / LOCAL / rel
+        local_copy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(real, local_copy)
 
     unstage_logical_if_tracked(root, rel)
 
     doc = load_manifest(root)
-    upsert_asset(doc, rel, cid, mime, sha, len(data))
+    upsert_asset(doc, rel, cid, mime, sha, size)
     save_manifest(root, doc)
 
     run(["git", "-C", str(root), "add", stub_rel, MANIFEST])
-    print(f"ingested {rel} -> {cid} ({stub_rel})")
+    print(f"ingested {rel} -> {cid} ({size} bytes)")
     return True
 
 

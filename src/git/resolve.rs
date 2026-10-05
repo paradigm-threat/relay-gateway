@@ -4,7 +4,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use git2::ObjectType;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::error;
 
 use crate::catalog_policy::{self, CatalogRepoRecord};
@@ -322,6 +322,50 @@ fn is_spa_virtual_path(rel: &str) -> bool {
     lower.starts_with("search/")
 }
 
+/// Thin IPFS catalogs (e.g. fan-edits) serve movie pages at `/slug` with no tip blob.
+fn index_json_has_project_slug(repo_path: &PathBuf, branch: &str, slug: &str) -> bool {
+    let slug = slug.trim().trim_matches('/');
+    if slug.is_empty() || slug.contains('/') {
+        return false;
+    }
+    let bytes = match read_file_from_repo(repo_path, branch, "index.json") {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let v: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    v.get("projects")
+        .and_then(|p| p.as_array())
+        .is_some_and(|projects| {
+            projects.iter().any(|entry| {
+                entry
+                    .get("slug")
+                    .and_then(|s| s.as_str())
+                    .is_some_and(|s| s == slug)
+            })
+        })
+}
+
+/// Client GET routes backed by `content/*.md` (Flashback Repository theater shell).
+fn is_client_markdown_shell_route(rel: &str) -> bool {
+    matches!(
+        rel.trim().trim_matches('/').to_ascii_lowercase().as_str(),
+        "legal" | "terms" | "motivation" | "why"
+    )
+}
+
+fn is_shell_virtual_path(rel: &str, repo_path: &PathBuf, branch: &str) -> bool {
+    if is_spa_virtual_path(rel) {
+        return true;
+    }
+    if is_client_markdown_shell_route(rel) {
+        return true;
+    }
+    index_json_has_project_slug(repo_path, branch, rel)
+}
+
 /// Sanitize `?q=` for `/search/{topic}` (letters, digits, `_`, `-`; spaces → `_`).
 fn sanitize_search_topic(q: &str) -> String {
     let mut out = String::new();
@@ -524,12 +568,17 @@ pub fn git_resolve_and_respond(
                 // get the same siteShellRequest opt-in as repo-host `/` (relPath → initialPath).
                 // Soft-404 (404+noindex) unless DIR/page.md is missing but DIR is a git Tree
                 // (directory auto-index — HTTP 200 shell; tip fills Categories/Documents at P2).
-                let wants_shell = has_get_hook
-                    && !asset_like
-                    && (accept_prefers_html(headers) || embed_query_flag(&qmap));
+                // Known SPA/virtual routes (index.json project slugs, /search/…, legal pages)
+                // opt into the shell even when Accept is */* (bare curl -sI / bots).
                 let rel_for_shell = spa_search_rel_from_query(rel, &qmap)
                     .unwrap_or_else(|| rel.to_string());
-                let spa_virtual = is_spa_virtual_path(&rel_for_shell);
+                let repo_path = repo.path().to_path_buf();
+                let spa_virtual = is_shell_virtual_path(&rel_for_shell, &repo_path, branch);
+                let wants_shell = has_get_hook
+                    && !asset_like
+                    && (accept_prefers_html(headers)
+                        || embed_query_flag(&qmap)
+                        || spa_virtual);
                 let auto_index_dir = auto_index_dir_if_tree(&tree, rel);
                 let missing_for_seo =
                     wants_shell && !spa_virtual && auto_index_dir.is_none();
@@ -1060,6 +1109,31 @@ export default function run(ctx, next) {
         (dir, root)
     }
 
+    fn bare_ssr_opt_in_repo_with_index_slug(slug: &str) -> (tempfile::TempDir, PathBuf) {
+        let (dir, root) = bare_ssr_opt_in_repo();
+        let repo_path = root.join("doc.git");
+        let repo = Repository::open_bare(&repo_path).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+        let head = repo
+            .find_reference("refs/heads/main")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        let parent = head.id();
+        let tree = head.tree().unwrap();
+        let index_json = format!(
+            r#"{{"projects":[{{"slug":"{slug}","title":"Test title"}}]}}"#
+        );
+        let index_oid = repo.blob(index_json.as_bytes()).unwrap();
+        let mut root_tree = repo.treebuilder(Some(&tree)).unwrap();
+        root_tree.insert("index.json", index_oid, 0o100644).unwrap();
+        let tree_id = root_tree.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "index", &tree, &[&head])
+            .unwrap();
+        (dir, root)
+    }
+
     #[tokio::test]
     async fn markdown_accept_html_without_hook_serves_raw() {
         let (_dir, root) = bare_md_repo(false);
@@ -1338,6 +1412,39 @@ export default function run(ctx, next) {
         assert!(
             vary.to_ascii_lowercase().contains("accept"),
             "missing-path shell must Vary: Accept, got {vary:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn missing_index_json_slug_accept_html_is_200() {
+        let slug = "van-helsing-deanna-d";
+        let (_dir, root) = bare_ssr_opt_in_repo_with_index_slug(slug);
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
+        headers.insert(header::HOST, HeaderValue::from_static("doc.example.test"));
+        headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        let state = bare_fleet_state(root);
+        let r = git_resolve_and_respond(&state, &headers, "main", "doc", slug, None);
+        let GitResolveResult::Respond(resp) = r else {
+            panic!("expected Respond for catalog slug path");
+        };
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let html = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(html.contains("data-relay-ssr=\"1\""), "{html}");
+        assert!(
+            !html.contains(r#"name="robots" content="noindex,follow""#),
+            "catalog slug shell should be indexable"
         );
     }
 

@@ -195,14 +195,21 @@ pub fn read_relay_config_at_path_cached(
 }
 
 /// CleverScript hook source at `rev` + `path`, cached by commit OID.
+///
+/// Prefer `git` CLI for OID resolve (same quarantine rule as
+/// [`read_relay_config_at_path_cached`]) so `pre-receive` can load hook source
+/// for brand-new tips that libgit2 cannot see yet.
 pub fn read_hook_source_cached(
     repo_path: &Path,
     rev: &str,
     path: &str,
 ) -> Result<String, crate::types::ReadError> {
-    let repo =
-        Repository::open_bare(repo_path).map_err(|e| crate::types::ReadError::Other(e.into()))?;
-    let commit = resolve_commit_oid(&repo, rev).ok_or(crate::types::ReadError::NotFound)?;
+    let commit = resolve_commit_oid_git(repo_path, rev)
+        .or_else(|| {
+            let repo = Repository::open_bare(repo_path).ok()?;
+            resolve_commit_oid(&repo, rev)
+        })
+        .ok_or(crate::types::ReadError::NotFound)?;
     let key = HookSourceKey {
         repo: repo_key(repo_path),
         commit: commit.clone(),
