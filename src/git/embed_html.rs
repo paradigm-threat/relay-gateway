@@ -534,7 +534,7 @@ pub fn inject_park_native_host_scripts(html: &str) -> String {
     const MARKER: &str = "data-fb-park-native=\"1\"";
     const PLACEHOLDER: &str = "data-relay-park-native";
     const CSR_FALLBACK: &str = "data-relay-ssr-fallback";
-    const CURRENT: &str = "Board.host.js?v=13";
+    const CURRENT: &str = "ExternalPlay.host.js?v=14";
     if !html.contains(PLACEHOLDER) && !html.contains(CSR_FALLBACK) {
         return html.to_string();
     }
@@ -562,12 +562,13 @@ pub fn inject_park_native_host_scripts(html: &str) -> String {
         cleaned.replace_range(hi..hi + he + 9, "");
     }
     let snip = concat!(
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=12\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=12\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=12\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/TheaterPlayer.host.js?v=12\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=12\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Board.host.js?v=12\"></script>"
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=14\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=14\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=14\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/TheaterPlayer.host.js?v=14\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/ExternalPlay.host.js?v=14\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=14\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Board.host.js?v=14\"></script>"
     );
     if let Some(idx) = cleaned.rfind(r#"<script type="module" src=""#) {
         let mut out = String::with_capacity(cleaned.len() + snip.len());
@@ -809,8 +810,9 @@ mod tests {
             r#"<script type="module" src="/assets/c/abc/embed.js"></script></body></html>"#
         );
         let out = inject_park_native_host_scripts(sample);
-        assert!(out.contains("TheaterPlayer.host.js?v=12"), "{out}");
-        assert!(out.contains("Board.host.js?v=12"), "{out}");
+        assert!(out.contains("TheaterPlayer.host.js?v=14"), "{out}");
+        assert!(out.contains("ExternalPlay.host.js?v=14"), "{out}");
+        assert!(out.contains("Board.host.js?v=14"), "{out}");
         let body_close = out.rfind("</body>").unwrap();
         let first_host = out.find("data-fb-park-native=\"1\"").unwrap();
         assert!(first_host < body_close);
