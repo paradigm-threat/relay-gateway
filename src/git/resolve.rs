@@ -352,7 +352,18 @@ fn index_json_has_project_slug(repo_path: &PathBuf, branch: &str, slug: &str) ->
 fn is_client_markdown_shell_route(rel: &str) -> bool {
     matches!(
         rel.trim().trim_matches('/').to_ascii_lowercase().as_str(),
-        "legal" | "terms" | "motivation" | "why"
+        "legal"
+            | "terms"
+            | "motivation"
+            | "why"
+            | "submit"
+            | "contribute"
+            | "setup"
+            | "playback"
+            | "vlc"
+            | "board"
+            | "feedback"
+            | "bugs"
     )
 }
 
