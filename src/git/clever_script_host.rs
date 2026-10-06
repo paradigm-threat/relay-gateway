@@ -868,6 +868,16 @@ fn cheap_client_shell(
     );
     let portraits_json = crate::git::portrait::portrait_sibling_set_json(repo_root, request_branch);
     let html = crate::git::embed_html::inject_portrait_sibling_bootstrap(&html, &portraits_json);
+    // Park sites need host scripts even on SSR timeout shells (no placeholders yet).
+    let html = if site_cfg
+        .as_ref()
+        .map(|c| c.has_park_tls_plugin())
+        .unwrap_or(false)
+    {
+        crate::git::embed_html::inject_park_native_host_scripts(&html)
+    } else {
+        html
+    };
     if missing {
         hook_file_object_ssr_html_with_status(html, Some(404), true)
     } else {

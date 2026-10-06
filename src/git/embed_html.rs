@@ -527,12 +527,15 @@ fn origin_from_canonical(canon: &str) -> Option<String> {
 /// Inject park-native host scripts before the embed module (inside `<body>`).
 ///
 /// CleverScript GET hooks may fail to place these correctly; gateway normalizes any HTML
-/// response that already contains `data-relay-park-native` placeholders.
+/// response that already contains `data-relay-park-native` placeholders **or** a CSR
+/// `#relay-ssr-fallback` shell (timeout/busy) so theater/board hosts still load before
+/// client hydrate paints placeholders.
 pub fn inject_park_native_host_scripts(html: &str) -> String {
     const MARKER: &str = "data-fb-park-native=\"1\"";
     const PLACEHOLDER: &str = "data-relay-park-native";
-    const CURRENT: &str = "park-host-common.js?v=3";
-    if !html.contains(PLACEHOLDER) {
+    const CSR_FALLBACK: &str = "data-relay-ssr-fallback";
+    const CURRENT: &str = "Board.host.js?v=8";
+    if !html.contains(PLACEHOLDER) && !html.contains(CSR_FALLBACK) {
         return html.to_string();
     }
     let body_close = html.rfind("</body>");
@@ -559,10 +562,12 @@ pub fn inject_park_native_host_scripts(html: &str) -> String {
         cleaned.replace_range(hi..hi + he + 9, "");
     }
     let snip = concat!(
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=4\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=4\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/TheaterPlayer.host.js?v=4\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=4\"></script>"
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=8\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=8\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=8\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/TheaterPlayer.host.js?v=8\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=8\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Board.host.js?v=8\"></script>"
     );
     if let Some(idx) = cleaned.rfind(r#"<script type="module" src=""#) {
         let mut out = String::with_capacity(cleaned.len() + snip.len());
@@ -794,6 +799,21 @@ mod tests {
         assert!(first_host < body_close, "hosts must be inside body: {out}");
         assert!(out.contains("park-host-common.js"));
         assert!(!out.contains("</html><script data-fb-park-native"));
+    }
+
+    #[test]
+    fn inject_park_native_host_scripts_on_csr_timeout_shell() {
+        let sample = concat!(
+            r#"<html><body><div id="root">"#,
+            r#"<div id="relay-ssr-fallback" data-relay-ssr-fallback="timeout"></div></div>"#,
+            r#"<script type="module" src="/assets/c/abc/embed.js"></script></body></html>"#
+        );
+        let out = inject_park_native_host_scripts(sample);
+        assert!(out.contains("TheaterPlayer.host.js?v=8"), "{out}");
+        assert!(out.contains("Board.host.js?v=8"), "{out}");
+        let body_close = out.rfind("</body>").unwrap();
+        let first_host = out.find("data-fb-park-native=\"1\"").unwrap();
+        assert!(first_host < body_close);
     }
 
     #[test]
