@@ -92,6 +92,26 @@ mkdir -p "$STAGE/assets" "$STAGE/wasm"
 cp -a "$DIST/wasm/relay_runtime_pkg" "$STAGE/wasm/"
 rm -f "$STAGE/wasm/relay_runtime_pkg/.gitignore"
 
+# Optional relay-video demux WASM (built via relay-video/apps/web `npm run build:wasm`).
+mkdir -p "$STAGE/wasm/relay_video_wasm_pkg"
+if [[ -d "$DIST/wasm/relay_video_wasm_pkg" ]]; then
+  cp -a "$DIST/wasm/relay_video_wasm_pkg/." "$STAGE/wasm/relay_video_wasm_pkg/"
+elif [[ -d "$MONOREPO/relay-web-assets/wasm/relay_video_wasm_pkg" ]]; then
+  cp -a "$MONOREPO/relay-web-assets/wasm/relay_video_wasm_pkg/." "$STAGE/wasm/relay_video_wasm_pkg/"
+elif [[ -d "$MONOREPO/relay-video/apps/web/pkg" ]]; then
+  cp -a "$MONOREPO/relay-video/apps/web/pkg/." "$STAGE/wasm/relay_video_wasm_pkg/"
+fi
+if [[ -f "$MONOREPO/relay-video/apps/web/src/player.js" ]]; then
+  cp -a "$MONOREPO/relay-video/apps/web/src/player.js" "$STAGE/wasm/relay_video_wasm_pkg/player.js"
+fi
+if [[ -f "$STAGE/wasm/relay_video_wasm_pkg/relay_video_wasm_bg.wasm" && -f "$STAGE/wasm/relay_video_wasm_pkg/player.js" ]]; then
+  rm -f "$STAGE/wasm/relay_video_wasm_pkg/.gitignore"
+  echo "[publish-web-assets] staged relay_video_wasm_pkg"
+else
+  rm -rf "$STAGE/wasm/relay_video_wasm_pkg"
+  echo "[publish-web-assets] note: relay_video_wasm_pkg not present — skipping"
+fi
+
 # Copy embed entry CSS + walk embed.js import graph (relative + /assets/).
 DIST="$DIST" STAGE="$STAGE" node --input-type=module <<'EOF'
 import fs from 'fs'
