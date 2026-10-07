@@ -864,6 +864,8 @@ fn cheap_client_shell(
             site_name: site_name.as_deref(),
             is_website_home: is_home,
             csr_placeholder: notice.is_some(),
+            // CSR / timeout shells always keep CleverScript so the page can recover.
+            omit_embed_js: false,
         },
     );
     let portraits_json = crate::git::portrait::portrait_sibling_set_json(repo_root, request_branch);
@@ -947,7 +949,10 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                 path = %request_path,
                 "SSR HTML cache hit"
             );
-            let html = if cached.contains("relay-portrait-siblings") {
+            let hydrate = crate::git::embed_html::tip_wants_client_hydrate(&repo_root, request_branch);
+            let html = if !hydrate {
+                crate::git::embed_html::apply_ssr_static_policy(&cached, &repo_root, request_branch)
+            } else if cached.contains("relay-portrait-siblings") {
                 cached
             } else {
                 let portraits_json =
@@ -1095,6 +1100,7 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                 || request_path.is_empty()
                 || request_path.trim_matches('/') == "page.md");
 
+        let hydrate = crate::git::embed_html::tip_wants_client_hydrate(&repo_root, request_branch);
         let html = crate::git::embed_html::embed_html_document_with_assets_and_seo_extras(
             repo,
             request_branch,
@@ -1117,12 +1123,16 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                 site_name: site_name.as_deref(),
                 is_website_home: is_home,
                 csr_placeholder: false,
+                omit_embed_js: !hydrate,
             },
         );
-        let portraits_json =
-            crate::git::portrait::portrait_sibling_set_json(&repo_root, request_branch);
-        let html =
-            crate::git::embed_html::inject_portrait_sibling_bootstrap(&html, &portraits_json);
+        let html = if hydrate {
+            let portraits_json =
+                crate::git::portrait::portrait_sibling_set_json(&repo_root, request_branch);
+            crate::git::embed_html::inject_portrait_sibling_bootstrap(&html, &portraits_json)
+        } else {
+            html
+        };
         if !crate::git::embed_html::ssr_html_matches_request(&html, &render_path) {
             tracing::error!(
                 target: "relay_ssr",

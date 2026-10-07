@@ -205,6 +205,9 @@ pub struct EmbedSeoExtras<'a> {
     /// `#root` holds a pre-hydrate notice only — do **not** set `data-relay-ssr` so embed.js
     /// CSR-mounts the client hook and replaces the notice.
     pub csr_placeholder: bool,
+    /// Tip `.relay/client.json` `hydrate: false` + real SSR: omit CleverScript `embed.js`.
+    /// Ignored when [`Self::csr_placeholder`] is true (timeout/busy shells still need CSR).
+    pub omit_embed_js: bool,
 }
 
 /// True when this document is the SSR/CSR shell for `request_path`.
@@ -408,9 +411,24 @@ pub fn embed_html_document_with_assets_and_seo_extras(
     }
     // data-pt-hydrated="0" until embed JS promotes live (relay-runtime-web syncHtmlHydratedAttr).
     // Park tips style .pt-client-only chrome as inactive until "1".
+    // SSR-static (omit_embed_js): mark hydrated so park CSS does not wait on CleverScript.
+    let omit_embed = extras.omit_embed_js && !extras.csr_placeholder;
+    let hydrated_attr = if omit_embed { "1" } else { "0" };
+    let embed_scripts = if omit_embed {
+        format!(
+            r#"  <script type="application/json" id="relay-embed-config">{json}</script>
+"#
+        )
+    } else {
+        format!(
+            r#"  <script type="application/json" id="relay-embed-config">{json}</script>
+  <script type="module" src="{assets}/embed.js"></script>
+"#
+        )
+    };
     format!(
         r#"<!DOCTYPE html>
-<html lang="en" data-pt-hydrated="0">
+<html lang="en" data-pt-hydrated="{hydrated_attr}">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -421,11 +439,76 @@ pub fn embed_html_document_with_assets_and_seo_extras(
 </head>
 <body>
   <div id="root"{root_attrs}>{root_inner}</div>
-  <script type="application/json" id="relay-embed-config">{json}</script>
-  <script type="module" src="{assets}/embed.js"></script>
-</body>
+{embed_scripts}</body>
 </html>"#,
     )
+}
+
+/// Tip `.relay/client.json`: `{"hydrate": false}` disables CleverScript embed on successful SSR.
+/// Missing / invalid file → hydrate enabled (legacy default).
+pub fn tip_wants_client_hydrate(repo_root: &std::path::Path, branch: &str) -> bool {
+    let repo_path = repo_root.to_path_buf();
+    let Ok(bytes) =
+        crate::git::repo::read_file_from_repo(&repo_path, branch, ".relay/client.json")
+    else {
+        return true;
+    };
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return true;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return true;
+    };
+    match v.get("hydrate") {
+        Some(serde_json::Value::Bool(false)) => false,
+        Some(serde_json::Value::String(s)) if s.eq_ignore_ascii_case("false") => false,
+        _ => true,
+    }
+}
+
+/// Remove CleverScript `embed.js` module tags from an HTML document (cached SSR + tip static mode).
+pub fn strip_embed_js_scripts(html: &str) -> String {
+    let mut out = html.to_string();
+    // <script type="module" src="…/embed.js"></script> (optional attributes / query)
+    let mut start = 0;
+    while let Some(rel) = out[start..].find("embed.js") {
+        let abs = start + rel;
+        let Some(tag_start) = out[..abs].rfind("<script") else {
+            start = abs + 8;
+            continue;
+        };
+        let Some(close_rel) = out[abs..].find("</script>") else {
+            break;
+        };
+        let tag_end = abs + close_rel + "</script>".len();
+        let tag = &out[tag_start..tag_end];
+        if tag.contains("type=\"module\"") || tag.contains("type='module'") {
+            out.replace_range(tag_start..tag_end, "");
+            start = tag_start;
+        } else {
+            start = tag_end;
+        }
+    }
+    out = out.replacen(
+        r#"data-pt-hydrated="0""#,
+        r#"data-pt-hydrated="1""#,
+        1,
+    );
+    out
+}
+
+/// Apply tip SSR-static policy: strip embed.js when hydrate is off and `#root` is real SSR.
+pub fn apply_ssr_static_policy(html: &str, repo_root: &std::path::Path, branch: &str) -> String {
+    if tip_wants_client_hydrate(repo_root, branch) {
+        return html.to_string();
+    }
+    if html.contains("data-relay-ssr-fallback") {
+        return html.to_string();
+    }
+    if !html.contains("data-relay-ssr=\"1\"") {
+        return html.to_string();
+    }
+    strip_embed_js_scripts(html)
 }
 
 /// Compact JSON-LD for crawlers (`Article` or home `WebSite` + `SearchAction`).
@@ -562,24 +645,50 @@ pub fn inject_park_native_host_scripts(html: &str) -> String {
         cleaned.replace_range(hi..hi + he + 9, "");
     }
     // TheaterPlayer host omitted — ExternalPlay / VLC only (avoids tab crashes from HTML5/WASM).
-    let snip = concat!(
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=16\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=16\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=16\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/ExternalPlay.host.js?v=16\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=16\"></script>",
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Board.host.js?v=16\"></script>"
+    // Inject only hosts for placeholders present; CSR timeout shells get a recovery set (no Board).
+    let csr_fallback = cleaned.contains(CSR_FALLBACK);
+    let want_affirmation =
+        csr_fallback || cleaned.contains("data-relay-park-native=\"fb-affirmation\"");
+    let want_external =
+        csr_fallback || cleaned.contains("data-relay-park-native=\"fb-external-play\"");
+    let want_now_showing =
+        csr_fallback || cleaned.contains("data-relay-park-native=\"fb-now-showing\"");
+    let want_board = cleaned.contains("data-relay-park-native=\"fb-board\"");
+    // v=17: ExternalPlay unlock attr writes no longer re-enter MutationObserver.
+    let mut snip = String::from(
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=17\"></script>\
+<script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=17\"></script>",
     );
+    if want_affirmation {
+        snip.push_str(
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=17\"></script>",
+        );
+    }
+    if want_external {
+        snip.push_str(
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/ExternalPlay.host.js?v=17\"></script>",
+        );
+    }
+    if want_now_showing {
+        snip.push_str(
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=17\"></script>",
+        );
+    }
+    if want_board {
+        snip.push_str(
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Board.host.js?v=17\"></script>",
+        );
+    }
     if let Some(idx) = cleaned.rfind(r#"<script type="module" src=""#) {
         let mut out = String::with_capacity(cleaned.len() + snip.len());
         out.push_str(&cleaned[..idx]);
-        out.push_str(snip);
+        out.push_str(&snip);
         out.push_str(&cleaned[idx..]);
         out
     } else if let Some(idx) = cleaned.rfind("</body>") {
         let mut out = String::with_capacity(cleaned.len() + snip.len());
         out.push_str(&cleaned[..idx]);
-        out.push_str(snip);
+        out.push_str(&snip);
         out.push_str(&cleaned[idx..]);
         out
     } else {
@@ -814,11 +923,41 @@ mod tests {
             !out.contains("TheaterPlayer.host.js"),
             "theater host must not be injected: {out}"
         );
-        assert!(out.contains("ExternalPlay.host.js?v=16"), "{out}");
-        assert!(out.contains("Board.host.js?v=16"), "{out}");
+        assert!(out.contains("ExternalPlay.host.js?v=17"), "{out}");
+        assert!(out.contains("Affirmation.host.js?v=17"), "{out}");
+        assert!(out.contains("NowShowing.host.js?v=17"), "{out}");
+        assert!(
+            !out.contains("Board.host.js"),
+            "Board host only when fb-board placeholder present: {out}"
+        );
         let body_close = out.rfind("</body>").unwrap();
         let first_host = out.find("data-fb-park-native=\"1\"").unwrap();
         assert!(first_host < body_close);
+    }
+
+    #[test]
+    fn inject_park_native_hosts_only_for_present_tags() {
+        let sample = concat!(
+            r#"<html><body><div data-relay-park-native="fb-now-showing"></div>"#,
+            r#"<script type="module" src="/assets/c/abc/embed.js"></script></body></html>"#
+        );
+        let out = inject_park_native_host_scripts(sample);
+        assert!(out.contains("NowShowing.host.js?v=17"), "{out}");
+        assert!(!out.contains("Board.host.js"), "{out}");
+        assert!(!out.contains("Affirmation.host.js"), "{out}");
+        assert!(!out.contains("ExternalPlay.host.js"), "{out}");
+    }
+
+    #[test]
+    fn strip_embed_js_and_ssr_static_policy() {
+        let with = concat!(
+            r#"<html lang="en" data-pt-hydrated="0"><body>"#,
+            r#"<div id="root" data-relay-ssr="1" data-relay-ssr-path="/"></div>"#,
+            r#"<script type="module" src="/assets/c/abc/embed.js"></script></body></html>"#
+        );
+        let stripped = strip_embed_js_scripts(with);
+        assert!(!stripped.contains("embed.js"), "{stripped}");
+        assert!(stripped.contains(r#"data-pt-hydrated="1""#), "{stripped}");
     }
 
     #[test]
@@ -987,6 +1126,49 @@ mod tests {
         );
         assert!(html.contains(r#""@type":"WebSite""#), "{html}");
         assert!(html.contains("SearchAction"), "{html}");
+    }
+
+    #[test]
+    fn omit_embed_js_on_real_ssr_keeps_csr_placeholder_embed() {
+        let ssr = embed_html_document_with_assets_and_seo_extras(
+            "r",
+            "main",
+            "/van-helsing-deanna-d",
+            "/hooks/client/get.jsx",
+            Some("<main><h1>VH</h1></main>"),
+            None,
+            None,
+            Some("VH"),
+            None,
+            None,
+            EmbedSeoExtras {
+                omit_embed_js: true,
+                ..Default::default()
+            },
+        );
+        assert!(!ssr.contains("embed.js"), "{ssr}");
+        assert!(ssr.contains(r#"data-pt-hydrated="1""#), "{ssr}");
+        assert!(ssr.contains("data-relay-ssr=\"1\""), "{ssr}");
+
+        let csr = embed_html_document_with_assets_and_seo_extras(
+            "r",
+            "main",
+            "/van-helsing-deanna-d",
+            "/hooks/client/get.jsx",
+            Some(ssr_timeout_notice_html()),
+            None,
+            None,
+            Some("VH"),
+            None,
+            None,
+            EmbedSeoExtras {
+                csr_placeholder: true,
+                omit_embed_js: true, // ignored for CSR shells
+                ..Default::default()
+            },
+        );
+        assert!(csr.contains("embed.js"), "{csr}");
+        assert!(!csr.contains("data-relay-ssr="), "{csr}");
     }
 
     #[test]
