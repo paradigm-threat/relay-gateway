@@ -57,6 +57,10 @@ fn should_skip_path(path: &str) -> bool {
     if path.starts_with(".relay/") {
         return true;
     }
+    // Flashback sideload APK + version manifest live under /downloads (git tip, not IPFS).
+    if path.starts_with("downloads/") && (path.ends_with(".apk") || path.ends_with(".json")) {
+        return true;
+    }
     path.ends_with(".json") && path != MANIFEST_PATH
 }
 
@@ -138,5 +142,12 @@ mod tests {
     fn central_ipfs_stubs_are_checked() {
         assert!(!should_skip_path(".relay/assets/media/foo.png.ipfs"));
         assert!(should_skip_path(".relay/local-assets/x.png"));
+    }
+
+    #[test]
+    fn flashback_downloads_apk_allowed_as_tip() {
+        assert!(should_skip_path("downloads/flashback.apk"));
+        assert!(should_skip_path("downloads/flashback.json"));
+        assert!(!should_skip_path("FanMixes/foo.apk"));
     }
 }
