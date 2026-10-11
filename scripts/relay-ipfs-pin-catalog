@@ -52,20 +52,35 @@ def catalog_publish_branch(catalog_path: Path | None, slug: str) -> str:
     return "main"
 
 
-def catalog_is_thin(catalog_path: Path | None, slug: str) -> bool:
+def catalog_limits(catalog_path: Path | None, slug: str) -> dict:
     if catalog_path is None:
-        return True
+        return {}
     p = catalog_path / "catalog" / "repos" / f"{slug}.json"
     if not p.is_file():
-        return True
+        return {}
     try:
         doc = json.loads(p.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        return True
+        return {}
     limits = doc.get("limits") or {}
-    if limits.get("thin_ipfs_assets") is True:
+    return limits if isinstance(limits, dict) else {}
+
+
+def catalog_is_thin(catalog_path: Path | None, slug: str) -> bool:
+    if catalog_path is None:
         return True
-    return False
+    limits = catalog_limits(catalog_path, slug)
+    if not limits:
+        return True
+    return limits.get("thin_ipfs_assets") is True
+
+
+def catalog_fleet_pin(catalog_path: Path | None, slug: str) -> bool:
+    """Repos that set limits.fleet_pin_ipfs=false are catalog-only (e.g. fan-edits)."""
+    limits = catalog_limits(catalog_path, slug)
+    if "fleet_pin_ipfs" in limits:
+        return limits.get("fleet_pin_ipfs") is not False
+    return True
 
 
 def collect_cids_from_repo(repo: Path, branch: str) -> set[str]:
@@ -155,9 +170,24 @@ def main() -> int:
         if not bares[0].is_dir():
             print(f"repo not found: {bares[0]}", file=sys.stderr)
             return 1
+    if os.environ.get("RELAY_IPFS_FLEET_PIN", "1").lower() in ("0", "false", "no", "off"):
+        print("RELAY_IPFS_FLEET_PIN=0 — nothing to pin")
+        return 0
+    skip_slugs = {
+        s.strip()
+        for s in os.environ.get("RELAY_IPFS_SKIP_PIN_REPOS", "").split(",")
+        if s.strip()
+    }
+
     for bare in bares:
         slug = bare.name.removesuffix(".git")
+        if slug in skip_slugs:
+            print(f"{slug}: skipped (RELAY_IPFS_SKIP_PIN_REPOS)")
+            continue
         if not catalog_is_thin(catalog, slug):
+            continue
+        if not catalog_fleet_pin(catalog, slug):
+            print(f"{slug}: skipped (limits.fleet_pin_ipfs=false)")
             continue
         branch = catalog_publish_branch(catalog, slug)
         found = collect_cids_from_repo(bare, branch)

@@ -34,7 +34,7 @@ relay-master/
 | `signing_keys_source` | `repo` \| `catalog` \| `hybrid` |
 | `domains` | Optional globally unique parked apex/subdomain hosts served by this repo |
 | `branch_features` | Optional `comments` / `dev` branches |
-| `limits` | Per-repo overrides; inherit from `policy-profiles.json` when empty |
+| `limits` | Per-repo overrides; inherit from `policy-profiles.json` when empty. For thin catalogs: `thin_ipfs_assets`, optional `fleet_pin_ipfs` (**`false`** = catalog-only, no fleet Kubo pin / movie disk cache — Flashback `fan-edits`), `max_ipfs_bytes` |
 
 ## Parked domains
 
@@ -115,8 +115,9 @@ Set **`RELAY_MASTER_CATALOG_PATH`** to a `relay-master` checkout. Pre-receive lo
 ### `comments`
 
 - Branch `comments`; markdown under `.relay/comments/by-path/<encoded-path>/`.
-- Client fetches via `X-Relay-Branch: comments` (see `DEPLOY_WEB_AND_CI.md`).
-- Signed commits only; anonymous session keys (future registry) — planned.
+- Client fetches / writes via `X-Relay-Branch: comments` (see `DEPLOY_WEB_AND_CI.md`; Host-based branch selection is the longer-term plan).
+- Catalog default: signed commits + anonymous session keys (future registry).
+- **Flashback MVP:** `allow_unsigned_commits: true` so browsers can `PUT` board posts without session keys; see fan-edits `docs/BOARD.md`.
 
 Path encoding: [`catalog_policy::encode_comment_target_path`](../src/catalog_policy.rs).
 
@@ -124,6 +125,7 @@ Path encoding: [`catalog_policy::encode_comment_target_path`](../src/catalog_pol
 
 - Unsigned commits allowed on `dev`.
 - Merge into `publish_branch` must be signed by catalog **active** key (merge commit detection in `branch_policy.rs`).
+- Public edit / PR UI is **not** required for Flashback board MVP.
 
 ## Hosted assets manifest
 
