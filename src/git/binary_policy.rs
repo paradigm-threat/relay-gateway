@@ -65,6 +65,10 @@ fn should_skip_path(path: &str) -> bool {
     if is_git_tip_poster_path(path) {
         return true;
     }
+    // Flashback brand atmosphere + logos under hooks/client/brand/
+    if is_git_tip_brand_path(path) {
+        return true;
+    }
     path.ends_with(".json") && path != MANIFEST_PATH
 }
 
@@ -76,6 +80,19 @@ fn is_git_tip_poster_path(path: &str) -> bool {
         file,
         "poster.jpg" | "poster.jpeg" | "poster.png" | "poster.webp"
     )
+}
+
+/// Tip brand rasters: theater cover JPGs + logo/icon PNGs (not IPFS).
+fn is_git_tip_brand_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase().replace('\\', "/");
+    if !lower.starts_with("hooks/client/brand/") {
+        return false;
+    }
+    lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".png")
+        || lower.ends_with(".webp")
+        || lower.ends_with(".svg")
 }
 
 /// Added/modified paths only — deletions must not `git show new:path` (missing blob).
@@ -177,5 +194,14 @@ mod tests {
         assert!(!should_skip_path(
             "FanMixes/x/Sonic (2020) - DeSchwartzed Edition.mkv"
         ));
+    }
+
+    #[test]
+    fn brand_theater_bg_allowed_as_tip() {
+        assert!(should_skip_path(
+            "hooks/client/brand/jpg/theater-bg-desktop.jpg"
+        ));
+        assert!(should_skip_path("hooks/client/brand/png/logo-header.png"));
+        assert!(!should_skip_path("hooks/client/other/foo.jpg"));
     }
 }
