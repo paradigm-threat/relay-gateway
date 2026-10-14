@@ -13,9 +13,10 @@ use crate::git::clever_script_host::augment_get_context_headers;
 use crate::git::embed_html::merge_vary_accept;
 use crate::git::get_hook_http::{get_hook_execution_error_response, get_hook_json_to_response};
 use crate::git::index_policy;
+use crate::git::asset_store::serve_catalog_asset;
 use crate::git::ipfs::{
     is_asset_like_path, manifest_cid_for_path, parse_manifest_bytes, parse_pointer_bytes,
-    resolve_ipfs_pointer, AssetsManifest, IpfsResolveOptions, MANIFEST_PATH,
+    resolve_ipfs_pointer, AssetsManifest, IpfsPointer, IpfsResolveOptions, MANIFEST_PATH,
 };
 use crate::git::open_repo;
 use crate::git::repo::{open_repo_for_state, read_file_from_repo, read_relay_config};
@@ -153,28 +154,70 @@ fn path_is_ipfs_asset(
     body_bytes: Option<&[u8]>,
     manifest: Option<&AssetsManifest>,
 ) -> bool {
-    if body_bytes
-        .map(|b| parse_pointer_bytes(b).is_some())
-        .unwrap_or(false)
-    {
-        return true;
+    resolve_catalog_pointer(repo_path, branch, rel, body_bytes, manifest).is_some()
+}
+
+/// Resolve pointer + optional manifest byte size for path-keyed local serving.
+fn resolve_catalog_pointer(
+    repo_path: &PathBuf,
+    branch: &str,
+    rel: &str,
+    body_bytes: Option<&[u8]>,
+    manifest: Option<&AssetsManifest>,
+) -> Option<(IpfsPointer, Option<u64>)> {
+    if let Some(asset) = manifest.and_then(|m| manifest_cid_for_path(m, rel)) {
+        return Some((
+            IpfsPointer {
+                cid: asset.ipfs.clone(),
+                content_type: asset.content_type.clone(),
+                sha256: asset.sha256.clone(),
+            },
+            asset.bytes,
+        ));
     }
-    if manifest
-        .and_then(|m| manifest_cid_for_path(m, rel))
-        .is_some()
-    {
-        return true;
+    if let Some(bytes) = body_bytes {
+        if let Some(p) = parse_pointer_bytes(bytes) {
+            return Some((p, None));
+        }
     }
     let repo_path = repo_path.clone();
     let branch = branch.to_string();
     let rel_owned = rel.to_string();
-    resolve_ipfs_pointer(
+    let pointer = resolve_ipfs_pointer(
         &IpfsResolveOptions::default(),
         &|path| read_file_from_repo(&repo_path, &branch, path).ok(),
         &rel_owned,
         body_bytes,
-    )
-    .is_some()
+    )?;
+    Some((pointer, None))
+}
+
+fn try_serve_path_keyed_asset(
+    repo: &Repository,
+    branch: &str,
+    repo_name: &str,
+    rel: &str,
+    headers: &HeaderMap,
+    body_bytes: Option<&[u8]>,
+) -> Option<axum::response::Response> {
+    let commit = {
+        let r = repo
+            .find_reference(&format!("refs/heads/{branch}"))
+            .ok()?;
+        r.peel_to_commit().ok()?
+    };
+    let manifest = load_assets_manifest(repo, &commit);
+    let repo_path = repo.path().to_path_buf();
+    let (pointer, expected) =
+        resolve_catalog_pointer(&repo_path, branch, rel, body_bytes, manifest.as_ref())?;
+    Some(serve_catalog_asset(
+        repo_name,
+        branch,
+        rel,
+        &pointer,
+        expected,
+        headers,
+    ))
 }
 
 fn is_markdown_content_type(ct: &str) -> bool {
@@ -573,6 +616,15 @@ pub fn git_resolve_and_respond(
                 .map(|c| c.thin_ipfs_assets())
                 .unwrap_or(false);
             let asset_like = is_asset_like_path(rel);
+            // Thin catalog media: serve finished local files (or immediate seeding/missing
+            // errors). Never wait on Kubo inside the request path.
+            if thin && asset_like {
+                if let Some(resp) =
+                    try_serve_path_keyed_asset(&repo, branch, repo_name, rel, headers, None)
+                {
+                    return GitResolveResult::Respond(resp);
+                }
+            }
             if has_get_hook || (thin && asset_like) {
                 let ct = mime_guess::from_path(rel)
                     .first_or_octet_stream()
@@ -666,6 +718,16 @@ pub fn git_resolve_and_respond(
                     manifest.as_ref(),
                 );
                 if ipfs_asset {
+                    if let Some(resp) = try_serve_path_keyed_asset(
+                        &repo,
+                        branch,
+                        repo_name,
+                        rel,
+                        headers,
+                        Some(&body_bytes),
+                    ) {
+                        return GitResolveResult::Respond(resp);
+                    }
                     if let Some(resp) = try_server_get_hook_for_blob(
                         &repo,
                         branch,

@@ -15,6 +15,7 @@ pub mod image_transform;
 pub mod index_policy;
 pub mod index_store;
 pub mod indexing;
+pub mod asset_store;
 pub mod ipfs;
 pub mod markdown_html;
 pub mod meta_index;

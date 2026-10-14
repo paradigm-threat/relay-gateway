@@ -4,7 +4,7 @@ use crate::git::chat_index;
 use crate::git::hooks::HookContext;
 use crate::git::image_cache::{cache_key_digest, ImageDiskCache};
 use crate::git::ipfs::{
-    self, resolve_ipfs_pointer, resolve_pointer_http, AssetResolveError, IpfsPointer,
+    self, resolve_ipfs_pointer, resolve_pointer_http_with, AssetResolveError, IpfsPointer,
     IpfsResolveOptions, IpfsResolveSource, ASSET_ERROR_HEADER,
 };
 use crate::git::repo::read_file_from_repo;
@@ -493,7 +493,9 @@ fn fetch_ipfs_bytes_inner(
         return Ok(FetchIpfsOutcome::Miss);
     };
     let range = range_header_from_ctx(m);
-    match resolve_pointer_http(&pointer, wait_secs, range.as_deref()) {
+    let repo_slug = cs_obj_str(m, "repo").unwrap_or("").trim();
+    let allow_fleet_pin = !crate::git::ipfs::catalog_skips_fleet_ipfs_for_slug(repo_slug);
+    match resolve_pointer_http_with(&pointer, wait_secs, range.as_deref(), allow_fleet_pin) {
         Ok(http) => {
             let content_type = http
                 .content_type
@@ -603,7 +605,8 @@ fn hook_file_object_asset_error(err: &AssetResolveError) -> CsValue {
         .seed
         .clone()
         .unwrap_or_else(|| match err.cid.as_deref() {
-            Some(cid) => crate::git::ipfs::probe_seed_status(cid),
+            // Status JSON only — do not enqueue pins as a side effect of error formatting.
+            Some(cid) => crate::git::ipfs::probe_seed_status_with(cid, false),
             None => crate::git::ipfs::SeedStatus::unknown("no CID"),
         });
     let body =
@@ -1396,7 +1399,9 @@ fn resolve_ipfs_from_get_context_native(
         else {
             return Ok(CsValue::Null);
         };
-        let seed = ipfs::probe_seed_status(&pointer.cid);
+        let repo_slug = cs_obj_str(m, "repo").unwrap_or("").trim();
+        let allow_fleet_pin = !ipfs::catalog_skips_fleet_ipfs_for_slug(repo_slug);
+        let seed = ipfs::probe_seed_status_with(&pointer.cid, allow_fleet_pin);
         if seed.state == "cached" {
             return Ok(hook_file_object_asset_status_ok(&pointer.cid, rel));
         }

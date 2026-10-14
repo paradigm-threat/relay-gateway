@@ -42,7 +42,10 @@ pub enum AssetErrorCode {
     IpfsNotFound,
     IpfsGatewayTimeout,
     IpfsGatewayError,
+    /// Catalog asset is known but not on this node's serve path yet (sync may be queued).
     IpfsPending,
+    /// Catalog asset is actively syncing/exporting; no partial body is served.
+    IpfsSeeding,
     IpfsBusy,
     Internal,
 }
@@ -56,6 +59,7 @@ impl AssetErrorCode {
             Self::IpfsGatewayTimeout => "ipfs-gateway-timeout",
             Self::IpfsGatewayError => "ipfs-gateway-error",
             Self::IpfsPending => "ipfs-pending",
+            Self::IpfsSeeding => "ipfs-seeding",
             Self::IpfsBusy => "ipfs-busy",
             Self::Internal => "internal",
         }
@@ -69,6 +73,7 @@ impl AssetErrorCode {
             Self::IpfsGatewayTimeout => StatusCode::GATEWAY_TIMEOUT,
             Self::IpfsGatewayError => StatusCode::BAD_GATEWAY,
             Self::IpfsPending => StatusCode::TOO_EARLY,
+            Self::IpfsSeeding => StatusCode::TOO_EARLY,
             Self::IpfsBusy => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -77,7 +82,11 @@ impl AssetErrorCode {
     pub fn retryable(self) -> bool {
         matches!(
             self,
-            Self::IpfsGatewayTimeout | Self::IpfsGatewayError | Self::IpfsPending | Self::IpfsBusy
+            Self::IpfsGatewayTimeout
+                | Self::IpfsGatewayError
+                | Self::IpfsPending
+                | Self::IpfsSeeding
+                | Self::IpfsBusy
         )
     }
 }
@@ -182,6 +191,9 @@ pub struct ManifestAsset {
     pub content_type: Option<String>,
     #[serde(default)]
     pub sha256: Option<String>,
+    /// Full object size when known (used to refuse partial serves).
+    #[serde(default)]
+    pub bytes: Option<u64>,
 }
 
 pub fn cache_root_from_env() -> PathBuf {
@@ -191,12 +203,11 @@ pub fn cache_root_from_env() -> PathBuf {
 }
 
 pub fn max_cache_bytes_from_env() -> u64 {
-    // Thin-video / Flashback: allow multi-GB movie objects in the relay disk cache when
-    // a full-body fetch is used. Prefer Kubo pin + Range for playback; override via env.
+    // Small-binary disk cache only (images / modest blobs). Multi-GB movie cache retired.
     std::env::var("RELAY_IPFS_CACHE_MAX_BYTES")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(200 * 1024 * 1024 * 1024)
+        .unwrap_or(2 * 1024 * 1024 * 1024)
 }
 
 pub fn gateway_base_from_env() -> String {
@@ -392,9 +403,56 @@ pub fn collect_pin_targets_from_repo(repo: &git2::Repository, branch: &str) -> V
     collect_cids_from_repo(repo, branch)
 }
 
+/// Catalog `fleet_pin_ipfs: false` or `max_ipfs_bytes: 0` → no fleet pin/sync/cache.
+pub fn catalog_skips_fleet_ipfs_for_slug(slug: &str) -> bool {
+    let slug = slug.trim();
+    if slug.is_empty() {
+        return false;
+    }
+    let Some(path) = crate::catalog_policy::catalog_path_from_env() else {
+        return false;
+    };
+    let Some(index) = crate::catalog_policy::try_load_catalog_index(&path) else {
+        return false;
+    };
+    crate::catalog_policy::catalog_record_for_slug(&index, slug)
+        .map(|r| r.skips_fleet_ipfs_bytes())
+        .unwrap_or(false)
+}
+
+fn fleet_pin_disabled_for_repo(repo_path: &Path) -> bool {
+    if std::env::var("RELAY_IPFS_FLEET_PIN")
+        .ok()
+        .as_deref()
+        .map(|v| matches!(v, "0" | "false" | "no" | "off"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    let slug = repo_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if catalog_skips_fleet_ipfs_for_slug(slug) {
+        return true;
+    }
+    let skip = std::env::var("RELAY_IPFS_SKIP_PIN_REPOS").unwrap_or_default();
+    skip.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .any(|s| s == slug)
+}
+
 /// Async: pin tip CIDs for a bare repo into local Kubo (does not block the caller).
 pub fn spawn_pin_repo_tip(repo_path: PathBuf, branch: String) {
     if !ipfs_api_configured() {
+        return;
+    }
+    if fleet_pin_disabled_for_repo(&repo_path) {
+        tracing::info!(
+            path = %repo_path.display(),
+            "spawn_pin_repo_tip: skipped (env skip, catalog fleet_pin_ipfs=false, or max_ipfs_bytes=0)"
+        );
         return;
     }
     std::thread::spawn(move || {
@@ -647,7 +705,7 @@ fn probe_kubo_local_block(cid: &str) -> Option<bool> {
 }
 
 /// Full UnixFS file size when the DAG is present on `RELAY_IPFS_API` (not just the root block).
-fn probe_kubo_local_file_size(cid: &str) -> Option<u64> {
+pub fn probe_kubo_local_file_size(cid: &str) -> Option<u64> {
     let api = api_base_from_env()?;
     let client = Client::builder()
         .timeout(Duration::from_secs(8))
@@ -690,6 +748,12 @@ fn probe_kubo_providers(cid: &str) -> Option<u32> {
 
 /// Build the best-effort seed snapshot for a CID (cache / in-flight / optional Kubo API).
 pub fn probe_seed_status(cid: &str) -> SeedStatus {
+    probe_seed_status_with(cid, true)
+}
+
+/// Like [`probe_seed_status`], but when `enqueue_pin` is false never queues Kubo work
+/// (catalog-only repos such as fan-edits).
+pub fn probe_seed_status_with(cid: &str, enqueue_pin: bool) -> SeedStatus {
     if !is_plausible_cid(cid) {
         return SeedStatus::unknown("invalid CID");
     }
@@ -714,6 +778,17 @@ pub fn probe_seed_status(cid: &str) -> SeedStatus {
             providers,
             local_block,
             hint: Some("present on RELAY_IPFS_API node; serve via local Kubo gateway".into()),
+        };
+    }
+    if !enqueue_pin {
+        return SeedStatus {
+            state: "missing".into(),
+            progress_pct: Some(0),
+            bytes_received: None,
+            bytes_total: None,
+            providers,
+            local_block,
+            hint: Some("catalog-only; use swarm / ipfs:// (fleet does not pin or cache)".into()),
         };
     }
     // Kick local Kubo to fetch/pin so the gateway can Range-serve same-origin.
@@ -885,12 +960,12 @@ pub fn validate_gateway_base(base: &str) -> Result<(), String> {
 }
 
 pub fn max_fetch_bytes_from_env() -> usize {
-    // Flashback / thin-video exception: multi-GB mkvs must be fetchable into cache or
-    // proxied in large Range spans. Override with RELAY_IPFS_MAX_FETCH_BYTES.
+    // Cap full-CID fetches into the relay disk cache (small binaries). Feature MKVs
+    // are not fleet-cached — clients pull from the IPFS swarm. Override via env.
     std::env::var("RELAY_IPFS_MAX_FETCH_BYTES")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(8 * 1024 * 1024 * 1024)
+        .unwrap_or(100 * 1024 * 1024)
         .clamp(1024, 32 * 1024 * 1024 * 1024)
 }
 
@@ -1087,6 +1162,11 @@ struct CidMeta {
     fetched_at: u64,
 }
 
+fn cached_data_len(cid: &str) -> Option<u64> {
+    let path = cid_data_path(&cache_root_from_env(), cid);
+    fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len())
+}
+
 pub fn read_cached_bytes(cid: &str) -> Result<Option<(Vec<u8>, Option<String>)>> {
     let root = cache_root_from_env();
     let data_path = cid_data_path(&root, cid);
@@ -1241,143 +1321,28 @@ fn content_range_value(range: ByteRange, total: u64) -> String {
     format!("bytes {}-{}/{}", range.start, range.end, total)
 }
 
-fn fetch_from_gateway_range(
-    cid: &str,
-    content_type_hint: Option<&str>,
-    timeout: Duration,
-    range_header: &str,
-) -> Result<IpfsHttpFetch, AssetResolveError> {
-    let client = Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| AssetResolveError {
-            code: AssetErrorCode::Internal,
-            message: e.to_string(),
-            cid: Some(cid.to_string()),
-            retry_after_secs: None,
-            seed: None,
-        })?;
-    let base = validated_gateway_base()?;
-    let url = format!("{}/ipfs/{}", base, cid);
-    let resp = client
-        .get(&url)
-        .header(reqwest::header::RANGE, range_header)
-        .send()
-        .map_err(|e| {
-            let seed = probe_seed_status(cid);
-            if e.is_timeout() {
-                AssetResolveError {
-                    code: AssetErrorCode::IpfsGatewayTimeout,
-                    message: e.to_string(),
-                    cid: Some(cid.to_string()),
-                    retry_after_secs: Some(5),
-                    seed: Some(seed),
-                }
-            } else {
-                AssetResolveError {
-                    code: AssetErrorCode::IpfsGatewayError,
-                    message: e.to_string(),
-                    cid: Some(cid.to_string()),
-                    retry_after_secs: Some(5),
-                    seed: Some(seed),
-                }
-            }
-        })?;
-
-    let status = resp.status();
-    if status.as_u16() == 404 {
-        let seed = probe_seed_status(cid);
-        let (code, message, retry) = if seed.state == "unavailable" {
-            (
-                AssetErrorCode::IpfsNotFound,
-                "CID has no known providers".to_string(),
-                None,
-            )
-        } else {
-            (
-                AssetErrorCode::IpfsPending,
-                "This file needs to be seeded".to_string(),
-                Some(5),
-            )
-        };
-        return Err(AssetResolveError {
-            code,
-            message,
-            cid: Some(cid.to_string()),
-            retry_after_secs: retry,
-            seed: Some(seed),
-        });
-    }
-    if !(status.is_success() || status.as_u16() == 416) {
-        let seed = probe_seed_status(cid);
-        return Err(AssetResolveError {
-            code: AssetErrorCode::IpfsGatewayError,
-            message: format!("gateway returned {}", status),
-            cid: Some(cid.to_string()),
-            retry_after_secs: Some(5),
-            seed: Some(seed),
-        });
-    }
-
-    let ct = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .or_else(|| content_type_hint.map(|s| s.to_string()));
-    let content_range = resp
-        .headers()
-        .get(reqwest::header::CONTENT_RANGE)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    let accept_ranges = resp
-        .headers()
-        .get(reqwest::header::ACCEPT_RANGES)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
-    let max = max_range_fetch_bytes_from_env();
-    let mut buf = Vec::new();
-    let mut reader = resp;
-    let mut chunk = [0u8; 64 * 1024];
-    loop {
-        let n = reader.read(&mut chunk).map_err(|e| AssetResolveError {
-            code: AssetErrorCode::IpfsGatewayError,
-            message: e.to_string(),
-            cid: Some(cid.to_string()),
-            retry_after_secs: Some(5),
-            seed: Some(probe_seed_status(cid)),
-        })?;
-        if n == 0 {
-            break;
-        }
-        if buf.len() + n > max {
-            return Err(AssetResolveError {
-                code: AssetErrorCode::IpfsGatewayError,
-                message: format!("gateway range body exceeds RELAY_IPFS_MAX_RANGE_BYTES ({max})"),
-                cid: Some(cid.to_string()),
-                retry_after_secs: None,
-                seed: None,
-            });
-        }
-        buf.extend_from_slice(&chunk[..n]);
-    }
-
-    Ok(IpfsHttpFetch {
-        bytes: buf,
-        content_type: ct,
-        status: StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK),
-        content_range,
-        accept_ranges,
-    })
-}
-
-/// Fetch CID bytes for HTTP, honoring `Range` when set (streams only the requested span).
+/// Fetch CID bytes for HTTP from the small on-disk CID cache only.
+///
+/// Catalog movie/media paths must use [`crate::git::asset_store::serve_catalog_asset`]
+/// (path-keyed finished files). This entry point never range-reads Kubo and never
+/// invents an 8 MiB prefix — incomplete objects return pending/seeding errors.
 pub fn fetch_cid_http(
     cid: &str,
     content_type_hint: Option<&str>,
     wait_secs: u64,
     range_header: Option<&str>,
+) -> Result<IpfsHttpFetch, AssetResolveError> {
+    fetch_cid_http_with(cid, content_type_hint, wait_secs, range_header, true)
+}
+
+/// Like [`fetch_cid_http`]; when `allow_fleet_pin` is false, never enqueue Kubo
+/// (catalog-only repos). Still serves completed small CID cache if present.
+pub fn fetch_cid_http_with(
+    cid: &str,
+    content_type_hint: Option<&str>,
+    wait_secs: u64,
+    range_header: Option<&str>,
+    allow_fleet_pin: bool,
 ) -> Result<IpfsHttpFetch, AssetResolveError> {
     if !is_plausible_cid(cid) {
         return Err(AssetResolveError {
@@ -1389,59 +1354,86 @@ pub fn fetch_cid_http(
         });
     }
 
-    // Ensure local Kubo is pulling the DAG before we ask the gateway for bytes.
-    if probe_kubo_local_file_size(cid).is_none() {
-        enqueue_kubo_pin(cid);
-    }
-
-    let range_header = range_header.map(str::trim).filter(|s| !s.is_empty());
-
-    if range_header.is_none() {
-        let (bytes, ct) = fetch_cid_bytes(cid, content_type_hint, wait_secs)?;
-        return Ok(IpfsHttpFetch {
-            bytes,
-            content_type: ct,
-            status: StatusCode::OK,
-            content_range: None,
-            accept_ranges: Some("bytes".into()),
-        });
-    }
-    let range_header = range_header.expect("checked above");
-
-    if let Ok(Some((cached, ct))) = read_cached_bytes(cid) {
-        let total = cached.len() as u64;
-        if let Some(parsed) = parse_byte_range_header(range_header, Some(total)) {
-            if let Some(slice) = slice_bytes_range(&cached, parsed) {
-                let http_status = if parsed.start == 0 && parsed.end + 1 == total {
-                    StatusCode::OK
+    // Small completed cache entries only (posters / icons). Multi-GB objects belong
+    // on the path-keyed serve store and are not buffered here.
+    const MAX_BUFFERED_CID_CACHE: u64 = 32 * 1024 * 1024;
+    if let Some(len) = cached_data_len(cid) {
+        if len <= MAX_BUFFERED_CID_CACHE {
+            if let Ok(Some((cached, ct))) = read_cached_bytes(cid) {
+                let total = cached.len() as u64;
+                let range_header = range_header.map(str::trim).filter(|s| !s.is_empty());
+                if let Some(raw) = range_header {
+                    if let Some(parsed) = parse_byte_range_header(raw, Some(total)) {
+                        if let Some(slice) = slice_bytes_range(&cached, parsed) {
+                            let http_status = if parsed.start == 0 && parsed.end + 1 == total {
+                                StatusCode::OK
+                            } else {
+                                StatusCode::PARTIAL_CONTENT
+                            };
+                            return Ok(IpfsHttpFetch {
+                                bytes: slice,
+                                content_type: ct
+                                    .or_else(|| content_type_hint.map(|s| s.to_string())),
+                                status: http_status,
+                                content_range: Some(content_range_value(parsed, total)),
+                                accept_ranges: Some("bytes".into()),
+                            });
+                        }
+                    }
                 } else {
-                    StatusCode::PARTIAL_CONTENT
-                };
-                return Ok(IpfsHttpFetch {
-                    bytes: slice,
-                    content_type: ct.or_else(|| content_type_hint.map(|s| s.to_string())),
-                    status: http_status,
-                    content_range: Some(content_range_value(parsed, total)),
-                    accept_ranges: Some("bytes".into()),
-                });
+                    let _ = wait_secs;
+                    return Ok(IpfsHttpFetch {
+                        bytes: cached,
+                        content_type: ct.or_else(|| content_type_hint.map(|s| s.to_string())),
+                        status: StatusCode::OK,
+                        content_range: None,
+                        accept_ranges: Some("bytes".into()),
+                    });
+                }
             }
         }
     }
 
-    // Prefer Range from local Kubo once the DAG is present; otherwise surface pending
-    // while pin is still running so the client retries same-origin.
-    if probe_kubo_local_file_size(cid).is_none() {
-        let seed = probe_seed_status(cid);
+    if !allow_fleet_pin {
+        let seed = probe_seed_status_with(cid, false);
         return Err(AssetResolveError {
             code: AssetErrorCode::IpfsPending,
-            message: "CID not ready on this gateway yet".into(),
+            message: "catalog-only; use swarm / ipfs://".into(),
             cid: Some(cid.to_string()),
-            retry_after_secs: Some(5),
+            retry_after_secs: None,
             seed: Some(seed),
         });
     }
 
-    fetch_from_gateway_range(cid, content_type_hint, fetch_timeout_from_env(), range_header)
+    // Do not pull multi-GB bodies through this buffered path. Queue a pin so a
+    // path-keyed sync can finish, then tell the client to retry.
+    if probe_kubo_local_file_size(cid).is_none() {
+        enqueue_kubo_pin(cid);
+    }
+    let seed = probe_seed_status(cid);
+    let code = if seed.state == "fetching" || seed.state == "seeding" {
+        AssetErrorCode::IpfsSeeding
+    } else if seed.state == "unavailable" {
+        AssetErrorCode::IpfsNotFound
+    } else {
+        AssetErrorCode::IpfsPending
+    };
+    let message = match code {
+        AssetErrorCode::IpfsSeeding => "still seeding",
+        AssetErrorCode::IpfsNotFound => "CID has no known providers",
+        _ => "asset not on this node yet",
+    };
+    Err(AssetResolveError {
+        code,
+        message: message.into(),
+        cid: Some(cid.to_string()),
+        retry_after_secs: if code == AssetErrorCode::IpfsNotFound {
+            None
+        } else {
+            Some(5)
+        },
+        seed: Some(seed),
+    })
 }
 
 static CID_FETCH_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
@@ -1797,11 +1789,21 @@ pub fn resolve_pointer_http(
     wait_secs: u64,
     range_header: Option<&str>,
 ) -> Result<IpfsHttpFetch, AssetResolveError> {
-    fetch_cid_http(
+    resolve_pointer_http_with(pointer, wait_secs, range_header, true)
+}
+
+pub fn resolve_pointer_http_with(
+    pointer: &IpfsPointer,
+    wait_secs: u64,
+    range_header: Option<&str>,
+    allow_fleet_pin: bool,
+) -> Result<IpfsHttpFetch, AssetResolveError> {
+    fetch_cid_http_with(
         &pointer.cid,
         pointer.content_type.as_deref(),
         wait_secs,
         range_header,
+        allow_fleet_pin,
     )
 }
 
