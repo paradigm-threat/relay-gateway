@@ -331,7 +331,14 @@ pub fn embed_html_document_with_assets_and_seo_extras(
             let safe = css
                 .replace("</style", "<\\/style")
                 .replace("</STYLE", "<\\/STYLE");
-            format!("\n  <style id=\"relay-ssr-theme\">{}</style>", safe)
+            // Flashback: themed-styler drops nested @media from theme.yaml — tip CSS
+            // supplies mobile/tablet/desktop/wide theater-bg covers.
+            let theater_bg = if css.contains("theater-bg-desktop.jpg") {
+                "\n  <link rel=\"stylesheet\" id=\"fb-theater-bg-css\" href=\"/hooks/client/brand/theater-bg.css\"/>"
+            } else {
+                ""
+            };
+            format!("\n  <style id=\"relay-ssr-theme\">{}</style>{}", safe, theater_bg)
         }
         _ => String::new(),
     };
@@ -614,11 +621,39 @@ fn origin_from_canonical(canon: &str) -> Option<String> {
 /// `#relay-ssr-fallback` shell (timeout/busy) so theater/board hosts still load before
 /// client hydrate paints placeholders.
 pub fn inject_park_native_host_scripts(html: &str) -> String {
+    inject_park_native_host_scripts_with_assets(html, None)
+}
+
+/// Pull `/assets/c/{40hex}` from an already-stamped HTML document (embed script src).
+pub fn infer_assets_prefix_from_html(html: &str) -> Option<String> {
+    let marker = "/assets/c/";
+    let mut start = 0;
+    while let Some(rel) = html[start..].find(marker) {
+        let i = start + rel + marker.len();
+        if let Some(oid) = html.get(i..i + 40) {
+            if oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Some(format!("{marker}{oid}"));
+            }
+        }
+        start = i;
+        if start >= html.len() {
+            break;
+        }
+    }
+    None
+}
+
+/// Like [`inject_park_native_host_scripts`], but chat hosts prefer commit-pinned
+/// `relay-web-assets` URLs when `assets_prefix` is `Some("/assets/c/{oid}")`.
+pub fn inject_park_native_host_scripts_with_assets(
+    html: &str,
+    assets_prefix: Option<&str>,
+) -> String {
     const MARKER: &str = "data-fb-park-native=\"1\"";
     const PLACEHOLDER: &str = "data-relay-park-native";
     const CSR_FALLBACK: &str = "data-relay-ssr-fallback";
     // Bump when always-injected host list changes (cache-bust + skip re-inject).
-    const CURRENT: &str = "Hits.host.js?v=22";
+    const CURRENT: &str = "Hits.host.js?v=23";
     if !html.contains(PLACEHOLDER) && !html.contains(CSR_FALLBACK) && !html.contains("data-fb-pop-image")
     {
         return html.to_string();
@@ -659,51 +694,66 @@ pub fn inject_park_native_host_scripts(html: &str) -> String {
     let want_live_chat = cleaned.contains("data-relay-park-native=\"fb-live-chat\"");
     let want_chat_app = cleaned.contains("data-relay-park-native=\"fb-chat-app\"");
     let want_pop_image = cleaned.contains("data-fb-pop-image");
-    // v=22: Flashback live chat hosts (fb-live-chat / fb-chat-app).
+    // v=23: mesh chat hosts — prefer relay-web-assets pin when available.
+    let chat_base = assets_prefix
+        .map(|p| p.trim_end_matches('/').to_string())
+        .filter(|p| p.starts_with("/assets/c/"));
+    let chat_common = match chat_base.as_deref() {
+        Some(p) => format!("{p}/chat/ChatCommon.host.js"),
+        None => "/hooks/client/native/ChatCommon.host.js?v=23".into(),
+    };
+    let chat_live = match chat_base.as_deref() {
+        Some(p) => format!("{p}/chat/LiveChat.host.js"),
+        None => "/hooks/client/native/LiveChat.host.js?v=23".into(),
+    };
+    let chat_app = match chat_base.as_deref() {
+        Some(p) => format!("{p}/chat/ChatApp.host.js"),
+        None => "/hooks/client/native/ChatApp.host.js?v=23".into(),
+    };
     let mut snip = String::from(
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=22\"></script>\
-<script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=22\"></script>\
-<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Hits.host.js?v=22\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=23\"></script>\
+<script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=23\"></script>\
+<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Hits.host.js?v=23\"></script>",
     );
     if want_pop_image {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/PopImage.host.js?v=22\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/PopImage.host.js?v=23\"></script>",
         );
     }
     if want_affirmation {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=22\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=23\"></script>",
         );
     }
     if want_external {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/ExternalPlay.host.js?v=22\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/ExternalPlay.host.js?v=23\"></script>",
         );
     }
     if want_now_showing {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=22\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=23\"></script>",
         );
     }
     if want_board {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Board.host.js?v=22\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Board.host.js?v=23\"></script>",
         );
     }
     if want_live_chat || want_chat_app {
-        snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/ChatCommon.host.js?v=22\"></script>",
-        );
+        snip.push_str(&format!(
+            "<script data-fb-park-native=\"1\" src=\"{chat_common}\"></script>"
+        ));
     }
     if want_live_chat {
-        snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/LiveChat.host.js?v=22\"></script>",
-        );
+        snip.push_str(&format!(
+            "<script data-fb-park-native=\"1\" src=\"{chat_live}\"></script>"
+        ));
     }
     if want_chat_app {
-        snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/ChatApp.host.js?v=22\"></script>",
-        );
+        snip.push_str(&format!(
+            "<script data-fb-park-native=\"1\" src=\"{chat_app}\"></script>"
+        ));
     }
     if let Some(idx) = cleaned.rfind(r#"<script type="module" src=""#) {
         let mut out = String::with_capacity(cleaned.len() + snip.len());
@@ -949,9 +999,9 @@ mod tests {
             !out.contains("TheaterPlayer.host.js"),
             "theater host must not be injected: {out}"
         );
-        assert!(out.contains("ExternalPlay.host.js?v=22"), "{out}");
-        assert!(out.contains("Affirmation.host.js?v=22"), "{out}");
-        assert!(out.contains("NowShowing.host.js?v=22"), "{out}");
+        assert!(out.contains("ExternalPlay.host.js?v=23"), "{out}");
+        assert!(out.contains("Affirmation.host.js?v=23"), "{out}");
+        assert!(out.contains("NowShowing.host.js?v=23"), "{out}");
         assert!(
             !out.contains("Board.host.js"),
             "Board host only when fb-board placeholder present: {out}"
@@ -968,7 +1018,7 @@ mod tests {
             r#"<script type="module" src="/assets/c/abc/embed.js"></script></body></html>"#
         );
         let out = inject_park_native_host_scripts(sample);
-        assert!(out.contains("NowShowing.host.js?v=22"), "{out}");
+        assert!(out.contains("NowShowing.host.js?v=23"), "{out}");
         assert!(!out.contains("Board.host.js"), "{out}");
         assert!(!out.contains("Affirmation.host.js"), "{out}");
         assert!(!out.contains("ExternalPlay.host.js"), "{out}");
@@ -983,8 +1033,8 @@ mod tests {
             r#"<script type="module" src="/assets/c/abc/embed.js"></script></body></html>"#
         );
         let out = inject_park_native_host_scripts(sample);
-        assert!(out.contains("PopImage.host.js?v=22"), "{out}");
-        assert!(out.contains("ExternalPlay.host.js?v=22"), "{out}");
+        assert!(out.contains("PopImage.host.js?v=23"), "{out}");
+        assert!(out.contains("ExternalPlay.host.js?v=23"), "{out}");
     }
 
     #[test]
