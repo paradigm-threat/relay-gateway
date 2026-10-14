@@ -61,7 +61,21 @@ fn should_skip_path(path: &str) -> bool {
     if path.starts_with("downloads/") && (path.ends_with(".apk") || path.ends_with(".json")) {
         return true;
     }
+    // Title posters are git tip binaries (not thin-IPFS stubs).
+    if is_git_tip_poster_path(path) {
+        return true;
+    }
     path.ends_with(".json") && path != MANIFEST_PATH
+}
+
+/// `FanMixes/.../poster.jpg` (and jpeg/png/webp) — served from git, not IPFS.
+fn is_git_tip_poster_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    let file = lower.rsplit('/').next().unwrap_or(lower.as_str());
+    matches!(
+        file,
+        "poster.jpg" | "poster.jpeg" | "poster.png" | "poster.webp"
+    )
 }
 
 /// Added/modified paths only — deletions must not `git show new:path` (missing blob).
@@ -149,5 +163,19 @@ mod tests {
         assert!(should_skip_path("downloads/flashback.apk"));
         assert!(should_skip_path("downloads/flashback.json"));
         assert!(!should_skip_path("FanMixes/foo.apk"));
+    }
+
+    #[test]
+    fn fanmixes_poster_images_allowed_as_tip() {
+        assert!(should_skip_path(
+            "FanMixes/Sonic (2020) - DeSchwartzed/poster.jpg"
+        ));
+        assert!(should_skip_path("FanMixes/x/poster.PNG"));
+        assert!(should_skip_path("other/poster.webp"));
+        assert!(!should_skip_path("FanMixes/x/poster.jpg.ipfs"));
+        assert!(!should_skip_path("FanMixes/x/cover.jpg"));
+        assert!(!should_skip_path(
+            "FanMixes/x/Sonic (2020) - DeSchwartzed Edition.mkv"
+        ));
     }
 }

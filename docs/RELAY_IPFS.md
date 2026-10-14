@@ -107,7 +107,7 @@ Public CID bytes stay **`GET /ipfs/{cid}`** on the relay. systemd: **`relay-ipfs
 | `RELAY_IPFS_FLEET_PIN` | `1` — set `0` to disable tip/timer fleet pins |
 | `RELAY_IPFS_SKIP_PIN_REPOS` | *(unset)* — comma-separated bare-repo slugs to skip (e.g. `fan-edits`) |
 
-**Disk cache policy:** `/opt/relay/ipfs-cache` is for **small** IPFS-backed assets (images, small binaries). **Do not** use it for Flashback / multi‑GB video. Feature catalogs such as **fan-edits** keep stubs in Git; clients download CIDs from the IPFS swarm (workstation seeders + APK Kubo). Catalog `limits.fleet_pin_ipfs: false` marks repos that must not be fleet-pinned.
+**Disk cache policy:** `/opt/relay/ipfs-cache` is for **small** IPFS-backed assets (images, small binaries) on repos that opt in. **Do not** use it for Flashback (`fan-edits`): catalog `limits.fleet_pin_ipfs: false` + `max_ipfs_bytes: 0` skip fleet pin, `enqueue_asset_sync`, and Kubo enqueue; wipe `{RELAY_IPFS_CACHE_ROOT}/fan-edits` if present. Flashback **posters** are git tip binaries (`poster.jpg`), not IPFS. Master CIDs are fetched by clients from the swarm (workstation seeders + APK Kubo).
 
 **Flashback (`fan-edits`):** catalog-only on Relay. **Now showing** = manual host upload. No fleet movie pin/cache. See fan-edits `IPFS-SEEDING.md`.
 

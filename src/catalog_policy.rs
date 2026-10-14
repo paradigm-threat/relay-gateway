@@ -266,6 +266,32 @@ impl CatalogRepoRecord {
             .unwrap_or(false)
     }
 
+    /// When `false`, fleet must not pin tip CIDs or disk-cache IPFS bytes (catalog-only).
+    /// Default `true` when unset (same as `relay-ipfs-pin-catalog`).
+    pub fn fleet_pin_ipfs(&self) -> bool {
+        match self
+            .limits
+            .as_ref()
+            .and_then(|l| l.get("fleet_pin_ipfs"))
+        {
+            Some(v) => v.as_bool() != Some(false),
+            None => true,
+        }
+    }
+
+    /// Optional cap on fleet IPFS fetch/cache size. `Some(0)` = never fetch/cache.
+    pub fn max_ipfs_bytes(&self) -> Option<u64> {
+        self.limits
+            .as_ref()
+            .and_then(|l| l.get("max_ipfs_bytes"))
+            .and_then(|v| v.as_u64())
+    }
+
+    /// Catalog-only: no fleet Kubo pin / path-keyed IPFS serve sync.
+    pub fn skips_fleet_ipfs_bytes(&self) -> bool {
+        !self.fleet_pin_ipfs() || self.max_ipfs_bytes() == Some(0)
+    }
+
     pub fn merge_to_publish_requires_catalog_signer(&self, branch: &str) -> bool {
         if branch != self.publish_branch {
             return false;
@@ -739,5 +765,38 @@ mod tests {
             Some("  A public blurb.  ")
         );
         assert_eq!(without.description, None);
+    }
+
+    #[test]
+    fn fan_edits_limits_skip_fleet_ipfs_bytes() {
+        let fan: CatalogRepoRecord = serde_json::from_str(
+            r#"{
+              "repo": "fan-edits",
+              "tier": "primary",
+              "relay_root_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "limits": {
+                "allow_binary_files": false,
+                "thin_ipfs_assets": true,
+                "fleet_pin_ipfs": false,
+                "max_ipfs_bytes": 0
+              }
+            }"#,
+        )
+        .unwrap();
+        assert!(!fan.fleet_pin_ipfs());
+        assert_eq!(fan.max_ipfs_bytes(), Some(0));
+        assert!(fan.skips_fleet_ipfs_bytes());
+
+        let other: CatalogRepoRecord = serde_json::from_str(
+            r#"{
+              "repo": "other",
+              "tier": "primary",
+              "relay_root_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "limits": { "thin_ipfs_assets": true }
+            }"#,
+        )
+        .unwrap();
+        assert!(other.fleet_pin_ipfs());
+        assert!(!other.skips_fleet_ipfs_bytes());
     }
 }
