@@ -104,8 +104,9 @@ pub async fn post_park_tls_hook(
                 super::store::persist_cert_pair(&domain, &fullchain_pem, &privkey_pem)
                     .map_err(|e| e.to_string())
                     .and_then(|_| {
-                        let mut map = std::collections::HashMap::new();
-                        map.insert(domain.clone(), String::new());
+                        // Always regenerate from *all* cert dirs — a one-domain map
+                        // used to wipe every other parked site (incl. flashback chat).
+                        let map = std::collections::HashMap::new();
                         super::caddy::write_parked_caddyfile(&map).map_err(|e| e.to_string())?;
                         super::caddy::reload_caddy();
                         Ok(())

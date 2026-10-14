@@ -617,8 +617,10 @@ pub fn inject_park_native_host_scripts(html: &str) -> String {
     const MARKER: &str = "data-fb-park-native=\"1\"";
     const PLACEHOLDER: &str = "data-relay-park-native";
     const CSR_FALLBACK: &str = "data-relay-ssr-fallback";
-    const CURRENT: &str = "ExternalPlay.host.js?v=15";
-    if !html.contains(PLACEHOLDER) && !html.contains(CSR_FALLBACK) {
+    // Bump when always-injected host list changes (cache-bust + skip re-inject).
+    const CURRENT: &str = "Hits.host.js?v=22";
+    if !html.contains(PLACEHOLDER) && !html.contains(CSR_FALLBACK) && !html.contains("data-fb-pop-image")
+    {
         return html.to_string();
     }
     let body_close = html.rfind("</body>");
@@ -654,29 +656,53 @@ pub fn inject_park_native_host_scripts(html: &str) -> String {
     let want_now_showing =
         csr_fallback || cleaned.contains("data-relay-park-native=\"fb-now-showing\"");
     let want_board = cleaned.contains("data-relay-park-native=\"fb-board\"");
-    // v=17: ExternalPlay unlock attr writes no longer re-enter MutationObserver.
+    let want_live_chat = cleaned.contains("data-relay-park-native=\"fb-live-chat\"");
+    let want_chat_app = cleaned.contains("data-relay-park-native=\"fb-chat-app\"");
+    let want_pop_image = cleaned.contains("data-fb-pop-image");
+    // v=22: Flashback live chat hosts (fb-live-chat / fb-chat-app).
     let mut snip = String::from(
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=17\"></script>\
-<script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=17\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=22\"></script>\
+<script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=22\"></script>\
+<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Hits.host.js?v=22\"></script>",
     );
+    if want_pop_image {
+        snip.push_str(
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/PopImage.host.js?v=22\"></script>",
+        );
+    }
     if want_affirmation {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=17\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=22\"></script>",
         );
     }
     if want_external {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/ExternalPlay.host.js?v=17\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/ExternalPlay.host.js?v=22\"></script>",
         );
     }
     if want_now_showing {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=17\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=22\"></script>",
         );
     }
     if want_board {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Board.host.js?v=17\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Board.host.js?v=22\"></script>",
+        );
+    }
+    if want_live_chat || want_chat_app {
+        snip.push_str(
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/ChatCommon.host.js?v=22\"></script>",
+        );
+    }
+    if want_live_chat {
+        snip.push_str(
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/LiveChat.host.js?v=22\"></script>",
+        );
+    }
+    if want_chat_app {
+        snip.push_str(
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/ChatApp.host.js?v=22\"></script>",
         );
     }
     if let Some(idx) = cleaned.rfind(r#"<script type="module" src=""#) {
@@ -923,9 +949,9 @@ mod tests {
             !out.contains("TheaterPlayer.host.js"),
             "theater host must not be injected: {out}"
         );
-        assert!(out.contains("ExternalPlay.host.js?v=17"), "{out}");
-        assert!(out.contains("Affirmation.host.js?v=17"), "{out}");
-        assert!(out.contains("NowShowing.host.js?v=17"), "{out}");
+        assert!(out.contains("ExternalPlay.host.js?v=22"), "{out}");
+        assert!(out.contains("Affirmation.host.js?v=22"), "{out}");
+        assert!(out.contains("NowShowing.host.js?v=22"), "{out}");
         assert!(
             !out.contains("Board.host.js"),
             "Board host only when fb-board placeholder present: {out}"
@@ -942,10 +968,23 @@ mod tests {
             r#"<script type="module" src="/assets/c/abc/embed.js"></script></body></html>"#
         );
         let out = inject_park_native_host_scripts(sample);
-        assert!(out.contains("NowShowing.host.js?v=17"), "{out}");
+        assert!(out.contains("NowShowing.host.js?v=22"), "{out}");
         assert!(!out.contains("Board.host.js"), "{out}");
         assert!(!out.contains("Affirmation.host.js"), "{out}");
         assert!(!out.contains("ExternalPlay.host.js"), "{out}");
+        assert!(!out.contains("PopImage.host.js"), "{out}");
+    }
+
+    #[test]
+    fn inject_pop_image_host_when_marker_present() {
+        let sample = concat!(
+            r#"<html><body><img class="fb-movie-poster" data-fb-pop-image="1" src="/p.jpg" />"#,
+            r#"<div data-relay-park-native="fb-external-play"></div>"#,
+            r#"<script type="module" src="/assets/c/abc/embed.js"></script></body></html>"#
+        );
+        let out = inject_park_native_host_scripts(sample);
+        assert!(out.contains("PopImage.host.js?v=22"), "{out}");
+        assert!(out.contains("ExternalPlay.host.js?v=22"), "{out}");
     }
 
     #[test]
