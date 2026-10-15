@@ -653,7 +653,7 @@ pub fn inject_park_native_host_scripts_with_assets(
     const PLACEHOLDER: &str = "data-relay-park-native";
     const CSR_FALLBACK: &str = "data-relay-ssr-fallback";
     // Bump when always-injected host list changes (cache-bust + skip re-inject).
-    const CURRENT: &str = "Hits.host.js?v=30";
+    const CURRENT: &str = "Hits.host.js?v=31";
     if !html.contains(PLACEHOLDER) && !html.contains(CSR_FALLBACK) && !html.contains("data-fb-pop-image")
     {
         return html.to_string();
@@ -701,37 +701,37 @@ pub fn inject_park_native_host_scripts_with_assets(
     let want_pop_image = cleaned.contains("data-fb-pop-image");
     // v=30: ADA host reload (carousel article layers + focus-visible CSS).
     let _assets_prefix = assets_prefix;
-    let chat_common = "/hooks/client/native/ChatCommon.host.js?v=30".to_string();
-    let chat_live = "/hooks/client/native/LiveChat.host.js?v=30".to_string();
-    let chat_app = "/hooks/client/native/ChatApp.host.js?v=30".to_string();
+    let chat_common = "/hooks/client/native/ChatCommon.host.js?v=31".to_string();
+    let chat_live = "/hooks/client/native/LiveChat.host.js?v=31".to_string();
+    let chat_app = "/hooks/client/native/ChatApp.host.js?v=31".to_string();
     let mut snip = String::from(
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=30\"></script>\
-<script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=30\"></script>\
-<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Hits.host.js?v=30\"></script>",
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=31\"></script>\
+<script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=31\"></script>\
+<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Hits.host.js?v=31\"></script>",
     );
     if want_pop_image {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/PopImage.host.js?v=30\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/PopImage.host.js?v=31\"></script>",
         );
     }
     if want_affirmation {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=30\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=31\"></script>",
         );
     }
     if want_external {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/ExternalPlay.host.js?v=30\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/ExternalPlay.host.js?v=31\"></script>",
         );
     }
     if want_now_showing {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=30\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=31\"></script>",
         );
     }
     if want_board {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Board.host.js?v=30\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Board.host.js?v=31\"></script>",
         );
     }
     if want_live_chat || want_chat_app {
@@ -993,9 +993,9 @@ mod tests {
             !out.contains("TheaterPlayer.host.js"),
             "theater host must not be injected: {out}"
         );
-        assert!(out.contains("ExternalPlay.host.js?v=30"), "{out}");
-        assert!(out.contains("Affirmation.host.js?v=30"), "{out}");
-        assert!(out.contains("NowShowing.host.js?v=30"), "{out}");
+        assert!(out.contains("ExternalPlay.host.js?v=31"), "{out}");
+        assert!(out.contains("Affirmation.host.js?v=31"), "{out}");
+        assert!(out.contains("NowShowing.host.js?v=31"), "{out}");
         assert!(
             !out.contains("Board.host.js"),
             "Board host only when fb-board placeholder present: {out}"
@@ -1012,7 +1012,7 @@ mod tests {
             r#"<script type="module" src="/assets/c/abc/embed.js"></script></body></html>"#
         );
         let out = inject_park_native_host_scripts(sample);
-        assert!(out.contains("NowShowing.host.js?v=30"), "{out}");
+        assert!(out.contains("NowShowing.host.js?v=31"), "{out}");
         assert!(!out.contains("Board.host.js"), "{out}");
         assert!(!out.contains("Affirmation.host.js"), "{out}");
         assert!(!out.contains("ExternalPlay.host.js"), "{out}");
@@ -1027,8 +1027,8 @@ mod tests {
             r#"<script type="module" src="/assets/c/abc/embed.js"></script></body></html>"#
         );
         let out = inject_park_native_host_scripts(sample);
-        assert!(out.contains("PopImage.host.js?v=30"), "{out}");
-        assert!(out.contains("ExternalPlay.host.js?v=30"), "{out}");
+        assert!(out.contains("PopImage.host.js?v=31"), "{out}");
+        assert!(out.contains("ExternalPlay.host.js?v=31"), "{out}");
     }
 
     #[test]
