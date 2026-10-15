@@ -879,7 +879,10 @@ fn cheap_client_shell(
         .map(|c| c.has_park_tls_plugin())
         .unwrap_or(false)
     {
-        crate::git::embed_html::inject_park_native_host_scripts(&html)
+        crate::git::embed_html::inject_park_native_host_scripts_with_assets(
+            &html,
+            assets_prefix.as_deref(),
+        )
     } else {
         html
     };
@@ -1133,6 +1136,16 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             let portraits_json =
                 crate::git::portrait::portrait_sibling_set_json(&repo_root, request_branch);
             crate::git::embed_html::inject_portrait_sibling_bootstrap(&html, &portraits_json)
+        } else {
+            html
+        };
+        // Mesh chat / park-native hosts (prefer pinned relay-web-assets chat/).
+        let html = if html.contains("data-relay-park-native") || html.contains("data-relay-ssr-fallback")
+        {
+            crate::git::embed_html::inject_park_native_host_scripts_with_assets(
+                &html,
+                assets_prefix.as_deref(),
+            )
         } else {
             html
         };
