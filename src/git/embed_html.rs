@@ -614,6 +614,74 @@ fn origin_from_canonical(canon: &str) -> Option<String> {
     Some(format!("{scheme}://{host_port}"))
 }
 
+/// Strip `class` / `style` from `<relay-image-gallery>` opening tags.
+///
+/// Park themes sometimes put fullscreen overlay classes (e.g. `.pt-gallery`) on the CE
+/// host. Before the custom element upgrades, that paints a blank black sheet over the page.
+fn strip_relay_image_gallery_host_attrs(html: &str) -> String {
+    const OPEN: &str = "<relay-image-gallery";
+    let mut out = String::with_capacity(html.len());
+    let mut i = 0;
+    while i < html.len() {
+        let tail = &html[i..];
+        let tail_lower = tail.to_ascii_lowercase();
+        let Some(rel) = tail_lower.find(OPEN) else {
+            out.push_str(tail);
+            break;
+        };
+        out.push_str(&tail[..rel]);
+        let after = rel + OPEN.len();
+        let after_tail = &tail[after..];
+        let Some(gt) = after_tail.find('>') else {
+            out.push_str(&tail[rel..]);
+            break;
+        };
+        let attrs = &after_tail[..gt];
+        let self_close = attrs.trim_end().ends_with('/');
+        out.push_str("<relay-image-gallery");
+        if self_close {
+            out.push_str(" />");
+        } else {
+            out.push('>');
+        }
+        i += after + gt + 1;
+    }
+    out
+}
+
+/// Guard against fullscreen theme classes on unresolved `<relay-image-gallery>` hosts.
+///
+/// Strips host `class`/`style` and injects a tiny CSS shield so empty/undefined hosts
+/// cannot cover the page before `@relay/gallery` upgrades the CE.
+pub fn guard_relay_image_gallery_hosts(html: &str) -> String {
+    if !html.to_ascii_lowercase().contains("relay-image-gallery") {
+        return html.to_string();
+    }
+    let mut out = strip_relay_image_gallery_host_attrs(html);
+    if out.contains("id=\"relay-gallery-host-guard\"")
+        || out.contains("id='relay-gallery-host-guard'")
+    {
+        return out;
+    }
+    const STYLE: &str = concat!(
+        r#"<style id="relay-gallery-host-guard">"#,
+        "relay-image-gallery:not(:defined),relay-image-gallery:empty{display:none!important}",
+        "relay-image-gallery.pt-gallery{",
+        "position:static!important;inset:auto!important;background:transparent!important;",
+        "z-index:auto!important;display:contents!important}",
+        "relay-image-gallery:defined{display:contents!important}",
+        "</style>",
+    );
+    if let Some(idx) = out.find("</head>") {
+        out.insert_str(idx, STYLE);
+    } else if let Some(idx) = out.to_ascii_lowercase().find("<body") {
+        out.insert_str(idx, STYLE);
+    } else {
+        out.insert_str(0, STYLE);
+    }
+    out
+}
+
 /// Inject park-native host scripts before the embed module (inside `<body>`).
 ///
 /// CleverScript GET hooks may fail to place these correctly; gateway normalizes any HTML
@@ -653,15 +721,17 @@ pub fn inject_park_native_host_scripts_with_assets(
     const PLACEHOLDER: &str = "data-relay-park-native";
     const CSR_FALLBACK: &str = "data-relay-ssr-fallback";
     // Bump when always-injected host list changes (cache-bust + skip re-inject).
-    const CURRENT: &str = "LobbyAudio.host.js?v=32";
-    if !html.contains(PLACEHOLDER) && !html.contains(CSR_FALLBACK) && !html.contains("data-fb-pop-image")
+    const CURRENT: &str = "LobbyAudio.host.js?v=34";
+    if !html.contains(PLACEHOLDER)
+        && !html.contains(CSR_FALLBACK)
+        && !html.contains("data-fb-pop-image")
     {
-        return html.to_string();
+        return guard_relay_image_gallery_hosts(html);
     }
     let body_close = html.rfind("</body>");
     if let Some(first) = html.find(MARKER) {
         if body_close.is_none_or(|bc| first < bc) && html.contains(CURRENT) {
-            return html.to_string();
+            return guard_relay_image_gallery_hosts(html);
         }
     }
     let mut cleaned = html.to_string();
@@ -699,17 +769,17 @@ pub fn inject_park_native_host_scripts_with_assets(
             && (cleaned.contains("\"initialPath\":\"/chat\"")
                 || cleaned.contains("\"initialPath\":\"/chat/")));
     let want_pop_image = cleaned.contains("data-fb-pop-image");
-    // v=32: always inject lobby OST hosts (button on home; no placeholder).
+    // v=34: lobby OST hosts + localStorage persist / gesture unlock.
     let _assets_prefix = assets_prefix;
     let chat_common = "/hooks/client/native/ChatCommon.host.js?v=32".to_string();
     let chat_live = "/hooks/client/native/LiveChat.host.js?v=32".to_string();
     let chat_app = "/hooks/client/native/ChatApp.host.js?v=32".to_string();
     let mut snip = String::from(
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=32\"></script>\
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=34\"></script>\
 <script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=32\"></script>\
 <script data-fb-park-native=\"1\" src=\"/hooks/client/native/Hits.host.js?v=32\"></script>\
-<script data-fb-park-native=\"1\" src=\"/hooks/client/lobby/LobbyPlaylist.js?v=32\"></script>\
-<script data-fb-park-native=\"1\" src=\"/hooks/client/native/LobbyAudio.host.js?v=32\"></script>",
+<script data-fb-park-native=\"1\" src=\"/hooks/client/lobby/LobbyPlaylist.js?v=34\"></script>\
+<script data-fb-park-native=\"1\" src=\"/hooks/client/native/LobbyAudio.host.js?v=34\"></script>",
     );
     if want_pop_image {
         snip.push_str(
@@ -751,7 +821,7 @@ pub fn inject_park_native_host_scripts_with_assets(
             "<script data-fb-park-native=\"1\" src=\"{chat_app}\"></script>"
         ));
     }
-    if let Some(idx) = cleaned.rfind(r#"<script type="module" src=""#) {
+    let injected = if let Some(idx) = cleaned.rfind(r#"<script type="module" src=""#) {
         let mut out = String::with_capacity(cleaned.len() + snip.len());
         out.push_str(&cleaned[..idx]);
         out.push_str(&snip);
@@ -765,7 +835,8 @@ pub fn inject_park_native_host_scripts_with_assets(
         out
     } else {
         format!("{cleaned}{snip}")
-    }
+    };
+    guard_relay_image_gallery_hosts(&injected)
 }
 
 /// Inject tip portrait-sibling map for PopImage (before embed.js).
@@ -998,8 +1069,8 @@ mod tests {
         assert!(out.contains("ExternalPlay.host.js?v=32"), "{out}");
         assert!(out.contains("Affirmation.host.js?v=32"), "{out}");
         assert!(out.contains("NowShowing.host.js?v=32"), "{out}");
-        assert!(out.contains("LobbyAudio.host.js?v=32"), "{out}");
-        assert!(out.contains("LobbyPlaylist.js?v=32"), "{out}");
+        assert!(out.contains("LobbyAudio.host.js?v=34"), "{out}");
+        assert!(out.contains("LobbyPlaylist.js?v=34"), "{out}");
         assert!(
             !out.contains("Board.host.js"),
             "Board host only when fb-board placeholder present: {out}"
@@ -1017,7 +1088,7 @@ mod tests {
         );
         let out = inject_park_native_host_scripts(sample);
         assert!(out.contains("NowShowing.host.js?v=32"), "{out}");
-        assert!(out.contains("LobbyAudio.host.js?v=32"), "{out}");
+        assert!(out.contains("LobbyAudio.host.js?v=34"), "{out}");
         assert!(!out.contains("Board.host.js"), "{out}");
         assert!(!out.contains("Affirmation.host.js"), "{out}");
         assert!(!out.contains("ExternalPlay.host.js"), "{out}");
@@ -1034,7 +1105,24 @@ mod tests {
         let out = inject_park_native_host_scripts(sample);
         assert!(out.contains("PopImage.host.js?v=32"), "{out}");
         assert!(out.contains("ExternalPlay.host.js?v=32"), "{out}");
-        assert!(out.contains("LobbyAudio.host.js?v=32"), "{out}");
+        assert!(out.contains("LobbyAudio.host.js?v=34"), "{out}");
+    }
+
+    #[test]
+    fn guard_strips_gallery_host_class_and_injects_css() {
+        let sample = concat!(
+            r#"<html><head><title>t</title></head><body>"#,
+            r#"<relay-image-gallery class="pt-gallery" style="display:flex"></relay-image-gallery>"#,
+            r#"</body></html>"#
+        );
+        let out = guard_relay_image_gallery_hosts(sample);
+        assert!(
+            out.contains("<relay-image-gallery></relay-image-gallery>"),
+            "host attrs stripped: {out}"
+        );
+        assert!(!out.contains("class=\"pt-gallery\""), "{out}");
+        assert!(out.contains("id=\"relay-gallery-host-guard\""), "{out}");
+        assert!(out.contains("relay-image-gallery:not(:defined)"), "{out}");
     }
 
     #[test]

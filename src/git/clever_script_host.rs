@@ -886,6 +886,7 @@ fn cheap_client_shell(
     } else {
         html
     };
+    let html = crate::git::embed_html::guard_relay_image_gallery_hosts(&html);
     if missing {
         hook_file_object_ssr_html_with_status(html, Some(404), true)
     } else {
@@ -1149,6 +1150,7 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
         } else {
             html
         };
+        let html = crate::git::embed_html::guard_relay_image_gallery_hosts(&html);
         if !crate::git::embed_html::ssr_html_matches_request(&html, &render_path) {
             tracing::error!(
                 target: "relay_ssr",

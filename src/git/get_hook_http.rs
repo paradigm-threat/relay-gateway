@@ -137,11 +137,19 @@ pub fn get_hook_json_to_response(val: &Value, branch: &str, repo_name: &str) -> 
                 .unwrap_or("application/octet-stream");
             let mut bytes: Vec<u8> = match val.get("bodyUtf8") {
                 Some(Value::String(s)) => {
-                    if ct.contains("text/html")
-                        && (s.contains("data-relay-park-native")
-                            || s.contains("data-relay-ssr-fallback"))
-                    {
-                        crate::git::embed_html::inject_park_native_host_scripts(s).into_bytes()
+                    if ct.contains("text/html") {
+                        let mut html = s.to_string();
+                        if html.contains("data-relay-park-native")
+                            || html.contains("data-relay-ssr-fallback")
+                        {
+                            let prefix =
+                                crate::git::embed_html::infer_assets_prefix_from_html(&html);
+                            html = crate::git::embed_html::inject_park_native_host_scripts_with_assets(
+                                &html,
+                                prefix.as_deref(),
+                            );
+                        }
+                        crate::git::embed_html::guard_relay_image_gallery_hosts(&html).into_bytes()
                     } else {
                         s.as_bytes().to_vec()
                     }
