@@ -105,7 +105,7 @@ Bind is loopback-only by default.
 
 ### Inbox (standard)
 
-The UI **Inbox** tab is always present: it SSHs to the single MX host from [`ops/fleet.json`](../ops/fleet.json) `mail.host` / `mail.maildir` (or `RELAY_OPS_MAIL_HOST` / `RELAY_OPS_MAIL_MAILDIR`) and lists the Maildir. Relay does **not** send mail. Enabling OpenSMTPD on a node is optional (`RELAY_FEAT_INBOUND_MAIL` / `features-set --inbound-mail=1`) — DNS MX stays a separate operator step. See **[`MAIL_INBOUND.md`](MAIL_INBOUND.md)**.
+The UI **Inbox** tab is always present: it SSHs to the single MX host from [`ops/fleet.json`](../ops/fleet.json) `mail.host` / `mail.maildir` (or `RELAY_OPS_MAIL_HOST` / `RELAY_OPS_MAIL_MAILDIR`) and lists the Maildir. **Opening a message marks it read on the server** (`new/` → `cur/`). Relay does **not** send mail. Enabling OpenSMTPD on a node is optional (`RELAY_FEAT_INBOUND_MAIL` / `features-set --inbound-mail=1`) — DNS MX stays a separate operator step. See **[`MAIL_INBOUND.md`](MAIL_INBOUND.md)**.
 
 UI **Synchronize** = catalog sync + peer fetch (shown only on drifted / `sync` cells). UI **Repair** = remote `install.sh repair` on an **existing** install that is down (hidden for empty VMs, foreign/stale IP, host-key change, or mere drift). UI **Reclaim** = Spot install-only when SSH works and `/opt/relay` is missing (hidden without a Spot IP). Invalid per-cell actions are **omitted**, not greyed out. **Reset known_hosts** is a single Admin header action (`ssh-keygen -R` on user `~/.ssh/known_hosts`, no sudo) for every fleet FQDN + DNS/Spot IP. Each cell shows a **recommendation** and highlights the one primary button that is visible. `bootstrap-ssh` and destructive `reinstall` stay CLI-only.
 

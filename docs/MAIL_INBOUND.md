@@ -87,7 +87,7 @@ cargo build --release --bin relay-ops
 
 Config: [`ops/fleet.json`](../ops/fleet.json) `mail.host` / `mail.maildir`, or env `RELAY_OPS_MAIL_HOST` / `RELAY_OPS_MAIL_MAILDIR`.
 
-APIs: `GET /api/mail/list`, `GET /api/mail/message?id=…`, `POST /api/mail/mark-read` `{"id":"…"}`.
+APIs: `GET /api/mail/list`, `GET /api/mail/message?id=…` (**opening marks read**: Maildir `new/` → `cur/`), `POST /api/mail/mark-read` `{"id":"…"}` (idempotent; also applied automatically when a message is opened in the Inbox UI).
 
 ### SSH (fallback)
 

@@ -139,11 +139,11 @@
         <span id="mailMeta" class="muted">Inbound Maildir (single MX host)</span>
       </div>
       <p class="muted" style="margin:6px 0 10px;font-size:13px">
-        Receive-only OpenSMTPD catch-all on one fleet host. Point DNS MX at that host only — do not multi-MX the mesh.
+        Receive-only OpenSMTPD catch-all on one fleet host. Opening a message moves it <code>new/</code> → <code>cur/</code> on the server. Point DNS MX at that host only — do not multi-MX the mesh.
       </p>
       <div class="actions">
         <button type="button" onclick="mailRefresh()">Refresh</button>
-        <button type="button" class="ghost" id="btnMailRead" disabled onclick="mailMarkRead()">Mark read</button>
+        <button type="button" class="ghost" id="btnMailRead" disabled onclick="mailMarkRead()" title="Already applied on open; use if list is stale">Mark read</button>
       </div>
       <div id="mailErr" class="banner" style="display:none"></div>
       <div class="browser-cols" style="margin-top:12px">
@@ -729,12 +729,25 @@ function mailRenderList() {
   }).join('');
 }
 
+function mailApplyReadLocal(id) {
+  const m = mailState.messages.find(x => x.id === id);
+  if (m) {
+    m.unread = false;
+    m.folder = 'cur';
+  }
+  mailRenderList();
+  document.getElementById('btnMailRead').disabled = true;
+}
+
 async function mailOpen(id) {
   mailState.selected = id;
   mailRenderList();
-  document.getElementById('btnMailRead').disabled = false;
+  const wasUnread = !!(mailState.messages.find(m => m.id === id) || {}).unread;
+  document.getElementById('btnMailRead').disabled = !wasUnread;
   document.getElementById('mailBody').textContent = 'Loading…';
+  mailShowErr('');
   try {
+    // GET /api/mail/message marks unread (new/) as read on the MX host.
     const r = await fetch('/api/mail/message?id=' + encodeURIComponent(id));
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || r.statusText);
@@ -742,7 +755,7 @@ async function mailOpen(id) {
     document.getElementById('mailHdr').textContent =
       (j.from || '') + ' → ' + (j.to || '') + (j.date ? ' · ' + j.date : '');
     document.getElementById('mailBody').textContent = j.body || '(empty body)';
-    document.getElementById('btnMailRead').disabled = !j.unread;
+    mailApplyReadLocal(id);
   } catch (e) {
     document.getElementById('mailBody').textContent = String(e.message || e);
   }
@@ -758,8 +771,7 @@ async function mailMarkRead() {
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || r.statusText);
-    await mailRefresh();
-    if (mailState.selected) mailOpen(mailState.selected);
+    mailApplyReadLocal(mailState.selected);
   } catch (e) {
     mailShowErr(String(e.message || e));
   }

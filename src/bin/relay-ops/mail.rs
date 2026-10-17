@@ -202,7 +202,7 @@ print(json.dumps(items))
 "#;
 
 const REMOTE_GET_PY: &str = r#"
-import json, os, sys, email, re
+import json, os, sys, email, re, shutil
 from email.header import decode_header, make_header
 from html.parser import HTMLParser
 root, mid = sys.argv[2], sys.argv[3]
@@ -215,6 +215,20 @@ for fol in ("new", "cur"):
 if not path:
     sys.stderr.write("not found\n")
     sys.exit(2)
+# Opening a message marks it read: Maildir new/ → cur/ (same basename).
+if folder == "new":
+    dst_dir = os.path.join(root, "cur")
+    os.makedirs(dst_dir, exist_ok=True)
+    dst = os.path.join(dst_dir, mid)
+    if not os.path.isfile(dst):
+        shutil.move(path, dst)
+    else:
+        # Collision: drop the unread copy; keep existing cur.
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    path, folder = dst, "cur"
 def dec(v):
     if not v:
         return ""
@@ -283,7 +297,7 @@ print(json.dumps({
     "to": dec(msg.get("To", "")),
     "subject": dec(msg.get("Subject", "")),
     "date": dec(msg.get("Date", "")),
-    "unread": folder == "new",
+    "unread": False,
     "body": body,
 }))
 "#;
