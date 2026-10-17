@@ -15,6 +15,45 @@ Implements the Relay API over bare Git repositories with static directory servin
 
 Operator tool: **[`docs/RELAY_OPS.md`](docs/RELAY_OPS.md)**. Doc index: **[`docs/README.md`](docs/README.md)**. Historical notes: **[`docs/archive/`](docs/archive/)**.
 
+## Recent updates (late summer → Oct 2026)
+
+A dense stretch of fleet + park work. Two **major** capability adds; most of the rest is hardening, SSR correctness, and Flashback park-native front-end polish. The **Android jump to a full CleverScript client hook** is still deferred.
+
+### Major adds
+
+| Area | What shipped |
+|------|----------------|
+| **Email (receive-only)** | OpenSMTPD catch-all → Maildir as an optional install feature (`RELAY_FEAT_INBOUND_MAIL`); **relay-ops Inbox** is standard on every deployment (SSH-read of the MX host Maildir). No outbound SMTP — DNS MX stays a manual step. **[`docs/MAIL_INBOUND.md`](docs/MAIL_INBOUND.md)** · **[`docs/INSTALL_FEATURES.md`](docs/INSTALL_FEATURES.md)** |
+| **IRC / mesh chat** | Park LiveChat / ChatApp over Ergo + shared chat hosts; ops-side IRC bus docs (**[`docs/MESH_IRC.md`](docs/MESH_IRC.md)**, **[`docs/RELAY_CHAT.md`](docs/RELAY_CHAT.md)**); Caddy chat routes kept when regenerating park TLS. Chat is a **sidecar plane**, not inside the gateway binary. |
+
+### Hardening, ops, and park front-end (highlights)
+
+- **Fleet ops:** unified **`relay-ops`** CLI + local UI; tray mark; Spot reclaim / empty-VM brain scenarios; windowed per-host HTTP stats; RUM / theater error beacons (errors only — no analytics); SSL SNI checks for parked Hosts; publisher-aware sync / `publish_origin`.
+- **Live mesh:** **iad1 / ord1 / hkg1** (sjc1 / atlanta2 retired); first-push bare provision; mesh tip notify; catalog SearchStore warm on publish branch.
+- **Parked SSR:** path-correct renders (no homepage hydrate on article URLs); coalesce + timeouts so crawlers cannot wedge the gateway; refuse wrong-URL cache; soft shells for missing `page.md` trees; omit CleverScript `embed.js` when tip `hydrate: false`.
+- **Flashback park-native:** inject `*.host.js` islands (LobbyAudio, NowShowing, ExternalPlay, LiveChat stubs, …); tip policy for posters / `downloads/*.apk`; soft routes (`/setup`, `/board`, `/request`, …); theater-bg CSS on SSR head; **in-tab TheaterPlayer left off** (external player / VLC path).
+- **Thin IPFS:** fleet skips pin/sync for catalog-only / movie-cache repos; pin-on-tip/miss for thin trees; workstation seeding remains the heavy path.
+- **Search / QUERY:** PascalCase FTS split; `/search?q=` → topic path for SSR; `_updated` order / path_tree helpers.
+- **Runtime (sibling):** park-native registry vs CleverScript authorship; native-first video host with WASM escalate; gallery soft-retry; armeabi-v7a runtime for Fire TV APKs.
+
+### Still waiting — Android full client hook
+
+Flashback’s product APK is a **Kotlin native shell** (ExoPlayer + IRC), not CleverScript paint. Generic Relay Android still needs wasm-test ↔ android-demo parity before pointing Flashback at full hook rendering. See sibling **[`relay-runtime/docs/ANDROID_WEB_TEST.md`](../relay-runtime/docs/ANDROID_WEB_TEST.md)**.
+
+### Flashback on the Rust binary runtime — real obstacles
+
+Public **flashbackrepository.org** already parks on **relay-gateway** (`server.tls.plugin: park`), not Vercel. Remaining walls for “full” runtime/client parity:
+
+1. **`hydrate: false`** — tip serves SSR VNodes + browser `*.host.js` islands; CleverScript WASM CSR is stripped. Turning hydrate on hits soft-hydrate / ownership-unlock fragility (`document` / freeze races).
+2. **Park-native ≠ WASM client** — Board, LiveChat, ChatApp, Hits, LobbyAudio, NowShowing, Affirmation need DOM / `localStorage` / WebSocket; CleverScript only emits park-native placeholders.
+3. **In-browser theater off** — Gateway does not inject TheaterPlayer (tab-crash risk); playback is ExternalPlay / VLC / Android ExoPlayer, not HTML5 `@clevertree/video` in-tab.
+4. **IRC is a sidecar** — Ergo + Node chat-edge + Caddy `/chat/*`; the Rust gateway binary alone has no chat plane. Desktop Skia has no `*.host.js` registry.
+5. **Thin IPFS / media split** — Git stubs + manifests; fleet must not pin multi-GB movies; “Now showing” uses host/Bunny HTTPS separate from catalog CIDs; workstation Kubo seeding required.
+6. **Park TLS ops** — Multi-A + SNI cert drift; park-tls regen can drop chat routes without the Flashback Caddy guard.
+7. **Android hook gap** — Incomplete `*.android.js` / `VNodeRenderer` builders for Board/LiveChat/Hits/…; Flashback APK deliberately skips CleverScript paint; shared tip still has web-only `document` paths in `get.jsx`.
+
+**Bottom line:** Flashback already runs on the Rust gateway SSR path. Full client-hook parity (web WASM hydrate + Android CleverScript paint + in-binary chat) is the next cliff — not “move the site off Vercel.”
+
 ## Features
 
 - Serves files from multiple bare Git repositories (`.git` suffix)
@@ -25,7 +64,7 @@ Operator tool: **[`docs/RELAY_OPS.md`](docs/RELAY_OPS.md)**. Doc index: **[`docs
 - Optional HTTPS support with automatic certificate loading
 - CORS-enabled; responses may include informational headers (e.g. echo of resolved repo/branch — **not** input channels). **Routing is Host-only.** **`X-Relay-Branch`** is **deprecated for routing** (do not send it to select a repo/branch) but **relay-ops Browse** still uses it as a display hint. Directory listings use **`X-Relay-Tree: 1`** — see GET below and **[`docs/DEPLOY_WEB_AND_CI.md`](docs/DEPLOY_WEB_AND_CI.md)** §8–§11.
 
-Install-time **optional capabilities** (Piper TTS, offline Argos translation, npm hook packages) plus **Kubo IPFS** (default on at `install`/`update`) are recorded in **`state/features.json`** and advertised in **`GET`/`POST /api/config` → `installed_features`** so peers know what each node offers. See **[docs/INSTALL_FEATURES.md](docs/INSTALL_FEATURES.md)**.
+Install-time **optional capabilities** (Piper TTS, offline Argos translation, npm hook packages, **receive-only inbound mail**) plus **Kubo IPFS** (default on at `install`/`update`) are recorded in **`state/features.json`** and advertised in **`GET`/`POST /api/config` → `installed_features`** so peers know what each node offers. See **[docs/INSTALL_FEATURES.md](docs/INSTALL_FEATURES.md)** · **[docs/MAIL_INBOUND.md](docs/MAIL_INBOUND.md)**.
 
 **`GET /api/status`** (also **HEAD**/**POST**) on the **node FQDN** (or loopback) returns this node’s version, mesh role, feature summary, **IPFS seed** (`self.ipfs`, `ipfs_ok`, per-repo CID/cache counts), a **per-repo table** (catalog vs on-disk, `publish_branch` SHA — from **local** git, not `git ls-remote`), and reachability of each **`RELAY_MASTER_PEER_LIST`** host (probes **`POST https://{host}/api/config`** by default). JSON by default; **`Accept: text/html`** or **`?format=html`** for a dashboard; **`?strict=1`** returns **503** when any **git-mesh peer** is down (IPFS-down does **not** 503). Missing catalog bares set **`repos_ok: false`** but do not affect **`strict`**. Override probe URL with **`RELAY_STATUS_PEER_URL_TEMPLATE`** (use **`{host}`**). On **parked domains** and **`{repo}.{node}`** Hosts, `/api/status` is a **site file / GET hook**, not the operator dashboard.
 
