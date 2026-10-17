@@ -19,6 +19,19 @@ pub struct FleetFile {
     pub catalog_path: Option<String>,
     #[serde(rename = "dataRoot", default)]
     pub data_root: Option<String>,
+    /// Single-MX inbound mailbox (read via relay-ops Inbox). Not multi-host.
+    #[serde(default)]
+    pub mail: Option<MailSpec>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MailSpec {
+    /// MX host FQDN (OpenSMTPD). Default iad1.relaygateway.net.
+    #[serde(default)]
+    pub host: Option<String>,
+    /// Absolute Maildir path on that host. Default /home/arl/Maildir.
+    #[serde(default)]
+    pub maildir: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -92,6 +105,10 @@ impl FleetFile {
             health: HealthSpec::default(),
             catalog_path: None,
             data_root: None,
+            mail: Some(MailSpec {
+                host: Some("iad1.relaygateway.net".into()),
+                maildir: Some("/home/arl/Maildir".into()),
+            }),
         })
     }
 

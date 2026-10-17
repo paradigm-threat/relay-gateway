@@ -49,6 +49,8 @@ pub struct BrainApp {
     pub token: String,
     pub execute: Arc<AtomicBool>,
     pub paused: Arc<AtomicBool>,
+    /// IRC ops bus connected (optional subscriber).
+    pub irc_bus_up: Arc<AtomicBool>,
     pub feed_path: PathBuf,
     pub req_seq: Arc<AtomicU64>,
 }
@@ -98,6 +100,8 @@ pub struct BrainStatus {
     pub observe_only: bool,
     pub paused: bool,
     pub blocked: bool,
+    /// True when optional IRC subscriber is registered/joined.
+    pub irc_bus: bool,
     pub last_scenario: Option<String>,
     pub last_fingerprint_summary: String,
     pub pending_requests: usize,
@@ -191,6 +195,7 @@ pub async fn run_serve(execute: bool) -> Result<()> {
     let feed_path = default_feed_path();
     let _ = fs::create_dir_all(state_dir());
     let execute = execute || env_truthy("RELAY_BRAIN_EXECUTE");
+    let irc_bus_up = Arc::new(AtomicBool::new(false));
     let app = BrainApp {
         inner: Arc::new(Mutex::new(BrainState {
             online: true,
@@ -202,6 +207,7 @@ pub async fn run_serve(execute: bool) -> Result<()> {
         token: token.clone(),
         execute: Arc::new(AtomicBool::new(execute)),
         paused: Arc::new(AtomicBool::new(false)),
+        irc_bus_up: irc_bus_up.clone(),
         feed_path: feed_path.clone(),
         req_seq: Arc::new(AtomicU64::new(1)),
     };
@@ -213,6 +219,7 @@ pub async fn run_serve(execute: bool) -> Result<()> {
             "ts_ms": now_ms(),
             "observe_only": !execute,
             "bind": bind,
+            "irc_bus": crate::irc_bus::irc_bus_enabled(),
         }),
     )?;
 
@@ -220,6 +227,9 @@ pub async fn run_serve(execute: bool) -> Result<()> {
     tokio::spawn(async move {
         probe_loop(loop_app).await;
     });
+
+    let brain_http = format!("http://{bind}");
+    crate::irc_bus::spawn_irc_bus(token.clone(), brain_http, irc_bus_up);
 
     let router = Router::new()
         .route("/status", get(api_status))
@@ -657,6 +667,7 @@ async fn api_status(State(app): State<BrainApp>) -> Json<BrainStatus> {
         observe_only: !app.execute.load(Ordering::Relaxed),
         paused: app.paused.load(Ordering::Relaxed),
         blocked: g.blocked,
+        irc_bus: app.irc_bus_up.load(Ordering::Relaxed),
         last_scenario: g.last_scenario.clone(),
         last_fingerprint_summary: g.last_fingerprint_summary.clone(),
         pending_requests: g.requests.values().filter(|r| r.status == "pending").count(),
@@ -803,44 +814,69 @@ async fn api_chat(
         return (StatusCode::UNAUTHORIZED, "token required".into());
     }
     let text = body.text.trim();
-    let reply = match text {
-        "status" => {
-            let g = app.inner.lock().await;
+    let reply = if text == "status" || text.starts_with("status ") {
+        let g = app.inner.lock().await;
+        if let Some(node) = text.strip_prefix("status ").map(str::trim).filter(|s| !s.is_empty())
+        {
+            let needle = node.to_ascii_lowercase();
+            if let Some(n) = g.nodes.iter().find(|n| {
+                n.fqdn.to_ascii_lowercase().starts_with(&needle)
+                    || n.fqdn
+                        .split('.')
+                        .next()
+                        .map(|p| p.eq_ignore_ascii_case(&needle))
+                        .unwrap_or(false)
+            }) {
+                format!(
+                    "{} scenario={:?} blocked={} msg={}",
+                    n.fqdn,
+                    n.scenario_id,
+                    n.blocked,
+                    n.message.as_deref().unwrap_or("-")
+                )
+            } else {
+                format!("no classification for {node} (wait for next probe)")
+            }
+        } else {
             format!(
-                "online={} blocked={} paused={} last={:?} pending={}",
+                "online={} blocked={} paused={} irc_bus={} last={:?} pending={}",
                 g.online,
                 g.blocked,
                 app.paused.load(Ordering::Relaxed),
+                app.irc_bus_up.load(Ordering::Relaxed),
                 g.last_scenario,
                 g.requests.values().filter(|r| r.status == "pending").count()
             )
         }
-        "blocked" => {
-            let g = app.inner.lock().await;
-            if g.blocked {
-                format!("BLOCKED — {}", g.last_fingerprint_summary)
-            } else {
-                "not blocked".into()
+    } else {
+        match text {
+            "blocked" => {
+                let g = app.inner.lock().await;
+                if g.blocked {
+                    format!("BLOCKED — {}", g.last_fingerprint_summary)
+                } else {
+                    "not blocked".into()
+                }
             }
-        }
-        "pause" => {
-            app.paused.store(true, Ordering::Relaxed);
-            "paused".into()
-        }
-        "resume" => {
-            app.paused.store(false, Ordering::Relaxed);
-            "resumed".into()
-        }
-        other => {
-            let _ = append_feed(
-                &app.feed_path,
-                &serde_json::json!({
-                    "type": "chat",
-                    "ts_ms": now_ms(),
-                    "text": other,
-                }),
-            );
-            format!("logged: {other}")
+            "pause" => {
+                app.paused.store(true, Ordering::Relaxed);
+                "paused".into()
+            }
+            "resume" => {
+                app.paused.store(false, Ordering::Relaxed);
+                "resumed".into()
+            }
+            other => {
+                let _ = append_feed(
+                    &app.feed_path,
+                    &serde_json::json!({
+                        "type": "chat",
+                        "ts_ms": now_ms(),
+                        "text": other,
+                    }),
+                );
+                format!("logged: {other}")
+            }
         }
     };
     let _ = append_feed(

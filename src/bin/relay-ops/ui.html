@@ -4,10 +4,15 @@
   <meta charset="utf-8"/>
   <title>Relay ops</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="icon" type="image/png" href="/favicon.png" sizes="64x64"/>
+  <link rel="icon" type="image/png" href="/icon.png" sizes="192x192"/>
+  <link rel="apple-touch-icon" href="/icon.png"/>
   <style>
     :root { color-scheme: dark; --bg:#111; --card:#1c1c1c; --ok:#3dd68c; --bad:#ff6b6b; --warn:#f5c542; --muted:#9aa; --link:#8cb4ff; }
     body { font: 15px/1.4 system-ui, sans-serif; background: var(--bg); color: #eee; margin: 0; }
     header { padding: 16px 20px; border-bottom: 1px solid #333; display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+    .brand { display:flex; align-items:center; gap:10px; }
+    .brand img { width:28px; height:28px; display:block; border-radius:6px; }
     h1 { font-size: 18px; margin: 0; }
     h2 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
     .pill { padding: 2px 10px; border-radius: 999px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
@@ -61,12 +66,16 @@
 </head>
 <body>
 <header>
-  <h1>Relay fleet</h1>
+  <div class="brand">
+    <img src="/icon.png" width="28" height="28" alt="Relay"/>
+    <h1>Relay fleet</h1>
+  </div>
   <span id="mode" class="pill ro">read-only</span>
   <span id="source" class="muted"></span>
   <span id="brainPill" class="pill ro" title="Brain status">brain: —</span>
   <div class="nav">
     <button type="button" class="ghost on" id="navFleet" onclick="showPanel('fleet')">Fleet</button>
+    <button type="button" class="ghost" id="navInbox" onclick="showPanel('inbox')">Inbox</button>
     <button type="button" class="ghost" id="navBrain" onclick="showPanel('brain')">Brain</button>
   </div>
 </header>
@@ -123,11 +132,40 @@
   </section>
   </div>
 
+  <div id="panelInbox" class="panel">
+    <section class="card">
+      <div class="row">
+        <h2>Inbox</h2>
+        <span id="mailMeta" class="muted">Inbound Maildir (single MX host)</span>
+      </div>
+      <p class="muted" style="margin:6px 0 10px;font-size:13px">
+        Receive-only OpenSMTPD catch-all on one fleet host. Point DNS MX at that host only — do not multi-MX the mesh.
+      </p>
+      <div class="actions">
+        <button type="button" onclick="mailRefresh()">Refresh</button>
+        <button type="button" class="ghost" id="btnMailRead" disabled onclick="mailMarkRead()">Mark read</button>
+      </div>
+      <div id="mailErr" class="banner" style="display:none"></div>
+      <div class="browser-cols" style="margin-top:12px">
+        <div>
+          <h2>Messages</h2>
+          <div id="mailList" class="list" style="max-height:420px"></div>
+        </div>
+        <div style="grid-column: span 2">
+          <h2 id="mailSubject">Select a message</h2>
+          <div id="mailHdr" class="muted" style="font-size:13px;margin-bottom:8px"></div>
+          <pre id="mailBody" class="fileview" style="max-height:480px">—</pre>
+        </div>
+      </div>
+    </section>
+  </div>
+
   <div id="panelBrain" class="panel">
     <section class="card">
       <div class="row">
         <h2>Brain</h2>
         <span id="brainMeta" class="muted"></span>
+        <span id="brainIrcBadge" class="muted" title="Optional IRC ops bus (RELAY_OPS_IRC)"></span>
       </div>
       <div class="actions">
         <button type="button" onclick="brainRefresh()">Refresh brain</button>
@@ -161,35 +199,101 @@ function esc(s) {
 }
 function shortSha(s) { return s ? String(s).slice(0, 8) : '—'; }
 
+function parkHostRank(host) {
+  const h = String(host || '').toLowerCase();
+  if (h === 'flashbackrepository.org' || h.endsWith('.flashbackrepository.org')) return 0;
+  if (h.includes('flashback')) return 1;
+  return 2;
+}
+
 function httpStrip(n) {
   const h = n && n.http;
   if (!h || h.enabled === false) return '';
   const p95 = h.p95_ms != null ? (h.p95_ms + 'ms p95') : '—';
   const p50 = h.p50_ms != null ? (h.p50_ms + 'ms p50') : '';
-  const s5 = (h.window_1h && h.window_1h.status_5xx) || 0;
-  const req1h = h.req_1h != null ? h.req_1h : ((h.window_1h && h.window_1h.requests) || 0);
-  const errCls = s5 > 0 ? 'warn' : 'muted';
   const w = h.window_1h || {};
+  const s5 = w.status_5xx || 0;
+  const s4 = w.status_4xx || 0;
+  const assetN = w.asset || 0;
+  const req1h = h.req_1h != null ? h.req_1h : (w.requests || 0);
+  const errCls = (s5 > 0 || s4 > 20) ? 'warn' : 'muted';
   const mix = [w.html != null ? ('html ' + w.html) : '', w.api != null ? ('api ' + w.api) : '', w.asset != null ? ('asset ' + w.asset) : '']
     .filter(Boolean).join(' · ');
   const hostList = (h.hosts && h.hosts.length)
-    ? h.hosts
+    ? h.hosts.slice()
     : (h.top_hosts || []).map(x => ({ host: x.host, req_1h: x.requests, html: 0 }));
-  const hosts = hostList.slice(0, 3).map(x => {
+  hostList.sort((a, b) => parkHostRank(a.host) - parkHostRank(b.host) || ((b.req_1h || b.requests || 0) - (a.req_1h || a.requests || 0)));
+  const hosts = hostList.slice(0, 4).map(x => {
     const nreq = x.req_1h != null ? x.req_1h : x.requests;
     const html = x.html != null && x.html > 0 ? (' html ' + x.html) : '';
-    return esc(x.host) + ' ' + nreq + html;
+    const asset = x.asset != null && x.asset > 0 ? (' asset ' + x.asset) : '';
+    const s5h = x.s5xx != null && x.s5xx > 0 ? (' ' + x.s5xx + '×5xx') : '';
+    const mark = parkHostRank(x.host) <= 1 ? '★ ' : '';
+    return mark + esc(x.host) + ' ' + nreq + html + asset + s5h;
   }).join(', ');
   const paths = (h.top_paths || []).slice(0, 3).map(x => esc(x.path) + ' ' + x.requests).join(', ');
-  const rum = n.rum && n.rum.enabled
-    ? ('RUM p75 ' + (n.rum.p75_lcp_ms != null ? Math.round(n.rum.p75_lcp_ms) + 'ms LCP' : '—')
-      + (n.rum.p75_ttfc_ms != null ? (' / ' + Math.round(n.rum.p75_ttfc_ms) + 'ms TTFC') : '')
-      + (n.rum.events ? (' · ' + n.rum.events + ' ev') : ''))
-    : '';
-  return `<div class="${errCls}">HTTP ${req1h}/h · ${p50}${p50 && p95 ? ' / ' : ''}${p95}${s5 ? (' · ' + s5 + '×5xx/h') : ''}</div>`
+  const errBits = [];
+  if (s5) errBits.push(s5 + '×5xx/h');
+  if (s4) errBits.push(s4 + '×4xx/h');
+  if (assetN && (s4 || s5)) errBits.push('asset ' + assetN + '/h');
+  return `<div class="${errCls}">HTTP ${req1h}/h · ${p50}${p50 && p95 ? ' / ' : ''}${p95}${errBits.length ? (' · ' + errBits.join(' · ')) : ''}</div>`
     + (mix ? `<div class="muted">${esc(mix)}${hosts ? ' · ' + hosts : ''}</div>` : (hosts ? `<div class="muted">${hosts}</div>` : ''))
     + (paths ? `<div class="muted">paths ${paths}</div>` : '')
-    + (rum ? `<div class="muted">${esc(rum)}</div>` : '');
+    + rumStrip(n);
+}
+
+/** IPFS seed lag from /api/status repos[].ipfs (probe.ipfs_repos). */
+function ipfsStrip(n) {
+  if (!n) return '';
+  const parts = [];
+  if (n.ipfs_ok === false) {
+    parts.push('<div class="bad">IPFS down (ipfs_ok=false)</div>');
+  } else if (n.ipfs_ok === true) {
+    parts.push('<div class="muted">IPFS ok</div>');
+  }
+  const repos = n.ipfs_repos || [];
+  if (!repos.length) return parts.join('');
+  const lines = repos.map(r => {
+    const cid = r.cid_count || 0;
+    const cached = r.cached_count || 0;
+    const lag = Math.max(0, cid - cached);
+    const ratio = cid > 0 ? (cached / cid) : 1;
+    const label = esc(r.repo || '?') + ' ' + cached + '/' + cid
+      + (lag ? (' · ' + lag + ' uncached') : '');
+    const hot = lag >= 3 || (cid >= 5 && ratio < 0.9) || (r.repo === 'fan-edits' && lag >= 1);
+    return `<div class="${hot ? 'warn' : 'muted'}">seed ${label}</div>`;
+  });
+  return parts.join('') + lines.join('');
+}
+
+/** Theater typed RUM counts (major/minor + top codes). */
+function rumStrip(n) {
+  if (!n || !n.rum || !n.rum.enabled) return '';
+  const rum = n.rum;
+  const p75 = 'RUM p75 ' + (rum.p75_lcp_ms != null ? Math.round(rum.p75_lcp_ms) + 'ms LCP' : '—')
+    + (rum.p75_ttfc_ms != null ? (' / ' + Math.round(rum.p75_ttfc_ms) + 'ms TTFC') : '')
+    + (rum.events ? (' · ' + rum.events + ' ev') : '');
+  let out = `<div class="muted">${esc(p75)}</div>`;
+  const t = rum.theater24h;
+  if (!t) return out;
+  const major = t.major || 0;
+  const minor = t.minor || 0;
+  const bySev = t.by_severity_code || {};
+  const majorCodes = bySev.major || t.by_code || {};
+  const minorCodes = bySev.minor || {};
+  const top = (obj, nmax) => Object.entries(obj || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, nmax)
+    .map(([k, v]) => esc(k) + '×' + v)
+    .join(' ');
+  const majCls = major >= 5 ? 'warn' : 'muted';
+  const majTop = top(majorCodes, 4);
+  out += `<div class="${majCls}">theater major/24h ${major}${majTop ? (' · ' + majTop) : ''}</div>`;
+  if (minor > 0) {
+    const minTop = top(minorCodes, 3);
+    out += `<div class="muted">theater minor/24h ${minor}${minTop ? (' · ' + minTop) : ''}</div>`;
+  }
+  return out;
 }
 
 function captureRepoUi() {
@@ -247,10 +351,18 @@ function nodeCardHtml(n, d) {
     const indexLabel = staleRow
       ? ' <span class="warn">index stale</span>'
       : '';
+    const ip = (n.ipfs_repos || []).find(x => x.repo === name);
+    let seedLabel = '';
+    if (ip && (ip.cid_count || 0) > 0) {
+      const lag = Math.max(0, (ip.cid_count || 0) - (ip.cached_count || 0));
+      const seedCls = lag >= 1 ? 'warn' : 'ok';
+      seedLabel = ` <span class="${seedCls}">seed ${ip.cached_count || 0}/${ip.cid_count}${lag ? (' · ' + lag + ' lag') : ''}</span>`;
+    }
     const mark = isMissing ? ' <span class="bad">missing</span>' : driftLabel + indexLabel;
     return `<li><span class="link" onclick="openBrowser('${esc(n.fqdn)}','${esc(name)}')">${esc(name)}</span>` +
       (sha ? ` <span class="sha">${esc(sha)}</span>` : '') +
       mark +
+      seedLabel +
       (err ? ` <span class="bad">${esc(err)}</span>` : '') +
       `</li>`;
   }).join('');
@@ -312,6 +424,7 @@ function nodeCardHtml(n, d) {
       <div class="muted">tcp 22=${n.tcp22} 443=${n.tcp443} git=${n.tcp_git}</div>
       <div class="muted">${esc(cfg.relay_server_id || 'no /api/config')}</div>
       ${httpStrip(n)}
+      ${ipfsStrip(n)}
       <div class="row">
         <span>${repoCountLabel}${auth.length ? ' · ' + auth.length + ' authorized' : ''}${n.sync_ok && n.healthy ? ' · in sync' : ''}</span>
         <span class="link" onclick="openBrowser('${esc(n.fqdn)}')">${(repos.length || tips.length) ? 'Browse' : ''}</span>
@@ -559,10 +672,97 @@ setInterval(snap, 8000);
 
 function showPanel(name) {
   document.getElementById('panelFleet').classList.toggle('on', name === 'fleet');
+  document.getElementById('panelInbox').classList.toggle('on', name === 'inbox');
   document.getElementById('panelBrain').classList.toggle('on', name === 'brain');
   document.getElementById('navFleet').classList.toggle('on', name === 'fleet');
+  document.getElementById('navInbox').classList.toggle('on', name === 'inbox');
   document.getElementById('navBrain').classList.toggle('on', name === 'brain');
   if (name === 'brain') brainRefresh();
+  if (name === 'inbox') mailRefresh();
+}
+
+const mailState = { messages: [], selected: null };
+
+function mailShowErr(msg) {
+  const el = document.getElementById('mailErr');
+  if (!msg) { el.style.display = 'none'; el.textContent = ''; return; }
+  el.style.display = 'block';
+  el.textContent = msg;
+}
+
+async function mailRefresh() {
+  mailShowErr('');
+  document.getElementById('mailList').innerHTML = '<div class="muted">Loading…</div>';
+  try {
+    const r = await fetch('/api/mail/list');
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    mailState.messages = j.messages || [];
+    document.getElementById('mailMeta').textContent =
+      'MX host: ' + (j.host || j.mx || '?') +
+      (j.maildir ? ' · ' + j.maildir : '') +
+      ' · ' + mailState.messages.length + ' msg';
+    mailRenderList();
+    if (mailState.selected) {
+      const still = mailState.messages.find(m => m.id === mailState.selected);
+      if (still) mailOpen(still.id);
+      else { mailState.selected = null; document.getElementById('btnMailRead').disabled = true; }
+    }
+  } catch (e) {
+    document.getElementById('mailList').innerHTML = '';
+    mailShowErr(String(e.message || e));
+  }
+}
+
+function mailRenderList() {
+  const box = document.getElementById('mailList');
+  if (!mailState.messages.length) {
+    box.innerHTML = '<div class="muted">Empty</div>';
+    return;
+  }
+  box.innerHTML = mailState.messages.map(m => {
+    const on = mailState.selected === m.id ? ' on' : '';
+    const badge = m.unread ? '<span class="warn">●</span> ' : '';
+    return '<div class="' + on.trim() + '" data-id="' + esc(m.id) + '" onclick="mailOpen(this.dataset.id)">' +
+      badge + '<strong>' + esc(m.subject || '(no subject)') + '</strong><br/>' +
+      '<span class="muted">' + esc(m.from) + ' → ' + esc(m.to) + '</span></div>';
+  }).join('');
+}
+
+async function mailOpen(id) {
+  mailState.selected = id;
+  mailRenderList();
+  document.getElementById('btnMailRead').disabled = false;
+  document.getElementById('mailBody').textContent = 'Loading…';
+  try {
+    const r = await fetch('/api/mail/message?id=' + encodeURIComponent(id));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    document.getElementById('mailSubject').textContent = j.subject || '(no subject)';
+    document.getElementById('mailHdr').textContent =
+      (j.from || '') + ' → ' + (j.to || '') + (j.date ? ' · ' + j.date : '');
+    document.getElementById('mailBody').textContent = j.body || '(empty body)';
+    document.getElementById('btnMailRead').disabled = !j.unread;
+  } catch (e) {
+    document.getElementById('mailBody').textContent = String(e.message || e);
+  }
+}
+
+async function mailMarkRead() {
+  if (!mailState.selected) return;
+  try {
+    const r = await fetch('/api/mail/mark-read', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: mailState.selected }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    await mailRefresh();
+    if (mailState.selected) mailOpen(mailState.selected);
+  } catch (e) {
+    mailShowErr(String(e.message || e));
+  }
 }
 
 const brainClient = {
@@ -621,6 +821,11 @@ async function brainRefresh() {
       (st.paused ? ' · paused' : '') +
       ' · pending ' + pending +
       (st.last_scenario ? ' · ' + st.last_scenario : '');
+    const ircBadge = document.getElementById('brainIrcBadge');
+    if (ircBadge) {
+      ircBadge.textContent = st.irc_bus ? 'IRC bus: up' : 'IRC bus: off';
+      ircBadge.className = st.irc_bus ? 'pill admin' : 'muted';
+    }
     if (!(reqs.pending || []).length) {
       reqEl.innerHTML = '<div class="muted">No pending requests</div>';
     } else {

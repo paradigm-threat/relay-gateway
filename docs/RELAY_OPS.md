@@ -2,7 +2,9 @@
 
 One generic tool for any Relay fleet: **CLI + local UI**. Bootstrap from a **GitLab project URL** (not baked hostnames). The committed topology file is [`ops/fleet.json`](../ops/fleet.json) (`schema: relay.ops.fleet.v1`).
 
-Local fleet brain (scenarios, pending requests, private feed): [`RELAY_BRAIN.md`](RELAY_BRAIN.md). MCP/WebMCP tool catalog: [`RELAY_OPS_MCP.md`](RELAY_OPS_MCP.md).
+Local fleet brain (scenarios, pending requests, private feed): [`RELAY_BRAIN.md`](RELAY_BRAIN.md). MCP/WebMCP tool catalog: [`RELAY_OPS_MCP.md`](RELAY_OPS_MCP.md). Optional mesh IRC ops bus: [`MESH_IRC.md`](MESH_IRC.md). Shared chat hosts + prefixes: [`RELAY_CHAT.md`](RELAY_CHAT.md).
+
+**Etymology:** Relay deliberately echoes IRC — a network of servers that hop messages and stay in sync across netsplits. That is the same mental model as tip mesh (`POST /hooks/peer`) and multi-A edges. IRC is a complementary human + low-rate pubsub plane; it does **not** replace peer tip notify or probe.
 
 `./scripts/relay-fleet.sh` is a thin exec wrapper around this binary so existing muscle memory still works.
 
@@ -59,7 +61,7 @@ Global flags (before or with clap long opts): `--gitlab`, `--env-file`, `--only=
 | `update` / `deploy-all` | Admin + checkout | Pack optional `--build`; tarball + restart. Pack **refuses a dirty/unpushed tree** unless **`--allow-dirty`**. |
 | `repair` | Admin + checkout | Remote `install.sh repair` on an **existing** node |
 | `reclaim` | Admin + checkout | Spot **install-only** via `relay-master-deploy.sh` (`--fqdn` `--yes`) |
-| `features-set` | Admin + checkout | `--piper` `--npm-pkgs` `--translation` … |
+| `features-set` | Admin + checkout | `--piper` `--npm-pkgs` `--translation` `--libretranslate` `--inbound-mail` `--mail-domains` … |
 | `reclone-repo REPO` | Admin + checkout | Optional `--peer` |
 | `fix-bare-head` | Admin | |
 | `bootstrap-ssh` | sshpass + root password | CLI only (not in UI) |
@@ -101,9 +103,25 @@ cp ops/config.toml.example ~/.config/relay-ops/config.toml
 
 Bind is loopback-only by default.
 
+### Inbox (standard)
+
+The UI **Inbox** tab is always present: it SSHs to the single MX host from [`ops/fleet.json`](../ops/fleet.json) `mail.host` / `mail.maildir` (or `RELAY_OPS_MAIL_HOST` / `RELAY_OPS_MAIL_MAILDIR`) and lists the Maildir. Relay does **not** send mail. Enabling OpenSMTPD on a node is optional (`RELAY_FEAT_INBOUND_MAIL` / `features-set --inbound-mail=1`) — DNS MX stays a separate operator step. See **[`MAIL_INBOUND.md`](MAIL_INBOUND.md)**.
+
 UI **Synchronize** = catalog sync + peer fetch (shown only on drifted / `sync` cells). UI **Repair** = remote `install.sh repair` on an **existing** install that is down (hidden for empty VMs, foreign/stale IP, host-key change, or mere drift). UI **Reclaim** = Spot install-only when SSH works and `/opt/relay` is missing (hidden without a Spot IP). Invalid per-cell actions are **omitted**, not greyed out. **Reset known_hosts** is a single Admin header action (`ssh-keygen -R` on user `~/.ssh/known_hosts`, no sudo) for every fleet FQDN + DNS/Spot IP. Each cell shows a **recommendation** and highlights the one primary button that is visible. `bootstrap-ssh` and destructive `reinstall` stay CLI-only.
 
-Each node card shows the **bare repo count** and SHAs from that host’s **`GET`/`POST /api/status`** (`schema_version` ≥ 2: local git tips, no git-daemon; ≥ 3: **IPFS seed** `self.ipfs` / `ipfs_ok`; ≥ 5: origin **HTTP** `http` blob — 1h mix, hosts, html paths — plus optional **`GET /api/rum`** p75). Operator APIs are the **node FQDN** only (parked Hosts keep `/api/*` as site files). Older nodes fall back to `POST /api/config` plus `git ls-remote --heads` with **4 concurrent connections per host** (under git daemon `--max-connections`, default **64**). **Missing** means a catalog name is not on disk. An `ls-remote` timeout is **not** treated as missing. SHA drift still marks `sync`. Tray lines look like `iad1  up  12 repos` (or `missing` / `drift` when out of sync). **Quit** stops the user service (`systemctl --user stop relay-ops`) or exits a foreground `serve`. **Browse** lists files over **HTTPS** (`GET https://{repo}.{node}/` with **`X-Relay-Tree: 1`**, blob GET for file bodies). Older nodes fall back to `git://` partial clone (`blob:none`). Observer; no SSH.
+Each node card shows the **bare repo count** and SHAs from that host’s **`GET`/`POST /api/status`** (`schema_version` ≥ 2: local git tips, no git-daemon; ≥ 3: **IPFS seed** `self.ipfs` / `ipfs_ok`; ≥ 5: origin **HTTP** `http` blob — 1h mix, hosts, html paths — plus optional **`GET /api/rum`** p75 + theater counts). Operator APIs are the **node FQDN** only (parked Hosts keep `/api/*` as site files). Older nodes fall back to `POST /api/config` plus `git ls-remote --heads` with **4 concurrent connections per host** (under git daemon `--max-connections`, default **64**). **Missing** means a catalog name is not on disk. An `ls-remote` timeout is **not** treated as missing. SHA drift still marks `sync`. Tray lines look like `iad1  up  12 repos` (or `missing` / `drift` when out of sync). **Quit** stops the user service (`systemctl --user stop relay-ops`) or exits a foreground `serve`. **Browse** lists files over **HTTPS** (`GET https://{repo}.{node}/` with **`X-Relay-Tree: 1`**, blob GET for file bodies). Older nodes fall back to `git://` partial clone (`blob:none`). Observer; no SSH.
+
+### Theater / seed signals (errors only — no analytics)
+
+Fleet is the operator view for “published media not loading” — not a log inbox and **not** product analytics. Client browsers may beacon **typed failures** (and optional coarse RUM vitals); we do **not** track clicks, scrolls, heatmaps, or session behavior — that would invade viewer privacy. No Sentry / analytics SaaS.
+
+| Watch | Meaning |
+|-------|---------|
+| **IPFS ok / seed N/M** | Kubo up; per-repo cached vs CID count from status. Lag (uncached CIDs) warns on the node and on each repo row. |
+| **HTTP ×4xx/×5xx + park host ★** | Origin pressure; `flashbackrepository.org` sorted first in the host strip. |
+| **theater major/24h + codes** | Typed **error** beacons (`wasm_hard_fail`, `mirrors_exhausted`, …) aggregated on the node via `POST/GET /api/rum`. Warn styling when major ≥ 5/24h. Minor (`js_error`, …) is secondary. |
+
+Enable RUM with **`RELAY_RUM_ENABLED=1`** (retention `RELAY_RUM_RETENTION_DAYS`, default 30). Process journals stay on the node (`journalctl -u relay-gateway`); Fleet shows which repo/node is sick. Park-site privacy + beacon codes: fan-edits `docs/TELEMETRY.md` (sibling checkout).
 
 Background probes are **300s** while the fleet is up (`probe_interval_secs`). If any node is down or DNS-empty (typical right after login, before the resolver is ready), retry every **10s** (`probe_interval_down_secs`): DNS lookup only when names fail, then TCP 22/443/git, and **HTTPS / git-daemon only after 443 is open**. Empty-DNS retries never leave the laptop.
 

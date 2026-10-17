@@ -2,6 +2,10 @@
   "schema": "relay.ops.fleet.v1",
   "fleetIngress": "fleet.relaygateway.net",
   "gitPort": 9418,
+  "mail": {
+    "host": "iad1.relaygateway.net",
+    "maildir": "/home/arl/Maildir"
+  },
   "nodes": [
     {
       "fqdn": "iad1.relaygateway.net",

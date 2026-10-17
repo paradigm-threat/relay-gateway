@@ -196,7 +196,7 @@ If you previously used the **iptables :80 → :8080** redirect, **`install-caddy
 
 **State:** **`/opt/relay/state/features.json`** records enabled features, ports, and **inventories** (Piper voices, Argos language pairs, npm package list). **`relay-gateway`** reads it (`RELAY_FEATURES_STATE_PATH` in the unit file) and exposes it under **`POST /api/config`** → **`installed_features`** (`manifest` + `summary`). Peers and clients use that to see what each node offers.
 
-**Feature catalog (Piper TTS, offline translation, npm extensions, subfeatures):** **[INSTALL_FEATURES.md](./INSTALL_FEATURES.md)**.
+**Feature catalog (Piper TTS, offline translation, npm extensions, LibreTranslate, inbound mail, subfeatures):** **[INSTALL_FEATURES.md](./INSTALL_FEATURES.md)**. Receive-only OpenSMTPD catcher + **relay-ops Inbox:** **[MAIL_INBOUND.md](./MAIL_INBOUND.md)** (`RELAY_FEAT_INBOUND_MAIL=1` + `RELAY_MAIL_DOMAINS=…`; DNS MX is manual).
 
 **Non-interactive install (CI/cloud-init):**
 

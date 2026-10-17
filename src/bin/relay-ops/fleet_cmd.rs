@@ -643,6 +643,10 @@ pub fn features_env(
     translation: Option<&str>,
     translation_pkgs: Option<&str>,
     libretranslate: Option<&str>,
+    inbound_mail: Option<&str>,
+    mail_domains: Option<&str>,
+    mail_user: Option<&str>,
+    mail_hostname: Option<&str>,
 ) -> String {
     let mut s = String::from("RELAY_INSTALL_NONINTERACTIVE=1\n");
     s.push_str(&format!("RELAY_FEAT_PIPER={}\n", piper.unwrap_or("0")));
@@ -659,6 +663,19 @@ pub fn features_env(
         "RELAY_FEAT_LIBRETRANSLATE={}\n",
         libretranslate.unwrap_or("0")
     ));
+    s.push_str(&format!(
+        "RELAY_FEAT_INBOUND_MAIL={}\n",
+        inbound_mail.unwrap_or("0")
+    ));
+    if let Some(d) = mail_domains.filter(|v| !v.is_empty()) {
+        s.push_str(&format!("RELAY_MAIL_DOMAINS={d}\n"));
+    }
+    if let Some(u) = mail_user.filter(|v| !v.is_empty()) {
+        s.push_str(&format!("RELAY_MAIL_USER={u}\n"));
+    }
+    if let Some(h) = mail_hostname.filter(|v| !v.is_empty()) {
+        s.push_str(&format!("RELAY_MAIL_HOSTNAME={h}\n"));
+    }
     s
 }
 
@@ -1016,19 +1033,34 @@ mod tests {
 
     #[test]
     fn features_env_defaults_off() {
-        let s = features_env(None, None, None, None, None);
+        let s = features_env(None, None, None, None, None, None, None, None, None);
         assert!(s.contains("RELAY_FEAT_PIPER=0"));
         assert!(s.contains("RELAY_FEAT_NPM_PKGS=\n"));
+        assert!(s.contains("RELAY_FEAT_INBOUND_MAIL=0"));
         assert!(s.contains("RELAY_INSTALL_NONINTERACTIVE=1"));
     }
 
     #[test]
     fn features_env_sets_flags() {
-        let s = features_env(Some("1"), Some("a,b"), Some("1"), Some("x"), Some("0"));
+        let s = features_env(
+            Some("1"),
+            Some("a,b"),
+            Some("1"),
+            Some("x"),
+            Some("0"),
+            Some("1"),
+            Some("example.com mail.example.com"),
+            Some("relaymail"),
+            Some("mail.example.com"),
+        );
         assert!(s.contains("RELAY_FEAT_PIPER=1"));
         assert!(s.contains("RELAY_FEAT_NPM_PKGS=a,b"));
         assert!(s.contains("RELAY_FEAT_TRANSLATION=1"));
         assert!(s.contains("RELAY_FEAT_LIBRETRANSLATE=0"));
+        assert!(s.contains("RELAY_FEAT_INBOUND_MAIL=1"));
+        assert!(s.contains("RELAY_MAIL_DOMAINS=example.com mail.example.com"));
+        assert!(s.contains("RELAY_MAIL_USER=relaymail"));
+        assert!(s.contains("RELAY_MAIL_HOSTNAME=mail.example.com"));
     }
 
     #[test]

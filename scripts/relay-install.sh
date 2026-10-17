@@ -5,6 +5,10 @@
 # and exposed at runtime via relay-gateway /api/config.
 #
 # Non-interactive: RELAY_INSTALL_NONINTERACTIVE=1 RELAY_FEAT_PIPER=1 RELAY_FEAT_NPM_PKGS="songwalker-js"
+# Optional receive-only inbox (OpenSMTPD → Maildir; no outbound):
+#   RELAY_FEAT_INBOUND_MAIL=1 RELAY_MAIL_DOMAINS="example.com mail.example.com" \
+#   RELAY_MAIL_USER=relaymail RELAY_MAIL_HOSTNAME=mail.example.com
+#   DNS MX is a separate operator step — see docs/MAIL_INBOUND.md / docs/INSTALL_FEATURES.md
 # Vercel DNS (first step of install unless skipped):
 #   RELAY_PUBLIC_FQDN=atlanta1.relaygateway.net VERCEL_API_TOKEN=... sudo -E ./install.sh install
 #   Optional: VERCEL_TEAM_ID, RELAY_VERCEL_DOMAIN (zone), RELAY_SKIP_VERCEL_DNS=1
@@ -42,6 +46,9 @@ IPFS_API_PORT="${RELAY_IPFS_API_PORT:-5001}"
 IPFS_GATEWAY_PORT="${RELAY_IPFS_GATEWAY_PORT:-8081}"
 IPFS_SWARM_PORT="${RELAY_IPFS_SWARM_PORT:-4001}"
 IPFS_PATH_DIR="${RELAY_IPFS_PATH:-$INSTALL/ipfs}"
+# Receive-only OpenSMTPD catch-all (optional). Defaults suit a fresh node; override for PT (arl / paradigmthreat.net).
+MAIL_USER_DEFAULT="${RELAY_MAIL_USER:-relaymail}"
+MAIL_HOSTNAME_DEFAULT="${RELAY_MAIL_HOSTNAME:-}"
 
 # Semicolon-separated FQDNs; used when RELAY_MASTER_PEER_LIST is unset (non-interactive) or when the operator accepts the interactive default (Enter).
 DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-iad1.relaygateway.net;ord1.relaygateway.net;hkg1.relaygateway.net}"
@@ -91,6 +98,63 @@ map_pkg_xz() {
     apt) echo xz-utils ;;
     *) echo xz ;;
   esac
+}
+
+map_pkg_opensmtpd() {
+  case "$(detect_pm)" in
+    apt|dnf|yum|zypper|apk|pacman) echo opensmtpd ;;
+    *) echo opensmtpd ;;
+  esac
+}
+
+# Normalize "a.com, b.com" / "a.com b.com" → space-separated unique tokens.
+normalize_mail_domains() {
+  local raw="$1" out=() seen=" " tok
+  raw="${raw//,/ }"
+  read -ra arr <<<"$raw"
+  for tok in "${arr[@]}"; do
+    tok="${tok// /}"
+    [[ -n "$tok" ]] || continue
+    if [[ "$seen" != *" $tok "* ]]; then
+      out+=("$tok")
+      seen+="$tok "
+    fi
+  done
+  printf '%s' "${out[*]}"
+}
+
+mail_maildir_for_user() {
+  local user="$1"
+  if [[ -n "${RELAY_MAIL_MAILDIR:-}" ]]; then
+    printf '%s' "$RELAY_MAIL_MAILDIR"
+    return
+  fi
+  local home
+  home="$(getent passwd "$user" 2>/dev/null | cut -d: -f6 || true)"
+  if [[ -n "$home" ]]; then
+    printf '%s/Maildir' "$home"
+  else
+    printf '/home/%s/Maildir' "$user"
+  fi
+}
+
+mail_default_hostname() {
+  local domains="$1" first
+  if [[ -n "${RELAY_MAIL_HOSTNAME:-}" ]]; then
+    printf '%s' "$RELAY_MAIL_HOSTNAME"
+    return
+  fi
+  if [[ -n "$MAIL_HOSTNAME_DEFAULT" ]]; then
+    printf '%s' "$MAIL_HOSTNAME_DEFAULT"
+    return
+  fi
+  read -r first _ <<<"$domains"
+  [[ -n "$first" ]] || { printf 'localhost'; return; }
+  if [[ "$first" == mail.* ]]; then
+    printf '%s' "$first"
+  else
+    printf 'mail.%s' "$first"
+  fi
 }
 
 ensure_user_relay() {
@@ -173,9 +237,15 @@ piper_install_ok() {
 
 write_features_json() {
   local piper_en="$1" piper_voices_json="$2" piper_default_voice="$3" npm_en="$4" npm_pkgs_json="$5" trans_en="$6" trans_pkgs_json="$7" lt_en="$8"
+  local mail_en="${9:-0}" mail_domains_json="${10:-[]}" mail_user="${11:-}" mail_hostname="${12:-}"
   mkdir -p "$STATE_DIR"
-  local model
+  local model mail_maildir=""
   model="$(piper_model_path_for_voice "$piper_default_voice")"
+  if [[ "$mail_en" == "1" ]]; then
+    [[ -n "$mail_user" ]] || mail_user="$MAIL_USER_DEFAULT"
+    mail_maildir="$(mail_maildir_for_user "$mail_user")"
+    [[ -n "$mail_hostname" ]] || mail_hostname="$(mail_default_hostname "$(echo "$mail_domains_json" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)))' 2>/dev/null || true)")"
+  fi
   RELAY_WFJ_INSTALL="$INSTALL" \
   RELAY_WFJ_HTTP_PORT="$HTTP_PORT" \
   RELAY_WFJ_GIT_PORT="$GIT_PORT" \
@@ -192,6 +262,11 @@ write_features_json() {
   RELAY_WFJ_TRANS_PKGS_JSON="$trans_pkgs_json" \
   RELAY_WFJ_LT_EN="$lt_en" \
   RELAY_WFJ_LT_LOAD="${RELAY_LIBRETRANSLATE_LOAD_ONLY:-en,ru}" \
+  RELAY_WFJ_MAIL_EN="$mail_en" \
+  RELAY_WFJ_MAIL_DOMAINS_JSON="$mail_domains_json" \
+  RELAY_WFJ_MAIL_USER="$mail_user" \
+  RELAY_WFJ_MAIL_MAILDIR="$mail_maildir" \
+  RELAY_WFJ_MAIL_HOSTNAME="$mail_hostname" \
   RELAY_WFJ_FEATURES_JSON="$FEATURES_JSON" \
   RELAY_WFJ_MODEL="$model" \
     python3 <<'PY'
@@ -217,6 +292,11 @@ lt = os.environ["RELAY_WFJ_LT_EN"] == "1"
 lt_load = os.environ.get("RELAY_WFJ_LT_LOAD", "en,ru").strip() or "en,ru"
 pkgs = json.loads(os.environ["RELAY_WFJ_NPM_PKGS_JSON"])
 trans_pkgs = json.loads(os.environ["RELAY_WFJ_TRANS_PKGS_JSON"])
+mail = os.environ.get("RELAY_WFJ_MAIL_EN", "0") == "1"
+mail_domains = json.loads(os.environ.get("RELAY_WFJ_MAIL_DOMAINS_JSON") or "[]")
+mail_user = (os.environ.get("RELAY_WFJ_MAIL_USER") or "").strip() or None
+mail_maildir = (os.environ.get("RELAY_WFJ_MAIL_MAILDIR") or "").strip() or None
+mail_hostname = (os.environ.get("RELAY_WFJ_MAIL_HOSTNAME") or "").strip() or None
 
 data = {
     "schema_version": ver,
@@ -268,6 +348,20 @@ data = {
             "translate_path": "/translate" if lt else None,
             "languages_path": "/languages" if lt else None,
         },
+        "inbound_mail": {
+            "enabled": mail,
+            "expected": mail,
+            "description": "Receive-only OpenSMTPD catch-all → Maildir (no outbound SMTP). Wire DNS MX separately.",
+            "mta": "opensmtpd" if mail else None,
+            "service": "opensmtpd" if mail else None,
+            "listen_port": 25 if mail else None,
+            "domains": mail_domains if mail else [],
+            "local_user": mail_user if mail else None,
+            "maildir": mail_maildir if mail else None,
+            "smtp_hostname": mail_hostname if mail else None,
+            "config_path": "/etc/smtpd.conf" if mail else None,
+            "outbound": False,
+        },
         "core": {
             "relay_server": True,
             "relay_git_daemon": True,
@@ -287,6 +381,80 @@ with open(features_path, "w", encoding="utf-8") as f:
     json.dump(strip_none(data), f, indent=2)
 PY
   chown relay:relay "$FEATURES_JSON" 2>/dev/null || true
+}
+
+# Install/configure OpenSMTPD receive-only catch-all → Maildir. Does not configure DNS MX.
+install_inbound_mail() {
+  local domains="$1" user="$2" hostname="$3"
+  domains="$(normalize_mail_domains "$domains")"
+  [[ -n "$domains" ]] || die "inbound mail enabled but RELAY_MAIL_DOMAINS is empty"
+  [[ -n "$user" ]] || user="$MAIL_USER_DEFAULT"
+  [[ -n "$hostname" ]] || hostname="$(mail_default_hostname "$domains")"
+
+  local pm pkg maildir home
+  pm="$(detect_pm)"
+  pkg="$(map_pkg_opensmtpd)"
+  install_packages "$pm" $pkg
+
+  if ! id "$user" &>/dev/null; then
+    useradd -m -s /bin/bash -c "Relay inbound mail" "$user" \
+      || die "failed to create mail user: $user"
+    log "Created local mail user: $user"
+  fi
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  [[ -n "$home" ]] || die "no home directory for mail user: $user"
+  maildir="$(mail_maildir_for_user "$user")"
+  mkdir -p "$maildir/new" "$maildir/cur" "$maildir/tmp"
+  chown -R "$user:$user" "$home"
+  chmod 700 "$maildir"
+
+  local domain_csv="" vuser_csv="" d
+  for d in $domains; do
+    [[ -n "$domain_csv" ]] && domain_csv+=", "
+    domain_csv+="$d"
+    [[ -n "$vuser_csv" ]] && vuser_csv+=", "
+    vuser_csv+="\"@$d\" = $user"
+  done
+
+  local conf="/etc/smtpd.conf"
+  if [[ -f "$conf" ]] && [[ ! -f "${conf}.relay-install.bak" ]]; then
+    cp -a "$conf" "${conf}.relay-install.bak"
+  fi
+  cat >"$conf" <<EOF
+# Receive-only Relay inbound mail (installer-managed).
+# Catch-all → local user ${user} Maildir. No open relay. No outbound.
+# DNS MX is configured separately — see docs/MAIL_INBOUND.md
+
+table domains { ${domain_csv} }
+table vusers { ${vuser_csv} }
+
+listen on 0.0.0.0 port 25 hostname ${hostname}
+listen on :: port 25 hostname ${hostname}
+
+action "inbound" maildir "${maildir}" user ${user} virtual <vusers>
+match from any for domain <domains> action "inbound"
+EOF
+  chmod 644 "$conf"
+  mkdir -p "$STATE_DIR"
+  cp -a "$conf" "$STATE_DIR/opensmtpd-inbound.conf"
+
+  if command -v smtpd >/dev/null 2>&1; then
+    smtpd -n -f "$conf" || die "opensmtpd config check failed ($conf)"
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable opensmtpd 2>/dev/null || systemctl enable smtpd 2>/dev/null || true
+    systemctl restart opensmtpd 2>/dev/null || systemctl restart smtpd 2>/dev/null \
+      || die "failed to restart opensmtpd"
+  fi
+  log "Inbound mail ready: domains=[$domains] user=$user maildir=$maildir hostname=$hostname (wire DNS MX separately)"
+}
+
+disable_inbound_mail() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now opensmtpd 2>/dev/null || systemctl disable --now smtpd 2>/dev/null || true
+  fi
+  log "Inbound mail disabled (opensmtpd stopped). Maildir left in place; remove DNS MX if this host was published."
 }
 
 install_piper_artifacts() {
@@ -978,6 +1146,7 @@ maybe_enable_reconcile_timer() {
 
 prompt_features() {
   local piper=0 piper_voices="$PIPER_DEFAULT_VOICE_IDS" piper_default_voice="$PIPER_DEFAULT_VOICE_ID_DEFAULT" npm_en=0 npm_pkgs="songwalker-js" trans=0 trans_pkgs="" lt=0
+  local mail=0 mail_domains="${RELAY_MAIL_DOMAINS:-}" mail_user="${RELAY_MAIL_USER:-$MAIL_USER_DEFAULT}" mail_hostname="${RELAY_MAIL_HOSTNAME:-}"
   if [[ "${RELAY_INSTALL_NONINTERACTIVE:-}" == "1" ]]; then
     [[ "${RELAY_FEAT_PIPER:-0}" == "1" ]] && piper=1
     [[ -n "${RELAY_FEAT_PIPER_VOICES:-}" ]] && piper_voices="$(piper_normalize_voice_ids "${RELAY_FEAT_PIPER_VOICES}")"
@@ -989,12 +1158,23 @@ prompt_features() {
     [[ "${RELAY_FEAT_TRANSLATION:-0}" == "1" ]] && trans=1
     trans_pkgs="${RELAY_FEAT_TRANSLATION_PKGS:-}"
     [[ "${RELAY_FEAT_LIBRETRANSLATE:-0}" == "1" ]] && lt=1
-    printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' "$piper" "$piper_voices" "$piper_default_voice" "$npm_en" "$npm_pkgs" "$trans" "$trans_pkgs" "$lt"
+    [[ "${RELAY_FEAT_INBOUND_MAIL:-0}" == "1" ]] && mail=1
+    mail_domains="$(normalize_mail_domains "${RELAY_MAIL_DOMAINS:-}")"
+    mail_user="${RELAY_MAIL_USER:-$MAIL_USER_DEFAULT}"
+    mail_hostname="${RELAY_MAIL_HOSTNAME:-}"
+    if [[ "$mail" == "1" && -z "$mail_domains" ]]; then
+      die "RELAY_FEAT_INBOUND_MAIL=1 requires RELAY_MAIL_DOMAINS (e.g. example.com mail.example.com)"
+    fi
+    [[ "$mail" == "1" && -z "$mail_hostname" ]] && mail_hostname="$(mail_default_hostname "$mail_domains")"
+    printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
+      "$piper" "$piper_voices" "$piper_default_voice" "$npm_en" "$npm_pkgs" "$trans" "$trans_pkgs" "$lt" \
+      "$mail" "$mail_domains" "$mail_user" "$mail_hostname"
     return
   fi
   if [[ ! -t 0 ]]; then
-    log "non-TTY: set RELAY_INSTALL_NONINTERACTIVE=1 … RELAY_FEAT_LIBRETRANSLATE=0/1 RELAY_LIBRETRANSLATE_LOAD_ONLY=en,ru"
-    printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' "0" "$PIPER_DEFAULT_VOICE_IDS" "$PIPER_DEFAULT_VOICE_ID_DEFAULT" "0" "" "0" "" "0"
+    log "non-TTY: set RELAY_INSTALL_NONINTERACTIVE=1 … RELAY_FEAT_LIBRETRANSLATE=0/1 RELAY_FEAT_INBOUND_MAIL=0/1 RELAY_MAIL_DOMAINS=…"
+    printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
+      "0" "$PIPER_DEFAULT_VOICE_IDS" "$PIPER_DEFAULT_VOICE_ID_DEFAULT" "0" "" "0" "" "0" "0" "" "$MAIL_USER_DEFAULT" ""
     return
   fi
   read -r -p "Enable Piper TTS (HTTP on port $PIPER_HTTP_PORT)? [y/N] " a
@@ -1027,7 +1207,23 @@ prompt_features() {
     read -r -p "LibreTranslate --load-only language codes [en,ru]: " lo
     [[ -n "$lo" ]] && RELAY_LIBRETRANSLATE_LOAD_ONLY="$lo"
   fi
-  printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' "$piper" "$piper_voices" "$piper_default_voice" "$npm_en" "$npm_pkgs" "$trans" "$trans_pkgs" "$lt"
+  echo "Inbound mail (receive-only OpenSMTPD → Maildir; no outbound). DNS MX is a separate step."
+  read -r -p "Enable inbound mail catcher on this node? [y/N] " m
+  [[ "${m,,}" == "y" ]] && mail=1
+  if [[ "$mail" == "1" ]]; then
+    read -r -p "Catch-all domains (space-separated) [required]: " md
+    mail_domains="$(normalize_mail_domains "$md")"
+    [[ -n "$mail_domains" ]] || die "inbound mail requires at least one domain"
+    read -r -p "Local UNIX mailbox user [$MAIL_USER_DEFAULT]: " mu
+    [[ -n "$mu" ]] && mail_user="$mu"
+    local dh
+    dh="$(mail_default_hostname "$mail_domains")"
+    read -r -p "SMTP banner hostname [$dh]: " mh
+    [[ -n "$mh" ]] && mail_hostname="$mh" || mail_hostname="$dh"
+  fi
+  printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
+    "$piper" "$piper_voices" "$piper_default_voice" "$npm_en" "$npm_pkgs" "$trans" "$trans_pkgs" "$lt" \
+    "$mail" "$mail_domains" "$mail_user" "$mail_hostname"
 }
 
 pkgs_to_json_array() {
@@ -1050,8 +1246,8 @@ pkgs_to_json_array() {
 bootstrap_features_json_if_missing() {
   [[ -f "$FEATURES_JSON" ]] && return 0
   [[ -f "$INSTALL/bin/$RELAY_HTTP_BIN" ]] || return 0
-  log "No $FEATURES_JSON — bootstrapping minimal state (Piper/npm/translation off). Use reconfigure-features to enable."
-  write_features_json 0 0 "[]" 0 "$(pkgs_to_json_array "")" 0
+  log "No $FEATURES_JSON — bootstrapping minimal state (optional features off). Use reconfigure-features to enable."
+  write_features_json 0 "[]" "$PIPER_DEFAULT_VOICE_ID_DEFAULT" 0 "[]" 0 "[]" 0 0 "[]" "$MAIL_USER_DEFAULT" ""
 }
 
 # --- Vercel DNS (install-time; same token env as Docker/K8s: VERCEL_API_TOKEN, optional VERCEL_TEAM_ID) ---
@@ -1480,12 +1676,16 @@ do_install() {
   configure_vercel_dns_first
   ensure_base_deps
   ensure_user_relay
-  { IFS= read -r -d '' piper_en && IFS= read -r -d '' piper_voices && IFS= read -r -d '' piper_default_voice && IFS= read -r -d '' npm_en && IFS= read -r -d '' npm_pkgs && IFS= read -r -d '' trans_en && IFS= read -r -d '' trans_pkgs && IFS= read -r -d '' lt_en; } < <(prompt_features)
-  local piper_voices_json npm_json trans_json
+  local piper_en piper_voices piper_default_voice npm_en npm_pkgs trans_en trans_pkgs lt_en
+  local mail_en mail_domains mail_user mail_hostname
+  { IFS= read -r -d '' piper_en && IFS= read -r -d '' piper_voices && IFS= read -r -d '' piper_default_voice && IFS= read -r -d '' npm_en && IFS= read -r -d '' npm_pkgs && IFS= read -r -d '' trans_en && IFS= read -r -d '' trans_pkgs && IFS= read -r -d '' lt_en && IFS= read -r -d '' mail_en && IFS= read -r -d '' mail_domains && IFS= read -r -d '' mail_user && IFS= read -r -d '' mail_hostname; } < <(prompt_features)
+  local piper_voices_json npm_json trans_json mail_domains_json
   piper_voices_json="$(pkgs_to_json_array "$piper_voices")"
   npm_json="$(pkgs_to_json_array "$npm_pkgs")"
   trans_json="$(pkgs_to_json_array "$trans_pkgs")"
-  write_features_json "$piper_en" "$piper_voices_json" "$piper_default_voice" "$npm_en" "$npm_json" "$trans_en" "$trans_json" "$lt_en"
+  mail_domains_json="$(pkgs_to_json_array "$mail_domains")"
+  write_features_json "$piper_en" "$piper_voices_json" "$piper_default_voice" "$npm_en" "$npm_json" "$trans_en" "$trans_json" "$lt_en" \
+    "$mail_en" "$mail_domains_json" "$mail_user" "$mail_hostname"
   install_binaries
   write_gitconfig_hooks
   write_systemd_core
@@ -1496,6 +1696,9 @@ do_install() {
   fi
   if [[ "$lt_en" == "1" ]]; then
     install_libretranslate_artifacts
+  fi
+  if [[ "$mail_en" == "1" ]]; then
+    install_inbound_mail "$mail_domains" "$mail_user" "$mail_hostname"
   fi
   refresh_features_inventory
 
@@ -1521,7 +1724,7 @@ do_install() {
 
   maybe_validate_deploy_ssh_key
   maybe_ufw
-  log "Install complete. HTTP :$HTTP_PORT  git :$GIT_PORT  LibreTranslate :$LIBRETRANSLATE_PORT (if enabled)  config: POST /api/config"
+  log "Install complete. HTTP :$HTTP_PORT  git :$GIT_PORT  LibreTranslate :$LIBRETRANSLATE_PORT (if enabled)  inbound mail :25 (if enabled)  config: POST /api/config"
 }
 
 do_update() {
@@ -1565,8 +1768,9 @@ do_repair() {
   piper_en="$(jq -r '.features.piper_tts.enabled // false' "$FEATURES_JSON" 2>/dev/null || echo false)"
   npm_en="$(jq -r '.features.npm_extensions.enabled // false' "$FEATURES_JSON" 2>/dev/null || echo false)"
   trans_en="$(jq -r '.features.text_translation.enabled // false' "$FEATURES_JSON" 2>/dev/null || echo false)"
-  local lt_en
+  local lt_en mail_en
   lt_en="$(jq -r '.features.libretranslate_api.enabled // false' "$FEATURES_JSON" 2>/dev/null || echo false)"
+  mail_en="$(jq -r '.features.inbound_mail.enabled // false' "$FEATURES_JSON" 2>/dev/null || echo false)"
   chown -R relay:relay "$INSTALL"
   install_binaries
   write_gitconfig_hooks
@@ -1604,6 +1808,13 @@ do_repair() {
       systemctl restart libretranslate 2>/dev/null || true
     fi
   fi
+  if [[ "$mail_en" == "true" ]]; then
+    local md mu mh
+    md="$(jq -r '.features.inbound_mail.domains // [] | join(" ")' "$FEATURES_JSON" 2>/dev/null || true)"
+    mu="$(jq -r '.features.inbound_mail.local_user // empty' "$FEATURES_JSON" 2>/dev/null || true)"
+    mh="$(jq -r '.features.inbound_mail.smtp_hostname // empty' "$FEATURES_JSON" 2>/dev/null || true)"
+    [[ -n "$md" ]] && install_inbound_mail "$md" "$mu" "$mh"
+  fi
   refresh_features_inventory
   append_relay_env_catalog_defaults
   append_relay_env_web_assets_defaults
@@ -1628,14 +1839,18 @@ do_reconfigure_features() {
     read -r -p "[y/N] " c
     [[ "${c,,}" == "y" ]] || exit 0
   fi
-  { IFS= read -r -d '' piper_en && IFS= read -r -d '' piper_voices && IFS= read -r -d '' piper_default_voice && IFS= read -r -d '' npm_en && IFS= read -r -d '' npm_pkgs && IFS= read -r -d '' trans_en && IFS= read -r -d '' trans_pkgs && IFS= read -r -d '' lt_en; } < <(prompt_features)
-  local piper_voices_json npm_json trans_json
+  local piper_en piper_voices piper_default_voice npm_en npm_pkgs trans_en trans_pkgs lt_en
+  local mail_en mail_domains mail_user mail_hostname
+  { IFS= read -r -d '' piper_en && IFS= read -r -d '' piper_voices && IFS= read -r -d '' piper_default_voice && IFS= read -r -d '' npm_en && IFS= read -r -d '' npm_pkgs && IFS= read -r -d '' trans_en && IFS= read -r -d '' trans_pkgs && IFS= read -r -d '' lt_en && IFS= read -r -d '' mail_en && IFS= read -r -d '' mail_domains && IFS= read -r -d '' mail_user && IFS= read -r -d '' mail_hostname; } < <(prompt_features)
+  local piper_voices_json npm_json trans_json mail_domains_json
   piper_voices_json="$(pkgs_to_json_array "$piper_voices")"
   npm_json="$(pkgs_to_json_array "$npm_pkgs")"
   trans_json="$(pkgs_to_json_array "$trans_pkgs")"
+  mail_domains_json="$(pkgs_to_json_array "$mail_domains")"
   systemctl stop relay-tts-piper 2>/dev/null || true
   systemctl stop libretranslate 2>/dev/null || true
-  write_features_json "$piper_en" "$piper_voices_json" "$piper_default_voice" "$npm_en" "$npm_json" "$trans_en" "$trans_json" "$lt_en"
+  write_features_json "$piper_en" "$piper_voices_json" "$piper_default_voice" "$npm_en" "$npm_json" "$trans_en" "$trans_json" "$lt_en" \
+    "$mail_en" "$mail_domains_json" "$mail_user" "$mail_hostname"
   if [[ "$piper_en" == "1" ]]; then
     rm -rf "$INSTALL/lib/piper" 2>/dev/null || true
     install_piper_artifacts "$piper_voices" "$piper_default_voice"
@@ -1662,6 +1877,11 @@ do_reconfigure_features() {
   else
     systemctl disable libretranslate 2>/dev/null || true
     systemctl stop libretranslate 2>/dev/null || true
+  fi
+  if [[ "$mail_en" == "1" ]]; then
+    install_inbound_mail "$mail_domains" "$mail_user" "$mail_hostname"
+  else
+    disable_inbound_mail
   fi
   refresh_features_inventory
   ensure_ipfs_kubo
@@ -1701,6 +1921,9 @@ maybe_ufw() {
   local lt_u
   lt_u="$(jq -r '.features.libretranslate_api.enabled // false' "$FEATURES_JSON" 2>/dev/null || echo false)"
   [[ "$lt_u" == "true" ]] && ufw allow "$LIBRETRANSLATE_PORT/tcp" 2>/dev/null || true
+  local mail_u
+  mail_u="$(jq -r '.features.inbound_mail.enabled // false' "$FEATURES_JSON" 2>/dev/null || echo false)"
+  [[ "$mail_u" == "true" ]] && ufw allow 25/tcp 2>/dev/null || true
   case "${RELAY_INSTALL_IPFS:-1}" in
     0|false|FALSE|no|NO) ;;
     *)
@@ -1730,7 +1953,7 @@ case "${1:-install}" in
     echo "Usage: $0 {install|update|repair|reconfigure-features|refresh-features}"
     echo "  install   — Vercel DNS first (unless skipped), then base deps; Piper + npm + translation prompts (or RELAY_INSTALL_NONINTERACTIVE=1)"
     echo "  DNS env: RELAY_PUBLIC_FQDN, VERCEL_API_TOKEN, optional VERCEL_TEAM_ID, RELAY_VERCEL_DOMAIN, RELAY_SKIP_VERCEL_DNS=1"
-    echo "  Features env: RELAY_FEAT_PIPER, RELAY_FEAT_PIPER_VOICES, RELAY_FEAT_PIPER_DEFAULT_VOICE, RELAY_FEAT_PIPER_CACHE_TTL_SECONDS, RELAY_FEAT_PIPER_CACHE_MAX_FILES, RELAY_FEAT_NPM_PKGS, RELAY_FEAT_TRANSLATION, RELAY_FEAT_TRANSLATION_PKGS, RELAY_FEAT_LIBRETRANSLATE, RELAY_LIBRETRANSLATE_LOAD_ONLY (see docs/INSTALL_FEATURES.md)"
+    echo "  Features env: RELAY_FEAT_PIPER, RELAY_FEAT_PIPER_VOICES, RELAY_FEAT_PIPER_DEFAULT_VOICE, RELAY_FEAT_PIPER_CACHE_TTL_SECONDS, RELAY_FEAT_PIPER_CACHE_MAX_FILES, RELAY_FEAT_NPM_PKGS, RELAY_FEAT_TRANSLATION, RELAY_FEAT_TRANSLATION_PKGS, RELAY_FEAT_LIBRETRANSLATE, RELAY_LIBRETRANSLATE_LOAD_ONLY, RELAY_FEAT_INBOUND_MAIL, RELAY_MAIL_DOMAINS, RELAY_MAIL_USER, RELAY_MAIL_HOSTNAME, RELAY_MAIL_MAILDIR (see docs/INSTALL_FEATURES.md / docs/MAIL_INBOUND.md)"
     echo "  Node env: RELAY_SERVER_ID, RELAY_PUBLIC_HOSTNAME (if RELAY_SKIP_VERCEL_DNS=1), RELAY_MASTER_PEER_LIST (override; default mesh masters: $DEFAULT_RELAY_MASTER_PEER_LIST)"
     echo "  Deploy SSH policy (optional): RELAY_VALIDATE_DEPLOY_SSH_KEY=1, RELAY_DEPLOY_SSH_USER (default ari), RELAY_DEPLOY_SSH_KEY_FINGERPRINT (substring from ssh-keygen -lf -E sha256) — docs/SECRETS_POLICY.md"
     echo "  Startup catalog sync (optional): RELAY_STARTUP_CATALOG_SYNC=0 to skip ExecStartPre (default 1 when RELAY_MASTER_CATALOG_PATH has relay-catalog.json + scripts/sync-relay-catalog.sh); Slack: RELAY_NOTIFY_SLACK_WEBHOOK_URL"
@@ -1738,7 +1961,7 @@ case "${1:-install}" in
     echo "  Kubo/IPFS (default on): RELAY_INSTALL_IPFS=0 to skip; RELAY_KUBO_VERSION (default v0.32.1). API 127.0.0.1:5001, gateway 127.0.0.1:8081, swarm 4001/tcp+udp. Status: GET /api/status on the node FQDN."
     echo "  update    — refresh relay-gateway binaries and systemd unit from this directory; rescan feature inventory; install Kubo if missing"
     echo "  repair    — fix perms, reinstall features from state/features.json (bootstraps minimal state if missing)"
-    echo "  reconfigure-features — change Piper/npm/translation (only supported way to add/remove optional features)"
+    echo "  reconfigure-features — change Piper/npm/translation/LibreTranslate/inbound-mail (only supported way to add/remove optional features)"
     echo "  refresh-features — rescan Piper models + Argos packs into features.json (after adding voices or translation packages)"
     exit 0
     ;;

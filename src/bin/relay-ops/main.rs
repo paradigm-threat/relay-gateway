@@ -5,7 +5,9 @@ mod config;
 mod fleet_cmd;
 mod gitlab;
 mod inventory;
+mod irc_bus;
 mod jobs;
+mod mail;
 mod notify;
 mod probe;
 mod recommend;
@@ -114,6 +116,15 @@ enum Commands {
         translation_pkgs: Option<String>,
         #[arg(long)]
         libretranslate: Option<String>,
+        /// `1` / `0` — receive-only OpenSMTPD catch-all (see docs/MAIL_INBOUND.md).
+        #[arg(long)]
+        inbound_mail: Option<String>,
+        #[arg(long)]
+        mail_domains: Option<String>,
+        #[arg(long)]
+        mail_user: Option<String>,
+        #[arg(long)]
+        mail_hostname: Option<String>,
     },
     /// Remote bare reset + catalog sync.
     #[command(name = "reclone-repo")]
@@ -300,6 +311,10 @@ async fn main() -> Result<()> {
             translation,
             translation_pkgs,
             libretranslate,
+            inbound_mail,
+            mail_domains,
+            mail_user,
+            mail_hostname,
         } => {
             let (fleet, _) = load_fleet(&cfg, only).await?;
             let env_body = fleet_cmd::features_env(
@@ -308,6 +323,10 @@ async fn main() -> Result<()> {
                 translation.as_deref(),
                 translation_pkgs.as_deref(),
                 libretranslate.as_deref(),
+                inbound_mail.as_deref(),
+                mail_domains.as_deref(),
+                mail_user.as_deref(),
+                mail_hostname.as_deref(),
             );
             print!(
                 "{}",

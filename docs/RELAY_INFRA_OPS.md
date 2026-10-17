@@ -6,24 +6,20 @@
 
 | Path | Role |
 |------|------|
-| [`terraform/linode-relay/`](../terraform/linode-relay/) | Linode **`linode/linode`** — atlanta2 (import, do not reprovision) |
 | [`terraform/rackspace-spot-vm/`](../terraform/rackspace-spot-vm/) | Rackspace Spot **VM** (iad1 / ord1 / hkg1); see [`PROVIDER_SPIKE.md`](../terraform/rackspace-spot-vm/PROVIDER_SPIKE.md) |
 | [`terraform/shared-dns/`](../terraform/shared-dns/) | Vercel DNS helpers |
 | [`scripts/relay-master-deploy.sh`](../scripts/relay-master-deploy.sh) | First-time / rebuild install |
 | [`scripts/relay-master-validate.sh`](../scripts/relay-master-validate.sh) | HTTPS + API + mirror smoke tests |
 | [`scripts/relay-fleet.sh`](../scripts/relay-fleet.sh) | Ongoing **`--build update`**, repair, features-set |
+| [`docs/MAIL_INBOUND.md`](MAIL_INBOUND.md) | Optional OpenSMTPD receive-only catcher + **relay-ops Inbox** (PT: MX on **iad1**) |
+| [`docs/INSTALL_FEATURES.md`](INSTALL_FEATURES.md) | Install-time features incl. **`RELAY_FEAT_INBOUND_MAIL`** |
+
+**Live fleet:** `iad1.relaygateway.net;ord1.relaygateway.net;hkg1.relaygateway.net`.  
+**Retired:** `atlanta2`, `atlanta3`, `jp-osa`, Dallas Spot K8s — do not redeploy. Linode TF under `terraform/linode-relay/` is historical only.
 
 Archived Kubernetes Spot path: [`docs/archive/rackspace-spot-k8s/`](archive/rackspace-spot-k8s/).
 
 ## First-time master
-
-### Linode (atlanta2)
-
-1. Import existing VM: [`terraform/linode-relay/IMPORT.md`](../terraform/linode-relay/IMPORT.md)
-2. **`terraform plan`** — must not replace instance
-3. Updates only: **`./scripts/relay-fleet.sh --build update --only=atlanta2.relaygateway.net`**
-
-Do **not** run full **`relay-master-deploy.sh install`** on atlanta2 without explicit approval (risk to `/opt/relay/data`).
 
 ### Rackspace Spot ord1 (VM, Chicago)
 

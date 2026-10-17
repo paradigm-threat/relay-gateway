@@ -165,8 +165,13 @@ Recommended client behaviour:
 | `RELAY_LIBRETRANSLATE_ROOT` | Install directory (default **`/opt/libretranslate`**) |
 | `RELAY_LIBRETRANSLATE_CACHE_TTL` | Translation result cache TTL in seconds for identical **`POST /translate`** requests (default **`2592000`** ≈ 30 days; upstream LibreTranslate is 7 days without the installer patch) |
 | `RELAY_LIBRETRANSLATE_SHARED_STORAGE` | Optional **`LT_SHARED_STORAGE`** for LibreTranslate (default in-app is **`memory://`**). Use e.g. **`redis://127.0.0.1:6379/0`** if you need the translation cache to survive process restarts (**`repair`** / **`update`** re-applies the site-packages patch after **`pip install`**) |
+| `RELAY_FEAT_INBOUND_MAIL=1` | Receive-only OpenSMTPD catch-all → Maildir (**no outbound**); see **[MAIL_INBOUND.md](./MAIL_INBOUND.md)** |
+| `RELAY_MAIL_DOMAINS` | Space/comma-separated domains for the catch-all (required when inbound mail is on) |
+| `RELAY_MAIL_USER` | Local UNIX mailbox user (default **`relaymail`**) |
+| `RELAY_MAIL_HOSTNAME` | SMTP banner hostname (default **`mail.<first-domain>`**) |
+| `RELAY_MAIL_MAILDIR` | Override Maildir path (default **`/home/<user>/Maildir`**) |
 
-Combine with **`RELAY_INSTALL_NONINTERACTIVE=1`** for cloud-init / CI (see **DEPLOY_LINODE.md**). **`repair`** / **`update`** restart LibreTranslate when it is enabled in **`features.json`**; **`ufw`** opens **`RELAY_LIBRETRANSLATE_PORT`** when the feature is on.
+Combine with **`RELAY_INSTALL_NONINTERACTIVE=1`** for cloud-init / CI (see **DEPLOY_LINODE.md**). **`repair`** / **`update`** restart LibreTranslate when it is enabled in **`features.json`**; **`ufw`** opens **`RELAY_LIBRETRANSLATE_PORT`** when the feature is on. When **`inbound_mail`** is enabled, **`ufw`** also opens **`25/tcp`** and **`repair`** / **`reconfigure-features`** re-apply **`/etc/smtpd.conf`**.
 
 ---
 
@@ -203,3 +208,32 @@ curl -sS -X POST "http://dallas1.relaygateway.net:5588/translate" \
 ### TLS
 
 By default this is **HTTP on port 5588**. For HTTPS, terminate TLS in **Caddy/nginx** on **443** and proxy to **`127.0.0.1:5588`**, or use another front door you already run on the node.
+
+---
+
+## Optional: inbound mail catcher (`features.inbound_mail`)
+
+**Goal:** every Relay deployment can optionally accept **legacy SMTP** for OTPs, registrar mail, and future Maildir **triggers** — without ever becoming a sending MTA.
+
+- **Always available in ops:** **relay-ops** UI **Inbox** tab (SSH-reads the Maildir configured in **`ops/fleet.json`** / `RELAY_OPS_MAIL_*`).
+- **Optional on a node:** OpenSMTPD receive-only catch-all installed by **`install.sh`** / **`reconfigure-features`**.
+
+Relay does **not** send mail. SPF for receiving domains should be **`v=spf1 -all`**. Point **MX at exactly one** host; do not multi-MX the mesh.
+
+### Subfeatures
+
+| Field | Description |
+|-------|-------------|
+| **`domains`** | Catch-all domains (`@domain` → local user). |
+| **`local_user`** | UNIX account owning the Maildir. |
+| **`maildir`** | Absolute Maildir path. |
+| **`smtp_hostname`** | Banner / `listen … hostname`. |
+| **`listen_port`** | Always **25**. |
+| **`outbound`** | Always **`false`**. |
+| **`service`** | **`opensmtpd`**. |
+
+### Operations
+
+1. Enable during **`install`** or **`reconfigure-features`** (prompt or **`RELAY_FEAT_INBOUND_MAIL=1`** + **`RELAY_MAIL_DOMAINS`**).
+2. Wire DNS **A** + **MX** (+ SPF) yourself — installer never touches DNS for mail.
+3. Read with **relay-ops → Inbox** or SSH. Full walkthrough: **[MAIL_INBOUND.md](./MAIL_INBOUND.md)**.

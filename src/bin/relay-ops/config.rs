@@ -21,6 +21,10 @@ pub struct OpsConfig {
     /// Fast retry while any node is down or DNS-empty. Default 10s.
     pub probe_interval_down_secs: Option<u64>,
     pub auto_drop_dead_fleet_a: Option<bool>,
+    /// Inbound mail MX host (overrides ops/fleet.json `mail.host`).
+    pub mail_host: Option<String>,
+    /// Absolute Maildir on mail_host (overrides fleet.json `mail.maildir`).
+    pub mail_maildir: Option<String>,
 }
 
 impl OpsConfig {
@@ -67,6 +71,12 @@ impl OpsConfig {
         }
         if let Ok(v) = std::env::var("RELAY_OPS_CHECKOUT") {
             self.gateway_checkout = Some(v);
+        }
+        if let Ok(v) = std::env::var("RELAY_OPS_MAIL_HOST") {
+            self.mail_host = Some(v);
+        }
+        if let Ok(v) = std::env::var("RELAY_OPS_MAIL_MAILDIR") {
+            self.mail_maildir = Some(v);
         }
         merge_relay_env_file(self);
     }

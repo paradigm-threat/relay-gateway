@@ -216,6 +216,9 @@ pub async fn serve(app: App, bind: &str) -> anyhow::Result<()> {
     });
     let router = Router::new()
         .route("/", get(ui))
+        .route("/icon.png", get(icon_png))
+        .route("/favicon.png", get(favicon_png))
+        .route("/favicon.ico", get(favicon_png))
         .route("/api/snapshot", get(snapshot))
         .route("/api/refresh", post(refresh))
         .route("/api/fleet-dns-drop", post(fleet_dns_drop))
@@ -227,6 +230,9 @@ pub async fn serve(app: App, bind: &str) -> anyhow::Result<()> {
         .route("/api/git/refs", get(git_refs))
         .route("/api/git/tree", get(git_tree))
         .route("/api/git/file", get(git_file))
+        .route("/api/mail/list", get(mail_list))
+        .route("/api/mail/message", get(mail_message))
+        .route("/api/mail/mark-read", post(mail_mark_read))
         .route("/api/brain/status", get(brain_proxy_get))
         .route("/api/brain/feed", get(brain_proxy_get))
         .route("/api/brain/requests", get(brain_proxy_get))
@@ -245,6 +251,28 @@ pub async fn serve(app: App, bind: &str) -> anyhow::Result<()> {
 
 async fn ui() -> Html<&'static str> {
     Html(include_str!("ui.html"))
+}
+
+async fn icon_png() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "image/png"),
+            ("cache-control", "public, max-age=86400"),
+        ],
+        include_bytes!("icon.png").as_slice(),
+    )
+}
+
+async fn favicon_png() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            ("content-type", "image/png"),
+            ("cache-control", "public, max-age=86400"),
+        ],
+        include_bytes!("favicon.png").as_slice(),
+    )
 }
 
 async fn mcp_tools() -> impl IntoResponse {
@@ -503,6 +531,10 @@ struct JobReq {
     translation: Option<String>,
     translation_pkgs: Option<String>,
     libretranslate: Option<String>,
+    inbound_mail: Option<String>,
+    mail_domains: Option<String>,
+    mail_user: Option<String>,
+    mail_hostname: Option<String>,
     drop_unhealthy: Option<bool>,
     dry_run: Option<bool>,
 }
@@ -620,6 +652,10 @@ async fn job(State(app): State<App>, Json(body): Json<JobReq>) -> impl IntoRespo
                 body.translation.as_deref(),
                 body.translation_pkgs.as_deref(),
                 body.libretranslate.as_deref(),
+                body.inbound_mail.as_deref(),
+                body.mail_domains.as_deref(),
+                body.mail_user.as_deref(),
+                body.mail_hostname.as_deref(),
             );
             app.jobs
                 .start_blocking("features-set", &target, {
@@ -877,6 +913,86 @@ async fn git_file(State(app): State<App>, Query(q): Query<BrowseQ>) -> Response 
         Ok(v) => Json(v).into_response(),
         Err(e) => (
             StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("{e:#}")})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct MailIdQ {
+    id: String,
+}
+
+async fn mail_list(State(app): State<App>) -> Response {
+    let (cfg, fleet) = {
+        let g = app.inner.lock().await;
+        (app.cfg.clone(), g.fleet.clone())
+    };
+    let target = crate::mail::MailTarget::resolve(&cfg, &fleet);
+    match tokio::task::spawn_blocking(move || crate::mail::list_messages(&cfg, &fleet)).await {
+        Ok(Ok(items)) => Json(serde_json::json!({
+            "host": target.host,
+            "maildir": target.maildir,
+            "mx": target.host,
+            "messages": items,
+        }))
+        .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("{e:#}")})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e:#}")})),
+        )
+            .into_response(),
+    }
+}
+
+async fn mail_message(State(app): State<App>, Query(q): Query<MailIdQ>) -> Response {
+    let (cfg, fleet) = {
+        let g = app.inner.lock().await;
+        (app.cfg.clone(), g.fleet.clone())
+    };
+    let id = q.id;
+    match tokio::task::spawn_blocking(move || crate::mail::get_message(&cfg, &fleet, &id)).await {
+        Ok(Ok(msg)) => Json(msg).into_response(),
+        Ok(Err(e)) => {
+            let code = if e.to_string().contains("invalid mail id") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (code, Json(serde_json::json!({"error": format!("{e:#}")}))).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e:#}")})),
+        )
+            .into_response(),
+    }
+}
+
+async fn mail_mark_read(State(app): State<App>, Json(body): Json<MailIdQ>) -> Response {
+    let (cfg, fleet) = {
+        let g = app.inner.lock().await;
+        (app.cfg.clone(), g.fleet.clone())
+    };
+    let id = body.id;
+    match tokio::task::spawn_blocking(move || crate::mail::mark_read(&cfg, &fleet, &id)).await {
+        Ok(Ok(item)) => Json(item).into_response(),
+        Ok(Err(e)) => {
+            let code = if e.to_string().contains("invalid mail id") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (code, Json(serde_json::json!({"error": format!("{e:#}")}))).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("{e:#}")})),
         )
             .into_response(),

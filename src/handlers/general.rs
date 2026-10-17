@@ -222,6 +222,7 @@ pub(crate) fn summarize_features(m: &std::sync::Arc<serde_json::Value>) -> serde
     let translation = f.get("text_translation");
     let libre = f.get("libretranslate_api");
     let ipfs = f.get("ipfs_kubo");
+    let inbound_mail = f.get("inbound_mail");
     let voice_count = piper
         .and_then(|p| p.get("voices"))
         .and_then(|v| v.as_array())
@@ -254,6 +255,14 @@ pub(crate) fn summarize_features(m: &std::sync::Arc<serde_json::Value>) -> serde
             "enabled": libre.and_then(|p| p.get("enabled")),
             "http_port": libre.and_then(|p| p.get("http_port")),
             "load_only": libre.and_then(|p| p.get("load_only")),
+        },
+        "inbound_mail": {
+            "enabled": inbound_mail.and_then(|p| p.get("enabled")),
+            "listen_port": inbound_mail.and_then(|p| p.get("listen_port")),
+            "domains": inbound_mail.and_then(|p| p.get("domains")),
+            "local_user": inbound_mail.and_then(|p| p.get("local_user")),
+            "smtp_hostname": inbound_mail.and_then(|p| p.get("smtp_hostname")),
+            "outbound": inbound_mail.and_then(|p| p.get("outbound")),
         },
         "ipfs_kubo": {
             "enabled": ipfs.and_then(|p| p.get("enabled")),
