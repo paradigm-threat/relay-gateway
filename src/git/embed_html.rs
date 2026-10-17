@@ -775,7 +775,7 @@ pub fn inject_park_native_host_scripts_with_assets(
     let chat_live = "/hooks/client/native/LiveChat.host.js?v=32".to_string();
     let chat_app = "/hooks/client/native/ChatApp.host.js?v=32".to_string();
     let mut snip = String::from(
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=43\"></script>\
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=45\"></script>\
 <script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=32\"></script>\
 <script data-fb-park-native=\"1\" src=\"/hooks/client/native/Hits.host.js?v=32\"></script>\
 <script data-fb-park-native=\"1\" src=\"/hooks/client/lobby/LobbyPlaylist.js?v=44\"></script>\
