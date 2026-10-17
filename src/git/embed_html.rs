@@ -721,7 +721,7 @@ pub fn inject_park_native_host_scripts_with_assets(
     const PLACEHOLDER: &str = "data-relay-park-native";
     const CSR_FALLBACK: &str = "data-relay-ssr-fallback";
     // Bump when always-injected host list changes (cache-bust + skip re-inject).
-    const CURRENT: &str = "LobbyAudio.host.js?v=34";
+    const CURRENT: &str = "LobbyAudio.host.js?v=44";
     if !html.contains(PLACEHOLDER)
         && !html.contains(CSR_FALLBACK)
         && !html.contains("data-fb-pop-image")
@@ -778,8 +778,8 @@ pub fn inject_park_native_host_scripts_with_assets(
         "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=43\"></script>\
 <script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=32\"></script>\
 <script data-fb-park-native=\"1\" src=\"/hooks/client/native/Hits.host.js?v=32\"></script>\
-<script data-fb-park-native=\"1\" src=\"/hooks/client/lobby/LobbyPlaylist.js?v=34\"></script>\
-<script data-fb-park-native=\"1\" src=\"/hooks/client/native/LobbyAudio.host.js?v=34\"></script>",
+<script data-fb-park-native=\"1\" src=\"/hooks/client/lobby/LobbyPlaylist.js?v=44\"></script>\
+<script data-fb-park-native=\"1\" src=\"/hooks/client/native/LobbyAudio.host.js?v=44\"></script>",
     );
     if want_pop_image {
         snip.push_str(
@@ -1069,8 +1069,8 @@ mod tests {
         assert!(out.contains("ExternalPlay.host.js?v=32"), "{out}");
         assert!(out.contains("Affirmation.host.js?v=38"), "{out}");
         assert!(out.contains("NowShowing.host.js?v=39"), "{out}");
-        assert!(out.contains("LobbyAudio.host.js?v=34"), "{out}");
-        assert!(out.contains("LobbyPlaylist.js?v=34"), "{out}");
+        assert!(out.contains("LobbyAudio.host.js?v=44"), "{out}");
+        assert!(out.contains("LobbyPlaylist.js?v=44"), "{out}");
         assert!(
             !out.contains("Board.host.js"),
             "Board host only when fb-board placeholder present: {out}"
@@ -1088,7 +1088,7 @@ mod tests {
         );
         let out = inject_park_native_host_scripts(sample);
         assert!(out.contains("NowShowing.host.js?v=39"), "{out}");
-        assert!(out.contains("LobbyAudio.host.js?v=34"), "{out}");
+        assert!(out.contains("LobbyAudio.host.js?v=44"), "{out}");
         assert!(!out.contains("Board.host.js"), "{out}");
         assert!(!out.contains("Affirmation.host.js"), "{out}");
         assert!(!out.contains("ExternalPlay.host.js"), "{out}");
@@ -1105,7 +1105,7 @@ mod tests {
         let out = inject_park_native_host_scripts(sample);
         assert!(out.contains("PopImage.host.js?v=32"), "{out}");
         assert!(out.contains("ExternalPlay.host.js?v=32"), "{out}");
-        assert!(out.contains("LobbyAudio.host.js?v=34"), "{out}");
+        assert!(out.contains("LobbyAudio.host.js?v=44"), "{out}");
     }
 
     #[test]
