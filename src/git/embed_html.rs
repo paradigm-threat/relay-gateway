@@ -798,7 +798,7 @@ pub fn inject_park_native_host_scripts_with_assets(
     }
     if want_now_showing {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=32\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/NowShowing.host.js?v=39\"></script>",
         );
     }
     if want_board {
@@ -1068,7 +1068,7 @@ mod tests {
         );
         assert!(out.contains("ExternalPlay.host.js?v=32"), "{out}");
         assert!(out.contains("Affirmation.host.js?v=38"), "{out}");
-        assert!(out.contains("NowShowing.host.js?v=32"), "{out}");
+        assert!(out.contains("NowShowing.host.js?v=39"), "{out}");
         assert!(out.contains("LobbyAudio.host.js?v=34"), "{out}");
         assert!(out.contains("LobbyPlaylist.js?v=34"), "{out}");
         assert!(
@@ -1087,7 +1087,7 @@ mod tests {
             r#"<script type="module" src="/assets/c/abc/embed.js"></script></body></html>"#
         );
         let out = inject_park_native_host_scripts(sample);
-        assert!(out.contains("NowShowing.host.js?v=32"), "{out}");
+        assert!(out.contains("NowShowing.host.js?v=39"), "{out}");
         assert!(out.contains("LobbyAudio.host.js?v=34"), "{out}");
         assert!(!out.contains("Board.host.js"), "{out}");
         assert!(!out.contains("Affirmation.host.js"), "{out}");
