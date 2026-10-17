@@ -769,13 +769,13 @@ pub fn inject_park_native_host_scripts_with_assets(
             && (cleaned.contains("\"initialPath\":\"/chat\"")
                 || cleaned.contains("\"initialPath\":\"/chat/")));
     let want_pop_image = cleaned.contains("data-fb-pop-image");
-    // v=34: lobby OST hosts + localStorage persist / gesture unlock.
+    // v=35: park-host-common pointer-events + Affirmation inert/session-dismiss fix.
     let _assets_prefix = assets_prefix;
     let chat_common = "/hooks/client/native/ChatCommon.host.js?v=32".to_string();
     let chat_live = "/hooks/client/native/LiveChat.host.js?v=32".to_string();
     let chat_app = "/hooks/client/native/ChatApp.host.js?v=32".to_string();
     let mut snip = String::from(
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=34\"></script>\
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=35\"></script>\
 <script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=32\"></script>\
 <script data-fb-park-native=\"1\" src=\"/hooks/client/native/Hits.host.js?v=32\"></script>\
 <script data-fb-park-native=\"1\" src=\"/hooks/client/lobby/LobbyPlaylist.js?v=34\"></script>\
@@ -788,7 +788,7 @@ pub fn inject_park_native_host_scripts_with_assets(
     }
     if want_affirmation {
         snip.push_str(
-            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=32\"></script>",
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Affirmation.host.js?v=38\"></script>",
         );
     }
     if want_external {
@@ -1067,7 +1067,7 @@ mod tests {
             "theater host must not be injected: {out}"
         );
         assert!(out.contains("ExternalPlay.host.js?v=32"), "{out}");
-        assert!(out.contains("Affirmation.host.js?v=32"), "{out}");
+        assert!(out.contains("Affirmation.host.js?v=38"), "{out}");
         assert!(out.contains("NowShowing.host.js?v=32"), "{out}");
         assert!(out.contains("LobbyAudio.host.js?v=34"), "{out}");
         assert!(out.contains("LobbyPlaylist.js?v=34"), "{out}");
