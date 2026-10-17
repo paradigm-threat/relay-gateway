@@ -143,6 +143,13 @@ cmd_smoke() {
     die "gateway not up on :${HTTP_PORT} — run: ./scripts/park-local.sh serve"
   fi
   SSR_SMOKE_HOST="$PARK_HOST" SSR_SMOKE_PORT="$HTTP_PORT" bash "$SMOKE_SCRIPT"
+  local hydrate="${RELAY_PARK_HYDRATE_SCRIPT:-$FILES_CHECKOUT/scripts/park-hydrate-smoke.mjs}"
+  if [[ -f "$hydrate" ]]; then
+    log "hydrate smoke (Playwright / system Chrome)"
+    SSR_SMOKE_HOST="$PARK_HOST" SSR_SMOKE_PORT="$HTTP_PORT" node "$hydrate"
+  else
+    log "WARN: hydrate smoke missing: $hydrate"
+  fi
 }
 
 cmd_unit() {
@@ -151,6 +158,8 @@ cmd_unit() {
     --test stdlib_relay_modules \
     --test paradigm_files_render \
     --test dirnav_expand \
+    --test livechat_stubs \
+    --test navlink_props_eval \
     --test json_builtins \
     --test cleverscript_sugar)
   log "relay-gateway park Host / SSR failure regressions"
@@ -174,8 +183,8 @@ Usage: $0 <command>
   prepare   Bare mirrors + parked-domains map under docker-data/park-local/
   sync      prepare + push worktree snapshot (incl. dirty) → bare main
   serve     sync + run relay-gateway on :${HTTP_PORT} with Host ${PARK_HOST}
-  smoke     ./scripts/ssr-smoke.sh against local gateway (gateway must be up)
-  unit      cargo tests: @relay/* helpers + park Host/SSR regressions
+  smoke     SSR smoke + hydrate smoke against local gateway (gateway must be up)
+  unit      cargo tests: @relay/* helpers + livechat_stubs + park Host/SSR regressions
   regress   unit only (no live server)
   help      this text
 
