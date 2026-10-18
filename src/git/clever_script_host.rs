@@ -844,11 +844,48 @@ fn cheap_client_shell(
         .and_then(|cfg| cfg.description.clone())
         .map(|n| n.trim().to_string())
         .filter(|n| !n.is_empty());
+    let public_canonical_origin = site_cfg
+        .as_ref()
+        .and_then(|cfg| cfg.canonical.clone())
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty());
     let missing = ctx_flag_true(ctx, "siteShellMissingPath");
     let is_home = !missing
         && (request_path == "/"
             || request_path.is_empty()
             || request_path.trim_matches('/') == "page.md");
+    // Link crawlers skip the client hook and land here. Movie pages still need
+    // the catalog title, blurb, and poster or unfurls stay the site card.
+    let request_origin = ssr_public_origin(ctx);
+    let request_origin = if request_origin.is_empty() {
+        None
+    } else {
+        Some(request_origin)
+    };
+    let catalog_seo = if missing {
+        None
+    } else {
+        match crate::git::repo::read_file_from_repo(repo_root, request_branch, "index.json") {
+            Ok(bytes) => crate::git::seo_from_markdown::seo_from_catalog_index(
+                &bytes,
+                request_path,
+                public_canonical_origin.as_deref(),
+                request_origin.as_deref(),
+                site_name.as_deref(),
+            ),
+            Err(_) => None,
+        }
+    };
+    let doc_title = catalog_seo
+        .as_ref()
+        .map(|s| s.title.clone())
+        .or_else(|| site_name.clone());
+    let doc_description = catalog_seo
+        .as_ref()
+        .and_then(|s| s.description.clone())
+        .or_else(|| site_description.clone());
+    let doc_canonical = catalog_seo.as_ref().and_then(|s| s.canonical_url.clone());
+    let og_image = catalog_seo.as_ref().and_then(|s| s.image_url.clone());
     let html = crate::git::embed_html::embed_html_document_with_assets_and_seo_extras(
         repo,
         request_branch,
@@ -857,11 +894,11 @@ fn cheap_client_shell(
         notice,
         None,
         assets_prefix.as_deref(),
-        site_name.as_deref(),
-        site_description.as_deref(),
-        None,
+        doc_title.as_deref(),
+        doc_description.as_deref(),
+        doc_canonical.as_deref(),
         crate::git::embed_html::EmbedSeoExtras {
-            og_image: None,
+            og_image: og_image.as_deref(),
             is_article: false,
             noindex: missing,
             site_name: site_name.as_deref(),
