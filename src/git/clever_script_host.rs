@@ -865,7 +865,7 @@ fn cheap_client_shell(
     let catalog_seo = if missing {
         None
     } else {
-        match crate::git::repo::read_file_from_repo(repo_root, request_branch, "index.json") {
+        match crate::git::repo::read_file_from_repo(&repo_root.to_path_buf(), request_branch, "index.json") {
             Ok(bytes) => crate::git::seo_from_markdown::seo_from_catalog_index(
                 &bytes,
                 request_path,
