@@ -108,6 +108,7 @@ pub fn bundled_state() -> State {
         prefers_color_scheme: None,
         display_density: 1.0,
         scaled_density: 1.0,
+        viewport_width: 0.0,
         used_classes: IndexSet::new(),
         used_tags: IndexSet::new(),
         used_tag_classes: IndexSet::new(),

@@ -165,6 +165,9 @@ pub struct State {
     pub display_density: f32, // Android displayMetrics.density (1.0 for mdpi, 2.0 for xhdpi, etc.)
     #[serde(default = "default_scaled_density")]
     pub scaled_density: f32, // Android displayMetrics.scaledDensity for SP conversions
+    /// CSS viewport width in px (web / park); 0 = unset.
+    #[serde(default)]
+    pub viewport_width: f32,
 
     #[serde(default)]
     pub used_classes: IndexSet<String>, // observed classes on elements
