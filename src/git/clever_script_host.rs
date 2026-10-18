@@ -1083,6 +1083,20 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                     Err(_) => None,
                 }
             });
+        // Movie pages are virtual `/<slug>` routes. index.json already has the
+        // title, blurb, and poster those unfurls need.
+        let article_seo = article_seo.or_else(|| {
+            match crate::git::repo::read_file_from_repo(&repo_root, request_branch, "index.json") {
+                Ok(bytes) => crate::git::seo_from_markdown::seo_from_catalog_index(
+                    &bytes,
+                    &request_path,
+                    public_canonical_origin.as_deref(),
+                    Some(origin.as_str()),
+                    site_name.as_deref(),
+                ),
+                Err(_) => None,
+            }
+        });
 
         let doc_title = article_seo
             .as_ref()

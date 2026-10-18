@@ -331,6 +331,105 @@ fn resolve_image_url(raw: &str, article_rel: &str, origin: Option<&str>) -> Opti
     Some(maybe_append_og_width(&absolute))
 }
 
+/// Movie-page SEO from a catalog `index.json` when the request path is a project slug.
+///
+/// Flashback movie URLs (`/<slug>` and `/movie/<slug>`) have no markdown file, so the
+/// markdown extractor never fills title, blurb, or poster. Crawlers then unfurl the
+/// site-wide description with no image.
+pub fn seo_from_catalog_index(
+    index_json: &[u8],
+    request_path: &str,
+    public_origin: Option<&str>,
+    request_origin: Option<&str>,
+    site_name: Option<&str>,
+) -> Option<ArticleSeo> {
+    let slug = catalog_slug_from_path(request_path)?;
+    let v: serde_json::Value = serde_json::from_slice(index_json).ok()?;
+    let projects = v.get("projects")?.as_array()?;
+    let project = projects.iter().find(|entry| {
+        entry
+            .get("slug")
+            .and_then(|s| s.as_str())
+            .is_some_and(|s| s == slug)
+    })?;
+
+    let article_title = json_nonempty(project, "title").unwrap_or_else(|| slug.to_string());
+    let site = site_name
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Flashback Repository");
+    let title = if article_title.eq_ignore_ascii_case(site) || article_title.contains(site) {
+        article_title
+    } else {
+        format!("{article_title} | {site}")
+    };
+
+    let description = json_nonempty(project, "blurb")
+        .or_else(|| json_nonempty(project, "description"))
+        .map(|d| truncate_description(&d));
+
+    let origin = normalize_origin(public_origin.or(request_origin));
+    let image_raw = json_nonempty(project, "image").or_else(|| {
+        let dir = json_nonempty(project, "path")?;
+        let poster = json_nonempty(project, "poster").unwrap_or_else(|| "poster.jpg".to_string());
+        Some(format!("{dir}/{poster}"))
+    });
+    let image_url = image_raw.and_then(|raw| {
+        let encoded = encode_repo_path(&raw);
+        resolve_image_url(&encoded, "", origin.as_deref())
+    });
+
+    let canonical_url = origin.as_ref().map(|o| join_origin_path(o, &format!("/{slug}")));
+
+    Some(ArticleSeo {
+        title,
+        description,
+        image_url,
+        canonical_url,
+        is_article: false,
+    })
+}
+
+fn catalog_slug_from_path(request_path: &str) -> Option<&str> {
+    let mut slug = request_path.trim().trim_matches('/');
+    if let Some(rest) = slug.strip_prefix("movie/") {
+        slug = rest;
+    }
+    if slug.is_empty() || slug.contains('/') || slug.contains('.') {
+        return None;
+    }
+    Some(slug)
+}
+
+fn json_nonempty(obj: &serde_json::Value, key: &str) -> Option<String> {
+    let s = obj.get(key)?.as_str()?.trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+fn encode_repo_path(raw: &str) -> String {
+    const PATH_SEG: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
+        .add(b' ')
+        .add(b'"')
+        .add(b'#')
+        .add(b'%')
+        .add(b'<')
+        .add(b'>')
+        .add(b'?')
+        .add(b'`')
+        .add(b'{')
+        .add(b'}');
+    raw.trim()
+        .trim_start_matches('/')
+        .split('/')
+        .map(|seg| percent_encoding::utf8_percent_encode(seg, PATH_SEG).to_string())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 fn article_dir(rel_path: &str) -> String {
     let p = rel_path.trim().trim_start_matches('/');
     match p.rfind('/') {
@@ -464,5 +563,42 @@ Intro paragraph ignored when blockquote came first after heading/image skip path
         });
         let d = seo.description.unwrap();
         assert!(d.contains("Western covert history"), "{d}");
+    }
+
+    #[test]
+    fn catalog_slug_uses_title_blurb_and_poster() {
+        let catalog = seo_from_catalog_index(
+            br#"{
+              "projects": [{
+                "slug": "matrix-reloaded-2003-unlinked",
+                "title": "Matrix Reloaded (2003) - Unlinked",
+                "blurb": "Bane sabotages the hovercrafts. Post-production sabotages the franchise.",
+                "image": "FanMixes/Matrix Reloaded (2003) - Unlinked/poster.jpg"
+              }]
+            }"#,
+            "/movie/matrix-reloaded-2003-unlinked",
+            Some("https://flashbackrepository.org/"),
+            None,
+            Some("Flashback Repository"),
+        )
+        .expect("catalog seo");
+        assert_eq!(
+            catalog.title,
+            "Matrix Reloaded (2003) - Unlinked | Flashback Repository"
+        );
+        assert_eq!(
+            catalog.description.as_deref(),
+            Some("Bane sabotages the hovercrafts. Post-production sabotages the franchise.")
+        );
+        assert_eq!(
+            catalog.image_url.as_deref(),
+            Some("https://flashbackrepository.org/FanMixes/Matrix%20Reloaded%20(2003)%20-%20Unlinked/poster.jpg?w=800")
+        );
+        assert_eq!(
+            catalog.canonical_url.as_deref(),
+            Some("https://flashbackrepository.org/matrix-reloaded-2003-unlinked")
+        );
+        assert!(!catalog.is_article);
+        assert!(seo_from_catalog_index(b"{}", "/search", None, None, None).is_none());
     }
 }
