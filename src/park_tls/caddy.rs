@@ -10,15 +10,22 @@ pub fn parked_caddyfile_path() -> PathBuf {
     park_tls_root().join("Caddyfile.parked")
 }
 
-/// Flashback live-chat sidecar handles (inserted before apex reverse_proxy).
+/// Mesh live-chat sidecar handles (inserted before apex reverse_proxy).
 /// Local chat-edge on :8098 when present; otherwise proxy API/WS to iad1.
+/// Never hairpin on iad1 itself — that loops Caddy→public HTTPS→Caddy and
+/// balloons memory / Recv-Q until the node looks down.
 fn flashback_chat_sidecar_block() -> String {
     let local = std::net::TcpStream::connect_timeout(
         &"127.0.0.1:8098".parse().unwrap(),
         std::time::Duration::from_millis(200),
     )
     .is_ok();
-    if local {
+    let node = std::env::var("RELAY_NODE_FQDN").unwrap_or_default();
+    let self_hub = node.eq_ignore_ascii_case("iad1.relaygateway.net")
+        || node.to_ascii_lowercase().starts_with("iad1.");
+    if local || self_hub {
+        // Prefer loopback. On the hub, even if chat-edge is briefly down, do not
+        // proxy to https://iad1 (self) — fail locally instead of a TLS hairpin storm.
         "\t# flashback-chat-sidecar\n\
 \thandle /chat/api* {\n\
 \t\treverse_proxy 127.0.0.1:8098\n\
@@ -106,9 +113,8 @@ pub fn write_parked_caddyfile(domains: &HashMap<String, String>) -> std::io::Res
         out.push(' ');
         out.push_str(&key.display().to_string());
         out.push('\n');
-        if host == "flashbackrepository.org" {
-            out.push_str(&chat_block);
-        }
+        // Mesh chat sidecar on every parked apex (same Ergo; local or proxy to iad1).
+        out.push_str(&chat_block);
         out.push_str("\treverse_proxy 127.0.0.1:");
         out.push_str(&upstream);
         out.push_str(
