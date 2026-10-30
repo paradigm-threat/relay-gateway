@@ -410,6 +410,11 @@ fn is_client_markdown_shell_route(rel: &str) -> bool {
             | "board"
             | "feedback"
             | "bugs"
+            | "chat"
+            | "app"
+            | "android"
+            | "apk"
+            | "android-lab"
     )
 }
 
@@ -1522,6 +1527,16 @@ export default function run(ctx, next) {
             !html.contains(r#"name="robots" content="noindex,follow""#),
             "catalog slug shell should be indexable"
         );
+    }
+
+    #[test]
+    fn flashback_shell_routes_include_chat_and_app() {
+        assert!(is_client_markdown_shell_route("chat"));
+        assert!(is_client_markdown_shell_route("/chat"));
+        assert!(is_client_markdown_shell_route("app"));
+        assert!(is_client_markdown_shell_route("android-lab"));
+        assert!(is_client_markdown_shell_route("board"));
+        assert!(!is_client_markdown_shell_route("does-not-exist-path"));
     }
 
     #[tokio::test]
