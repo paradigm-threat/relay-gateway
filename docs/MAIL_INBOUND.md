@@ -98,19 +98,45 @@ ssh -i ~/.ssh/id_ed25519_relay_gateway ubuntu@MX_HOST \
 
 ---
 
-## Production example — paradigmthreat.net
+## Shared Maildir helper
 
-Live mesh: **`iad1` / `ord1` / `hkg1`**. Only **iad1** runs the catcher.
+Canonical reader used by **relay-ops Inbox** and batch consumers (e.g. QuizGate):
+
+| Path | Role |
+|------|------|
+| [`scripts/maildir_inbox.py`](../scripts/maildir_inbox.py) | `list` / `get` / `mark-read` → JSON |
+| `relay-ops` `mail.rs` | `include_str!` of that script; SSH + sudo on MX host |
+| Host copy (iad1) | `/usr/local/lib/relay/maildir_inbox.py` |
+
+```bash
+python3 scripts/maildir_inbox.py list /home/arl/Maildir
+sudo python3 /usr/local/lib/relay/maildir_inbox.py get /home/arl/Maildir <id>
+```
+
+Do **not** invent a parallel IMAP stack — extend this helper.
+
+---
+
+## Production — iad1 (multi-domain)
+
+Live mesh: **`iad1` / `ord1` / `hkg1`**. Only **iad1** runs the catcher. **One** Maildir for all inbound domains.
 
 | | |
 |--|--|
 | MX host | `iad1.relaygateway.net` (`162.209.124.53`) |
-| DNS name | `mail.paradigmthreat.net` → that IP |
-| Domains | `@paradigmthreat.net`, `@mail.paradigmthreat.net` |
+| Banner | `mail.paradigmthreat.net` |
 | User / Maildir | `arl` / `/home/arl/Maildir` |
-| SPF | `v=spf1 -all` on the apex |
+| SPF | `v=spf1 -all` on each apex (receive-only) |
 
-Non-interactive shape (already applied on iad1; re-run only if rebuilding):
+| Domain | DNS name | Delivery |
+|--------|----------|----------|
+| `@paradigmthreat.net` | `mail.paradigmthreat.net` | Maildir |
+| `@clevertree.net` | `mail.clevertree.net` | MDA → Maildir (+ optional msmtp Gmail notify) |
+| `@quizgate.app` | `mail.quizgate.app` | Maildir (`batch@quizgate.app`) |
+
+Live `/etc/smtpd.conf` is **surgically** multi-table (PT / CT / QG). The installer single-domain template still works for greenfield nodes; do not blindly `reconfigure-features` on iad1 without merging those tables.
+
+Installer shape (PT-only greenfield / rebuild baseline):
 
 ```bash
 sudo RELAY_INSTALL_NONINTERACTIVE=1 \
@@ -136,9 +162,12 @@ From another mesh node (many residential ISPs block **outbound** :25):
 
 ```bash
 # SMTP to mail.paradigmthreat.net:25, RCPT someone@paradigmthreat.net
+# or on iad1: SMTP 127.0.0.1:25 RCPT batch@quizgate.app
 ```
 
 Expect delivery under `/home/arl/Maildir/new` and `journalctl -u opensmtpd`.
+
+QuizGate batch: `cd data-plane && npm run inbox` (see quizgate `docs/EMAIL.md`).
 
 ---
 

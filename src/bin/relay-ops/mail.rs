@@ -1,4 +1,7 @@
 //! Inbound mailbox reader: SSH to the single MX host (iad1) and list/read Maildir.
+//!
+//! Remote Python is the shared helper at `scripts/maildir_inbox.py` (include_str!).
+//! Same semantics as QuizGate batch SI inbound mail and the Inbox UI.
 use crate::config::OpsConfig;
 use crate::ssh::{output_text, SshCtx};
 use crate::topology::FleetFile;
@@ -8,6 +11,9 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_MAIL_HOST: &str = "iad1.relaygateway.net";
 pub const DEFAULT_MAILDIR: &str = "/home/arl/Maildir";
+
+/// Shared Maildir helper (canonical source: scripts/maildir_inbox.py).
+const MAILDIR_INBOX_PY: &str = include_str!("../../../scripts/maildir_inbox.py");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MailListItem {
@@ -87,22 +93,18 @@ fn shell_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\"'\"'"))
 }
 
-/// Run remote python via `sudo python3 -c` with script as base64 (avoids bash -s heredoc).
-fn run_mail_py(
-    cfg: &OpsConfig,
-    fleet: &FleetFile,
-    py: &str,
-    extra: &[&str],
-) -> Result<String> {
+/// Run shared maildir_inbox.py via `sudo python3 -c` with script as base64.
+/// Remote argv after decode: maildir_inbox.py <cmd> <maildir> [id…]
+fn run_mail_py(cfg: &OpsConfig, fleet: &FleetFile, cmd: &str, extra: &[&str]) -> Result<String> {
     let target = MailTarget::resolve(cfg, fleet);
     for a in extra {
         validate_mail_id(a)?;
     }
-    let enc = base64::engine::general_purpose::STANDARD.encode(py.as_bytes());
-    // sys.argv[1]=b64, [2]=maildir, [3…]=ids
+    let enc = base64::engine::general_purpose::STANDARD.encode(MAILDIR_INBOX_PY.as_bytes());
     let mut remote = format!(
-        "sudo python3 -c 'import base64,sys; exec(base64.standard_b64decode(sys.argv[1]).decode())' {} {}",
+        "sudo python3 -c 'import base64,sys; code=base64.standard_b64decode(sys.argv[1]); sys.argv=[\"maildir_inbox.py\"]+sys.argv[2:]; exec(code.decode())' {} {} {}",
         shell_single_quote(&enc),
+        shell_single_quote(cmd),
         shell_single_quote(&target.maildir),
     );
     for a in extra {
@@ -129,7 +131,7 @@ fn run_mail_py(
 }
 
 pub fn list_messages(cfg: &OpsConfig, fleet: &FleetFile) -> Result<Vec<MailListItem>> {
-    let stdout = run_mail_py(cfg, fleet, REMOTE_LIST_PY, &[])?;
+    let stdout = run_mail_py(cfg, fleet, "list", &[])?;
     let items: Vec<MailListItem> =
         serde_json::from_str(&stdout).with_context(|| format!("parse mail list: {stdout}"))?;
     Ok(items)
@@ -137,7 +139,7 @@ pub fn list_messages(cfg: &OpsConfig, fleet: &FleetFile) -> Result<Vec<MailListI
 
 pub fn get_message(cfg: &OpsConfig, fleet: &FleetFile, id: &str) -> Result<MailMessage> {
     validate_mail_id(id)?;
-    let stdout = run_mail_py(cfg, fleet, REMOTE_GET_PY, &[id])?;
+    let stdout = run_mail_py(cfg, fleet, "get", &[id])?;
     let msg: MailMessage =
         serde_json::from_str(&stdout).with_context(|| format!("parse mail message: {stdout}"))?;
     Ok(msg)
@@ -145,203 +147,11 @@ pub fn get_message(cfg: &OpsConfig, fleet: &FleetFile, id: &str) -> Result<MailM
 
 pub fn mark_read(cfg: &OpsConfig, fleet: &FleetFile, id: &str) -> Result<MailListItem> {
     validate_mail_id(id)?;
-    let stdout = run_mail_py(cfg, fleet, REMOTE_MARK_READ_PY, &[id])?;
+    let stdout = run_mail_py(cfg, fleet, "mark-read", &[id])?;
     let item: MailListItem =
         serde_json::from_str(&stdout).with_context(|| format!("parse mark-read: {stdout}"))?;
     Ok(item)
 }
-
-const REMOTE_LIST_PY: &str = r#"
-import json, os, sys, email
-from email.header import decode_header, make_header
-root = sys.argv[2]
-items = []
-def dec(v):
-    if not v:
-        return ""
-    try:
-        return str(make_header(decode_header(v)))
-    except Exception:
-        return v if isinstance(v, str) else str(v)
-for folder in ("new", "cur"):
-    d = os.path.join(root, folder)
-    if not os.path.isdir(d):
-        continue
-    for name in os.listdir(d):
-        path = os.path.join(d, name)
-        if not os.path.isfile(path):
-            continue
-        try:
-            st = os.stat(path)
-            with open(path, "rb") as f:
-                raw = f.read(65536)
-            msg = email.message_from_bytes(raw)
-            items.append({
-                "id": name,
-                "folder": folder,
-                "from": dec(msg.get("From", "")),
-                "to": dec(msg.get("To", "")),
-                "subject": dec(msg.get("Subject", "")),
-                "date": dec(msg.get("Date", "")),
-                "unread": folder == "new",
-                "mtime": float(st.st_mtime),
-            })
-        except Exception as e:
-            items.append({
-                "id": name,
-                "folder": folder,
-                "from": "",
-                "to": "",
-                "subject": "(unreadable: %s)" % e,
-                "date": "",
-                "unread": folder == "new",
-                "mtime": 0.0,
-            })
-items.sort(key=lambda x: x["mtime"], reverse=True)
-print(json.dumps(items))
-"#;
-
-const REMOTE_GET_PY: &str = r#"
-import json, os, sys, email, re, shutil
-from email.header import decode_header, make_header
-from html.parser import HTMLParser
-root, mid = sys.argv[2], sys.argv[3]
-path = folder = None
-for fol in ("new", "cur"):
-    p = os.path.join(root, fol, mid)
-    if os.path.isfile(p):
-        path, folder = p, fol
-        break
-if not path:
-    sys.stderr.write("not found\n")
-    sys.exit(2)
-# Opening a message marks it read: Maildir new/ → cur/ (same basename).
-if folder == "new":
-    dst_dir = os.path.join(root, "cur")
-    os.makedirs(dst_dir, exist_ok=True)
-    dst = os.path.join(dst_dir, mid)
-    if not os.path.isfile(dst):
-        shutil.move(path, dst)
-    else:
-        # Collision: drop the unread copy; keep existing cur.
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-    path, folder = dst, "cur"
-def dec(v):
-    if not v:
-        return ""
-    try:
-        return str(make_header(decode_header(v)))
-    except Exception:
-        return v if isinstance(v, str) else str(v)
-class Stripper(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.parts = []
-    def handle_data(self, d):
-        self.parts.append(d)
-    def text(self):
-        return re.sub(r"\s+", " ", "".join(self.parts)).strip()
-def part_payload(part):
-    data = part.get_payload(decode=True)
-    if data is None:
-        p = part.get_payload()
-        if isinstance(p, str):
-            return p.encode("utf-8", "replace")
-        return b""
-    return data
-def as_text(part):
-    ctype = (part.get_content_type() or "").lower()
-    charset = part.get_content_charset() or "utf-8"
-    raw = part_payload(part)
-    try:
-        text = raw.decode(charset, "replace")
-    except Exception:
-        text = raw.decode("utf-8", "replace")
-    if ctype == "text/html":
-        text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", text)
-        s = Stripper()
-        try:
-            s.feed(text)
-            return s.text()
-        except Exception:
-            return re.sub(r"<[^>]+>", " ", text)
-    return text
-with open(path, "rb") as f:
-    raw = f.read()
-msg = email.message_from_bytes(raw)
-plain, html = [], []
-if msg.is_multipart():
-    for part in msg.walk():
-        if part.get_content_maintype() == "multipart":
-            continue
-        ctype = (part.get_content_type() or "").lower()
-        if ctype == "text/plain":
-            plain.append(as_text(part))
-        elif ctype == "text/html":
-            html.append(as_text(part))
-else:
-    ctype = (msg.get_content_type() or "text/plain").lower()
-    t = as_text(msg)
-    if ctype == "text/html":
-        html.append(t)
-    else:
-        plain.append(t)
-body = "\n\n".join(plain).strip() or "\n\n".join(html).strip()
-print(json.dumps({
-    "id": mid,
-    "folder": folder,
-    "from": dec(msg.get("From", "")),
-    "to": dec(msg.get("To", "")),
-    "subject": dec(msg.get("Subject", "")),
-    "date": dec(msg.get("Date", "")),
-    "unread": False,
-    "body": body,
-}))
-"#;
-
-const REMOTE_MARK_READ_PY: &str = r#"
-import json, os, sys, email, shutil
-from email.header import decode_header, make_header
-root, mid = sys.argv[2], sys.argv[3]
-src = os.path.join(root, "new", mid)
-dst_dir = os.path.join(root, "cur")
-dst = os.path.join(dst_dir, mid)
-if not os.path.isfile(src):
-    cur = os.path.join(dst_dir, mid)
-    if os.path.isfile(cur):
-        path, folder = cur, "cur"
-    else:
-        sys.stderr.write("not found\n")
-        sys.exit(2)
-else:
-    os.makedirs(dst_dir, exist_ok=True)
-    shutil.move(src, dst)
-    path, folder = dst, "cur"
-def dec(v):
-    if not v:
-        return ""
-    try:
-        return str(make_header(decode_header(v)))
-    except Exception:
-        return v if isinstance(v, str) else str(v)
-st = os.stat(path)
-with open(path, "rb") as f:
-    raw = f.read(65536)
-msg = email.message_from_bytes(raw)
-print(json.dumps({
-    "id": mid,
-    "folder": folder,
-    "from": dec(msg.get("From", "")),
-    "to": dec(msg.get("To", "")),
-    "subject": dec(msg.get("Subject", "")),
-    "date": dec(msg.get("Date", "")),
-    "unread": False,
-    "mtime": float(st.st_mtime),
-}))
-"#;
 
 #[cfg(test)]
 mod tests {
@@ -376,5 +186,11 @@ mod tests {
         let t = MailTarget::resolve(&cfg, &fleet);
         assert_eq!(t.host, DEFAULT_MAIL_HOST);
         assert_eq!(t.maildir, DEFAULT_MAILDIR);
+    }
+
+    #[test]
+    fn shared_helper_mentions_commands() {
+        assert!(MAILDIR_INBOX_PY.contains("cmd_list"));
+        assert!(MAILDIR_INBOX_PY.contains("mark-read"));
     }
 }
