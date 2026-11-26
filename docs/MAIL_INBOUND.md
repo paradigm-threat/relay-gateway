@@ -128,7 +128,7 @@ Live mesh: **`pub1` / `mesh1` / `mesh2`** (Linode). Only **pub1** runs the catch
 | User / Maildir | `arl` / `/home/arl/Maildir` |
 | SPF | `v=spf1 -all` on each apex (receive-only) |
 
-**DNS cutover (operator):** point `mail.paradigmthreat.net`, `mail.clevertree.net`, and `mail.quizgate.app` **A** records at `172.234.148.70` only after local SMTP on pub1 is proven. Leave MX owners pointing at those `mail.*` names. Do not destroy Rackspace iad1 until mail A records have flipped and a test message lands in `/home/arl/Maildir`.
+**DNS cutover (operator):** point `mail.paradigmthreat.net`, `mail.clevertree.net`, and `mail.quizgate.app` **A** records at pub1 (`172.234.148.70`) after local SMTP on pub1 is proven. Leave MX owners pointing at those `mail.*` names. Rackspace Spot / iad1 mail hosts are retired.
 
 | Domain | DNS name | Delivery |
 |--------|----------|----------|

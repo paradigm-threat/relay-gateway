@@ -15,7 +15,7 @@ Use three layers:
 
 1. **Node names (canonical Linode fleet):** `pub1.relaygateway.net` (publisher), `mesh1.relaygateway.net`, `mesh2.relaygateway.net`.
    Each name has the current A record for exactly one node (+ matching `*.pub1` / `*.mesh1` / `*.mesh2` wildcards). `relay-master-deploy.sh` / `point-dns` updates those after provisioning.
-   Historical Rackspace Spot names (`iad1` / `ord1` / `hkg1`) remain in DNS only until decommission — **do not** retarget them at the Linode fleet.
+   Historical Rackspace Spot names (`iad1` / `ord1` / `hkg1`) had their Spot **A** records removed 2026-11-26 — **do not** recreate them for Linode.
 2. **Network ingress:** `fleet.relaygateway.net`.
    A/AAAA = **publisher only** (`fleetDns: true` / `RELAY_FLEET_DNS_PEERS=pub1.relaygateway.net`). Mesh nodes peer-sync git but must not appear in the fleet A set. Optional aliases: `irc.relaygateway.net` / `chat.relaygateway.net` → pub1.
 3. **Parked domains:** customer or project names point to the network ingress:
@@ -124,7 +124,7 @@ export RELAY_FLEET_DNS_PEERS=pub1.relaygateway.net   # publisher only
 ./scripts/relay-fleet.sh fleet-dns
 ```
 
-The node-name update and fleet-record reconcile scripts exist. Automatic Spot VM discovery (without UI/`public_ip_override`) is still pending.
+The node-name update and fleet-record reconcile scripts exist. Spot VM discovery is retired with Spot.
 ## Opt-in park TLS plugin
 
 Parked multi-node HTTPS is **not** a global gateway default. A content repo opts in:
@@ -218,5 +218,5 @@ Expected ask results are `200` and `403`. Also verify the certificate SAN, issue
 ## Implementation status
 
 - Done: catalog `domains[]`, uniqueness checks, Host routing, unknown-Host rejection, generated Caddy allowlist, node canary path, and **`vercel-dns-fleet-reconcile.sh`** / **`relay-fleet.sh fleet-dns`** (wired into `relay-master-deploy.sh`).
-- Pending: committed/released gateway changes, signed catalog publication, full-fleet deployment, coordinated multi-node ACME/certificate distribution, renewal testing, and automatic Spot VM IP discovery without UI override.
+- Pending: coordinated multi-node ACME/certificate distribution and renewal testing for multi-A `fleet` (today fleet A = pub1 only).
 
