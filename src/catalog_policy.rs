@@ -118,6 +118,53 @@ pub struct BranchFeatures {
     pub dev: Option<BranchFeatureDev>,
 }
 
+/// Optional pre-rendered HTML fragment cache for parked Host browsers (no live SSR).
+#[derive(Debug, Clone, Deserialize)]
+pub struct SsrCacheSpec {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Bare slug holding fragments (default `relay-ssr-cache`).
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// Site root inside the cache tip (e.g. `sites/paradigmthreat.net/`).
+    #[serde(default)]
+    pub prefix: Option<String>,
+    /// Shared shell fragment path inside the cache tip.
+    #[serde(default, rename = "shellPath", alias = "shell_path")]
+    pub shell_path: Option<String>,
+    /// Repo whose tip stamps hook/WASM invalidation (default `relay-web-assets`).
+    #[serde(default, rename = "hookAssetsRepo", alias = "hook_assets_repo")]
+    pub hook_assets_repo: Option<String>,
+    #[serde(default, rename = "hookAssetsBranch", alias = "hook_assets_branch")]
+    pub hook_assets_branch: Option<String>,
+    /// When enabled, publisher `pre-receive` runs CleverScript SSR + QA on changed pages.
+    /// Default **true** (omit → on). Set `false` to skip the push gate.
+    #[serde(
+        default = "default_require_pre_receive_qa",
+        rename = "requirePreReceiveQa",
+        alias = "require_pre_receive_qa"
+    )]
+    pub require_pre_receive_qa: bool,
+}
+
+fn default_require_pre_receive_qa() -> bool {
+    true
+}
+
+impl Default for SsrCacheSpec {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            repo: None,
+            prefix: None,
+            shell_path: None,
+            hook_assets_repo: None,
+            hook_assets_branch: None,
+            require_pre_receive_qa: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct CatalogRepoRecord {
     #[serde(default)]
@@ -157,15 +204,39 @@ pub struct CatalogRepoRecord {
     pub limits: Option<serde_json::Value>,
     #[serde(default)]
     pub last_history_reset: Option<serde_json::Value>,
+    /// Pre-rendered SSR fragment cache (mesh bare). When enabled, parked HTML is composed
+    /// from cache blobs — no live `ssrClientHookFromGetContext` on the request path.
+    #[serde(default, rename = "ssrCache", alias = "ssr_cache")]
+    pub ssr_cache: Option<SsrCacheSpec>,
+    /// Tip-owned client GET hook path (e.g. `hooks/client/get.jsx`). Prefer this when the
+    /// hosting repo ships its own CleverScript/JSX client hook.
+    #[serde(default, rename = "clientHook", alias = "client_hook")]
+    pub client_hook: Option<String>,
+    /// Catalog-assigned default client GET hook when the tip has no `clientHook`.
+    /// May match the fleet `catalog/index.json` `defaultClientHook`, or a tip-copied stub
+    /// (e.g. `hooks/client/default-get.jsx`) that can grow auto-indexing later.
+    #[serde(default, rename = "defaultClientHook", alias = "default_client_hook")]
+    pub default_client_hook: Option<String>,
 }
 
 fn default_publish_branch() -> String {
     "main".to_string()
 }
 
+/// Universal client GET hook path when tip + catalog omit an association (OPTIONS / CSR fallback).
+pub const UNIVERSAL_CLIENT_HOOK_REL: &str = "hooks/client/get.jsx";
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct CatalogIndexMeta {
+    #[serde(default, rename = "defaultClientHook", alias = "default_client_hook")]
+    default_client_hook: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CatalogIndex {
     pub repos: HashMap<String, CatalogRepoRecord>,
+    /// Fleet-wide default client hook path from `catalog/index.json`.
+    pub default_client_hook: Option<String>,
 }
 
 impl CatalogRepoRecord {
@@ -266,6 +337,36 @@ impl CatalogRepoRecord {
             .unwrap_or(false)
     }
 
+    /// True when this content repo serves parked HTML from a pre-rendered cache bare.
+    pub fn ssr_cache_enabled(&self) -> bool {
+        self.ssr_cache.as_ref().is_some_and(|c| c.enabled)
+    }
+
+    /// Validated cache spec when enabled (repo + prefix + shell required).
+    pub fn ssr_cache_spec(&self) -> Option<&SsrCacheSpec> {
+        let c = self.ssr_cache.as_ref()?;
+        if !c.enabled {
+            return None;
+        }
+        let prefix = c.prefix.as_deref()?.trim();
+        let shell = c.shell_path.as_deref()?.trim();
+        if prefix.is_empty() || shell.is_empty() {
+            return None;
+        }
+        Some(c)
+    }
+
+    pub fn ssr_cache_repo_slug(&self) -> Option<String> {
+        let c = self.ssr_cache_spec()?;
+        let slug = c
+            .repo
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("relay-ssr-cache");
+        Some(slug.to_string())
+    }
+
     /// When `false`, fleet must not pin tip CIDs or disk-cache IPFS bytes (catalog-only).
     /// Default `true` when unset (same as `relay-ipfs-pin-catalog`).
     pub fn fleet_pin_ipfs(&self) -> bool {
@@ -292,6 +393,29 @@ impl CatalogRepoRecord {
         !self.fleet_pin_ipfs() || self.max_ipfs_bytes() == Some(0)
     }
 
+    /// Hosting / parked site: answers on one or more catalog `domains[]`.
+    pub fn is_hosting(&self) -> bool {
+        self.domains.iter().any(|d| !d.trim().is_empty())
+    }
+
+    /// Tip-owned client hook path from the catalog record (trimmed, no leading slash).
+    pub fn tip_client_hook_rel(&self) -> Option<String> {
+        normalize_hook_rel(self.client_hook.as_deref())
+    }
+
+    /// Per-repo catalog default client hook path (trimmed, no leading slash).
+    pub fn default_client_hook_rel(&self) -> Option<String> {
+        normalize_hook_rel(self.default_client_hook.as_deref())
+    }
+
+    /// Resolve client hook for shell bootstrap: tip `clientHook`, else per-repo
+    /// `defaultClientHook`, else fleet `defaultClientHook`.
+    pub fn resolved_client_hook_rel(&self, fleet_default: Option<&str>) -> Option<String> {
+        self.tip_client_hook_rel()
+            .or_else(|| self.default_client_hook_rel())
+            .or_else(|| normalize_hook_rel(fleet_default))
+    }
+
     pub fn merge_to_publish_requires_catalog_signer(&self, branch: &str) -> bool {
         if branch != self.publish_branch {
             return false;
@@ -305,6 +429,18 @@ impl CatalogRepoRecord {
     }
 }
 
+fn normalize_hook_rel(raw: Option<&str>) -> Option<String> {
+    let p = raw?.trim().trim_start_matches('/').to_string();
+    if p.is_empty() {
+        return None;
+    }
+    Some(p)
+}
+
+fn hook_rel_is_sane(path: &str) -> bool {
+    !path.is_empty() && !path.contains("..") && !path.starts_with('/')
+}
+
 /// Load `catalog/repos/*.json` from a relay-master checkout path.
 pub fn load_catalog_index(catalog_path: &Path) -> anyhow::Result<CatalogIndex> {
     let repos_dir = catalog_path.join("catalog/repos");
@@ -314,6 +450,7 @@ pub fn load_catalog_index(catalog_path: &Path) -> anyhow::Result<CatalogIndex> {
             catalog_path.display()
         );
     }
+    let fleet_default = read_catalog_index_meta(catalog_path).default_client_hook;
     let mut repos = HashMap::new();
     for entry in std::fs::read_dir(&repos_dir).context("read catalog/repos")? {
         let entry = entry?;
@@ -325,10 +462,158 @@ pub fn load_catalog_index(catalog_path: &Path) -> anyhow::Result<CatalogIndex> {
             std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let rec: CatalogRepoRecord =
             serde_json::from_str(&s).with_context(|| format!("parse {}", path.display()))?;
+        validate_ssr_cache_record(&rec)
+            .with_context(|| format!("ssrCache in {}", path.display()))?;
+        validate_client_hook_paths(&rec)
+            .with_context(|| format!("clientHook in {}", path.display()))?;
         let slug = rec.repo.clone();
         repos.insert(slug, rec);
     }
-    Ok(CatalogIndex { repos })
+    let index = CatalogIndex {
+        repos,
+        default_client_hook: normalize_hook_rel(fleet_default.as_deref()),
+    };
+    validate_hosting_client_hooks(&index)?;
+    Ok(index)
+}
+
+fn read_catalog_index_meta(catalog_path: &Path) -> CatalogIndexMeta {
+    let path = catalog_path.join("catalog/index.json");
+    let Ok(s) = std::fs::read_to_string(&path) else {
+        return CatalogIndexMeta::default();
+    };
+    serde_json::from_str(&s).unwrap_or_default()
+}
+
+/// Reject `..` / empty paths on per-repo hook fields.
+pub fn validate_client_hook_paths(rec: &CatalogRepoRecord) -> anyhow::Result<()> {
+    for (label, raw) in [
+        ("clientHook", rec.client_hook.as_deref()),
+        ("defaultClientHook", rec.default_client_hook.as_deref()),
+    ] {
+        if let Some(p) = normalize_hook_rel(raw) {
+            if !hook_rel_is_sane(&p) {
+                anyhow::bail!(
+                    "repo '{}': {} path '{}' is invalid (no '..', no leading slash)",
+                    rec.repo,
+                    label,
+                    p
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every hosting repo (`domains[]` non-empty) must resolve a client hook via tip
+/// `clientHook`, per-repo `defaultClientHook`, or fleet `catalog/index.json` default.
+pub fn validate_hosting_client_hooks(index: &CatalogIndex) -> anyhow::Result<()> {
+    let fleet = index.default_client_hook.as_deref();
+    if let Some(p) = fleet {
+        if !hook_rel_is_sane(p) {
+            anyhow::bail!(
+                "catalog/index.json defaultClientHook '{}' is invalid",
+                p
+            );
+        }
+    }
+    for rec in index.repos.values() {
+        if !rec.is_hosting() {
+            continue;
+        }
+        if rec.resolved_client_hook_rel(fleet).is_none() {
+            anyhow::bail!(
+                "hosting repo '{}': must set clientHook (tip) or defaultClientHook \
+                 (or catalog/index.json defaultClientHook)",
+                rec.repo
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Resolve the client GET hook path for HTML shell bootstrap.
+/// Order: tip `.relay.yaml` path → catalog tip/`defaultClientHook` → fleet default → universal.
+pub fn resolve_client_hook_rel(repo_name: &str, tip_hook_path: Option<&str>) -> String {
+    if let Some(p) = normalize_hook_rel(tip_hook_path) {
+        return p;
+    }
+    if let Some(path) = catalog_path_from_env() {
+        if let Some(index) = try_load_catalog_index(&path) {
+            if let Some(rec) = catalog_record_for_slug(&index, repo_name) {
+                if let Some(p) =
+                    rec.resolved_client_hook_rel(index.default_client_hook.as_deref())
+                {
+                    return p;
+                }
+            } else if let Some(p) = normalize_hook_rel(index.default_client_hook.as_deref()) {
+                return p;
+            }
+        }
+    }
+    UNIVERSAL_CLIENT_HOOK_REL.to_string()
+}
+
+/// Like [`resolve_client_hook_rel`], but against an already-loaded index (tests / bake).
+pub fn resolve_client_hook_rel_with_index(
+    index: &CatalogIndex,
+    repo_name: &str,
+    tip_hook_path: Option<&str>,
+) -> String {
+    if let Some(p) = normalize_hook_rel(tip_hook_path) {
+        return p;
+    }
+    if let Some(rec) = catalog_record_for_slug(index, repo_name) {
+        if let Some(p) = rec.resolved_client_hook_rel(index.default_client_hook.as_deref()) {
+            return p;
+        }
+    } else if let Some(p) = normalize_hook_rel(index.default_client_hook.as_deref()) {
+        return p;
+    }
+    UNIVERSAL_CLIENT_HOOK_REL.to_string()
+}
+
+/// When `ssrCache.enabled`, require non-empty `prefix` + `shellPath` and a sane cache repo slug.
+pub fn validate_ssr_cache_record(rec: &CatalogRepoRecord) -> anyhow::Result<()> {
+    let Some(c) = rec.ssr_cache.as_ref() else {
+        return Ok(());
+    };
+    if !c.enabled {
+        return Ok(());
+    }
+    let prefix = c.prefix.as_deref().unwrap_or("").trim();
+    let shell = c.shell_path.as_deref().unwrap_or("").trim();
+    if prefix.is_empty() {
+        anyhow::bail!(
+            "repo '{}': ssrCache.enabled requires non-empty prefix",
+            rec.repo
+        );
+    }
+    if shell.is_empty() {
+        anyhow::bail!(
+            "repo '{}': ssrCache.enabled requires non-empty shellPath",
+            rec.repo
+        );
+    }
+    if prefix.contains("..") || shell.contains("..") {
+        anyhow::bail!(
+            "repo '{}': ssrCache prefix/shellPath must not contain '..'",
+            rec.repo
+        );
+    }
+    if let Some(slug) = c.repo.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if !slug
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        {
+            anyhow::bail!(
+                "repo '{}': ssrCache.repo '{}' has invalid characters",
+                rec.repo,
+                slug
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Try catalog dir, else return None (caller uses legacy relay-catalog.json only).
@@ -510,6 +795,14 @@ pub fn load_catalog_index_from_bare(bare_path: &Path) -> anyhow::Result<CatalogI
         .and_then(|e| e.to_object(&repo).ok())
         .and_then(|o| o.peel_to_tree().ok())
         .context("catalog/repos/ missing at bare tip")?;
+    let fleet_default = catalog
+        .get_path(Path::new("index.json"))
+        .ok()
+        .and_then(|e| e.to_object(&repo).ok())
+        .and_then(|o| o.peel_to_blob().ok())
+        .and_then(|b| serde_json::from_slice::<CatalogIndexMeta>(b.content()).ok())
+        .unwrap_or_default()
+        .default_client_hook;
     let mut repos = HashMap::new();
     for entry in repos_tree.iter() {
         let name = entry.name().unwrap_or("");
@@ -523,9 +816,18 @@ pub fn load_catalog_index_from_bare(bare_path: &Path) -> anyhow::Result<CatalogI
             .with_context(|| format!("read catalog/repos/{name}"))?;
         let rec: CatalogRepoRecord = serde_json::from_slice(blob.content())
             .with_context(|| format!("parse catalog/repos/{name}"))?;
+        validate_ssr_cache_record(&rec)
+            .with_context(|| format!("ssrCache in catalog/repos/{name}"))?;
+        validate_client_hook_paths(&rec)
+            .with_context(|| format!("clientHook in catalog/repos/{name}"))?;
         repos.insert(rec.repo.clone(), rec);
     }
-    Ok(CatalogIndex { repos })
+    let index = CatalogIndex {
+        repos,
+        default_client_hook: normalize_hook_rel(fleet_default.as_deref()),
+    };
+    validate_hosting_client_hooks(&index)?;
+    Ok(index)
 }
 
 /// Resolve parked-domain map: worktree catalog → bare relay-master tip → state map file.
@@ -618,6 +920,9 @@ mod tests {
             limits: None,
             last_history_reset: None,
             description: None,
+            ssr_cache: None,
+            client_hook: None,
+            default_client_hook: None,
         };
         assert_eq!(rec.verify_key_lines().len(), 2);
         assert_eq!(rec.authorize_key_lines().len(), 1);
@@ -642,7 +947,37 @@ mod tests {
             limits: None,
             last_history_reset: None,
             description: None,
+            ssr_cache: None,
+            // Hosting fixtures default to tip clientHook so domain-map tests stay valid.
+            client_hook: if domains.is_empty() {
+                None
+            } else {
+                Some(UNIVERSAL_CLIENT_HOOK_REL.into())
+            },
+            default_client_hook: None,
         }
+    }
+
+    #[test]
+    fn ssr_cache_enabled_requires_prefix_and_shell() {
+        let mut rec = rec_with_domains("park", &["example.com"]);
+        rec.ssr_cache = Some(SsrCacheSpec {
+            enabled: true,
+            repo: Some("relay-ssr-cache".into()),
+            prefix: None,
+            shell_path: Some("sites/x/_shell.html".into()),
+            hook_assets_repo: None,
+            hook_assets_branch: None,
+            require_pre_receive_qa: true,
+        });
+        assert!(validate_ssr_cache_record(&rec).is_err());
+        rec.ssr_cache.as_mut().unwrap().prefix = Some("sites/x/".into());
+        assert!(validate_ssr_cache_record(&rec).is_ok());
+        assert!(rec.ssr_cache_enabled());
+        assert_eq!(
+            rec.ssr_cache_repo_slug().as_deref(),
+            Some("relay-ssr-cache")
+        );
     }
 
     fn index_of(records: Vec<CatalogRepoRecord>) -> CatalogIndex {
@@ -650,7 +985,112 @@ mod tests {
         for r in records {
             repos.insert(r.repo.clone(), r);
         }
-        CatalogIndex { repos }
+        CatalogIndex {
+            repos,
+            default_client_hook: None,
+        }
+    }
+
+    #[test]
+    fn hosting_repo_requires_client_hook_association() {
+        let mut bare = rec_with_domains("park", &["example.com"]);
+        bare.client_hook = None;
+        bare.default_client_hook = None;
+        let idx = index_of(vec![bare]);
+        let err = validate_hosting_client_hooks(&idx).unwrap_err().to_string();
+        assert!(
+            err.contains("must set clientHook") || err.contains("defaultClientHook"),
+            "unexpected: {err}"
+        );
+
+        let mut with_default = rec_with_domains("park", &["example.com"]);
+        with_default.client_hook = None;
+        with_default.default_client_hook = Some("hooks/client/default-get.jsx".into());
+        assert!(validate_hosting_client_hooks(&index_of(vec![with_default])).is_ok());
+
+        let mut with_tip = rec_with_domains("park", &["example.com"]);
+        with_tip.client_hook = Some("hooks/client/get.jsx".into());
+        assert!(validate_hosting_client_hooks(&index_of(vec![with_tip])).is_ok());
+
+        // Fleet default satisfies hosting repos that omit both fields.
+        let mut inherit = rec_with_domains("park", &["example.com"]);
+        inherit.client_hook = None;
+        inherit.default_client_hook = None;
+        let mut idx = index_of(vec![inherit]);
+        idx.default_client_hook = Some(UNIVERSAL_CLIENT_HOOK_REL.into());
+        assert!(validate_hosting_client_hooks(&idx).is_ok());
+    }
+
+    #[test]
+    fn non_hosting_repo_skips_client_hook_requirement() {
+        let rec = rec_with_domains("data-only", &[]);
+        assert!(!rec.is_hosting());
+        assert!(validate_hosting_client_hooks(&index_of(vec![rec])).is_ok());
+    }
+
+    #[test]
+    fn resolve_client_hook_prefers_tip_then_default() {
+        let mut rec = rec_with_domains("park", &["example.com"]);
+        rec.client_hook = Some("hooks/client/get.jsx".into());
+        rec.default_client_hook = Some("hooks/client/default-get.jsx".into());
+        let idx = index_of(vec![rec]);
+        assert_eq!(
+            resolve_client_hook_rel_with_index(&idx, "park", Some("hooks/client/custom.jsx")),
+            "hooks/client/custom.jsx"
+        );
+        assert_eq!(
+            resolve_client_hook_rel_with_index(&idx, "park", None),
+            "hooks/client/get.jsx"
+        );
+        let mut only_default = rec_with_domains("park2", &["a.example.com"]);
+        only_default.client_hook = None;
+        only_default.default_client_hook = Some("hooks/client/default-get.jsx".into());
+        let idx2 = index_of(vec![only_default]);
+        assert_eq!(
+            resolve_client_hook_rel_with_index(&idx2, "park2", None),
+            "hooks/client/default-get.jsx"
+        );
+    }
+
+    #[test]
+    fn client_hook_path_rejects_dotdot() {
+        let mut rec = rec_with_domains("park", &["example.com"]);
+        rec.client_hook = Some("hooks/../secret.jsx".into());
+        assert!(validate_client_hook_paths(&rec).is_err());
+    }
+
+    #[test]
+    fn fleet_catalog_hosting_repos_have_client_hook_association() {
+        // Walk up from CARGO_MANIFEST_DIR (relay-gateway) → repo root → relay-master.
+        let gateway = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let master = gateway
+            .parent()
+            .map(|p| p.join("relay-master"))
+            .expect("workspace parent");
+        if !master.join("catalog/repos").is_dir() {
+            eprintln!("skip: relay-master catalog not present at {}", master.display());
+            return;
+        }
+        let index = load_catalog_index(&master).expect("fleet catalog must load");
+        assert!(
+            index.default_client_hook.as_deref() == Some(UNIVERSAL_CLIENT_HOOK_REL)
+                || index.default_client_hook.is_some(),
+            "expected fleet defaultClientHook, got {:?}",
+            index.default_client_hook
+        );
+        let hosting: Vec<_> = index.repos.values().filter(|r| r.is_hosting()).collect();
+        assert!(
+            !hosting.is_empty(),
+            "expected at least one hosting repo in fleet catalog"
+        );
+        for rec in hosting {
+            assert!(
+                rec.resolved_client_hook_rel(index.default_client_hook.as_deref())
+                    .is_some(),
+                "hosting repo {} missing client hook association",
+                rec.repo
+            );
+        }
     }
 
     #[test]

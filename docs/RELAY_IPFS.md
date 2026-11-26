@@ -77,7 +77,7 @@ For catalog `thin_ipfs_assets` repos, **GET** on a logical path **missing from t
 
 ## Fleet Kubo (`install.sh`)
 
-Production **`install.sh update`** / **`install`** installs **Kubo v0.32.1** by default (`RELAY_INSTALL_IPFS=0` to skip). It does **not** bind Kubo’s default **:8080** (that is **relay-gateway**).
+Production **`install.sh update`** / **`install`** leave Kubo **off** by default. Set **`RELAY_INSTALL_IPFS=1`** to install **Kubo v0.32.1** when seed pins are needed again. It does **not** bind Kubo’s default **:8080** (that is **relay-gateway**).
 
 | Port | Bind | Role |
 |------|------|------|

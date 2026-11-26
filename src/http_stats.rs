@@ -286,18 +286,48 @@ impl HttpStatsStore {
             })
             .collect();
 
+        let w1h = sum_window(60);
+        let w24h = sum_window(MINUTE_HISTORY as u64);
         HttpTrafficStats {
             enabled: true,
             req_1m: sum_window(1).requests,
-            req_1h: sum_window(60).requests,
-            req_24h: sum_window(MINUTE_HISTORY as u64).requests,
-            window_1h: sum_window(60),
+            req_1h: w1h.requests,
+            req_24h: w24h.requests,
+            html_1h: w1h.html,
+            html_24h: w24h.html,
+            window_1h: w1h,
             p50_ms: p50,
             p95_ms: p95,
             top_hosts,
             hosts,
             top_paths,
         }
+    }
+
+    /// HTML pageviews in the last `minutes` (optionally for one Host).
+    fn html_pageviews(&mut self, host_filter: Option<&str>, minutes: u64) -> u64 {
+        self.roll_if_needed();
+        let mins = minutes.max(1);
+        let cutoff = now_minute().saturating_sub(mins.saturating_sub(1));
+        let want = host_filter.map(sanitize_host).filter(|s| !s.is_empty());
+        let mut total = 0u64;
+        let mut add = |b: &MinuteBucket| {
+            if b.minute < cutoff {
+                return;
+            }
+            if let Some(ref h) = want {
+                if let Some(hm) = b.hosts.get(h) {
+                    total = total.saturating_add(hm.html);
+                }
+            } else {
+                total = total.saturating_add(b.html);
+            }
+        };
+        for b in &self.history {
+            add(b);
+        }
+        add(&self.current);
+        total
     }
 }
 
@@ -324,7 +354,7 @@ fn classify_path(path: &str) -> PathClass {
     PathClass::Other
 }
 
-fn sanitize_host(raw: &str) -> String {
+pub fn sanitize_host(raw: &str) -> String {
     let h = raw.split(',').next().unwrap_or(raw).trim();
     let h = h.split(':').next().unwrap_or(h).trim().to_ascii_lowercase();
     if h.is_empty() || h.len() > 253 {
@@ -614,6 +644,12 @@ pub struct HttpTrafficStats {
     pub req_1m: u64,
     pub req_1h: u64,
     pub req_24h: u64,
+    /// HTML pageviews (no `/api/*`, no media extensions) — last hour.
+    #[serde(default)]
+    pub html_1h: u64,
+    /// HTML pageviews — last 24 hours.
+    #[serde(default)]
+    pub html_24h: u64,
     pub window_1h: WindowStats,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub p50_ms: Option<u32>,
@@ -676,6 +712,17 @@ pub fn snapshot() -> Option<HttpTrafficStats> {
     }
     let mut g = store().lock().ok()?;
     Some(g.snapshot())
+}
+
+/// Coarse HTML pageview count for vanity / fleet hit counters (no client IPs).
+pub fn html_pageviews(host_filter: Option<&str>, minutes: u64) -> u64 {
+    if !enabled() {
+        return 0;
+    }
+    let Ok(mut g) = store().lock() else {
+        return 0;
+    };
+    g.html_pageviews(host_filter, minutes)
 }
 
 pub fn record_sample(status: u16, elapsed: Duration, path: &str, host: Option<&str>) {
@@ -750,6 +797,21 @@ mod tests {
             sanitize_html_path("/science/computing/crichtons-prophecy.md?x=1#h"),
             Some("/science/computing/crichtons-prophecy.md".into())
         );
+    }
+
+    #[test]
+    fn html_pageviews_filters_by_host() {
+        let mut store = empty_store();
+        store.record(200, 5, "/the-mummy-1999-debugged", Some("flashbackrepository.org"));
+        store.record(200, 5, "/setup", Some("flashbackrepository.org"));
+        store.record(200, 5, "/api/status", Some("flashbackrepository.org"));
+        store.record(200, 5, "/other", Some("paradigmthreat.net"));
+        assert_eq!(
+            store.html_pageviews(Some("flashbackrepository.org"), 60),
+            2
+        );
+        assert_eq!(store.html_pageviews(None, 60), 3);
+        assert_eq!(store.html_pageviews(Some("FLASHBACKREPOSITORY.ORG:443"), 60), 2);
     }
 
     #[test]

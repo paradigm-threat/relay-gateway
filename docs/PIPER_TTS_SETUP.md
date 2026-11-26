@@ -173,17 +173,18 @@ curl http://localhost:5590/voices | jq .voices[].id
 The app fetches voices on startup via:
 
 ```
-GET http://atlanta2.relaygateway.net:5590/voices
-GET http://atlanta3.relaygateway.net:5590/voices
+GET http://iad1.relaygateway.net:5590/voices
+GET http://ord1.relaygateway.net:5590/voices
+GET http://hkg1.relaygateway.net:5590/voices
 ```
 
 Configured in `.env`:
 
 ```bash
-PIPER_API_URLS=http://atlanta2.relaygateway.net:5590 http://atlanta3.relaygateway.net:5590
+PIPER_API_URLS=http://iad1.relaygateway.net:5590 http://ord1.relaygateway.net:5590 http://hkg1.relaygateway.net:5590
 ```
 
-If one server is unavailable, the app falls back to the other.
+If one server is unavailable, the app falls back to the others.
 
 ### Other Clients
 

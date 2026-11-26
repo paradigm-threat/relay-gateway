@@ -37,6 +37,10 @@ name = "relay-ops"
 path = "src/bin/relay-ops/main.rs"
 
 [[bin]]
+name = "relay-ssr-bake"
+path = "src/bin/relay-ssr-bake.rs"
+
+[[bin]]
 name = "relay-brain"
 path = "src/bin/relay-brain/main.rs"
 

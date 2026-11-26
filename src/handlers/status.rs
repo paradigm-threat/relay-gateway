@@ -224,6 +224,12 @@ pub(crate) struct RepoStatus {
     /// True when `indexed_head_sha` matches the git publish/HEAD tip.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_fresh: Option<bool>,
+    /// True while a background `spawn_ensure_indexed` is in flight for this tip.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_pending: Option<bool>,
+    /// Last background warm error (cleared on success).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_last_error: Option<String>,
     /// Row count in the `index` collection (diagnostics).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_doc_count: Option<u64>,
@@ -391,6 +397,11 @@ pub(crate) fn collect_repo_status(state: &AppState) -> Vec<RepoStatus> {
             let git_tip = publish_sha.as_deref().or(head_sha.as_deref());
             let index_fresh =
                 index_fresh_for_tip(indexed_head_sha.as_deref(), git_tip);
+            let bare = state.repo_path.join(format!("{name}.git"));
+            let pending_info = index_branch
+                .and_then(|b| git::index_pending_for(&bare, b));
+            let index_pending = pending_info.as_ref().map(|p| p.pending);
+            let index_last_error = pending_info.and_then(|p| p.last_error);
 
             RepoStatus {
                 name,
@@ -405,6 +416,8 @@ pub(crate) fn collect_repo_status(state: &AppState) -> Vec<RepoStatus> {
                 branch_count,
                 indexed_head_sha,
                 index_fresh,
+                index_pending,
+                index_last_error,
                 index_doc_count,
                 ipfs,
             }

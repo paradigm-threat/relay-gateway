@@ -1,961 +1,178 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <title>Relay ops</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <link rel="icon" type="image/png" href="/favicon.png" sizes="64x64"/>
-  <link rel="icon" type="image/png" href="/icon.png" sizes="192x192"/>
-  <link rel="apple-touch-icon" href="/icon.png"/>
-  <style>
-    :root { color-scheme: dark; --bg:#111; --card:#1c1c1c; --ok:#3dd68c; --bad:#ff6b6b; --warn:#f5c542; --muted:#9aa; --link:#8cb4ff; }
-    body { font: 15px/1.4 system-ui, sans-serif; background: var(--bg); color: #eee; margin: 0; }
-    header { padding: 16px 20px; border-bottom: 1px solid #333; display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
-    .brand { display:flex; align-items:center; gap:10px; }
-    .brand img { width:28px; height:28px; display:block; border-radius:6px; }
-    h1 { font-size: 18px; margin: 0; }
-    h2 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
-    .pill { padding: 2px 10px; border-radius: 999px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
-    .admin { background: #143d2a; color: var(--ok); }
-    .ro { background: #3d2020; color: var(--bad); }
-    main { padding: 16px 20px 40px; display:grid; gap:16px; }
-    .grid { display:grid; gap:12px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
-    .card { background: var(--card); border: 1px solid #2a2a2a; border-radius: 10px; padding: 14px; }
-    .card.sel { border-color: #3d6aa0; }
-    .row { display:flex; justify-content:space-between; gap:8px; margin: 4px 0; }
-    .muted { color: var(--muted); }
-    .ok { color: var(--ok); }
-    .bad { color: var(--bad); }
-    .warn { color: var(--warn); }
-    .banner { background:#3d2a12; border:1px solid #6b3a12; border-radius:8px; padding:8px 10px; margin-top:8px; }
-    button { background:#2b4c7e; color:#fff; border:0; border-radius:6px; padding:6px 10px; cursor:pointer; }
-    button:disabled { opacity:.45; cursor:not-allowed; }
-    button.warn { background:#6b3a12; }
-    button.ghost { background:#333; }
-    button.primary { background:#1f6b45; box-shadow: 0 0 0 2px var(--ok); font-weight: 650; }
-    .rec { margin-top:8px; padding:8px 10px; border-radius:8px; background:#3d2a12; border:1px solid #6b3a12; font-size:13px; }
-    pre { background:#0b0b0b; padding:10px; overflow:auto; max-height:280px; font-size:12px; }
-    pre.fileview { max-height:360px; white-space:pre-wrap; word-break:break-word; }
-    input { background:#0b0b0b; color:#eee; border:1px solid #444; border-radius:6px; padding:6px 8px; }
-    .actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
-    details.repos { margin-top:8px; }
-    details.repos ul { margin: 6px 0 0; padding-left: 18px; max-height: 140px; overflow:auto; }
-    details.repos li { margin: 2px 0; }
-    a, .link { color: var(--link); cursor:pointer; text-decoration:none; }
-    .link:hover { text-decoration:underline; }
-    .browser { display:none; }
-    .browser.on { display:block; }
-    .browser-cols { display:grid; gap:12px; grid-template-columns: 1fr 1fr 1.4fr; }
-    @media (max-width: 900px) { .browser-cols { grid-template-columns: 1fr; } }
-    .list { max-height: 220px; overflow:auto; font-size: 13px; }
-    .list div { padding: 3px 4px; border-radius: 4px; }
-    .list div:hover, .list div.on { background:#2a2a2a; }
-    .sha { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
-    .crumb { margin-bottom: 6px; }
-    .nav { display:flex; gap:8px; margin-left:auto; }
-    .nav button.on { background:#1f6b45; }
-    .panel { display:none; }
-    .panel.on { display:block; }
-    .req { border:1px solid #6b3a12; background:#2a1c0e; border-radius:8px; padding:10px; margin:8px 0; cursor:pointer; }
-    .req.open { border-color: var(--warn); }
-    .req h3 { margin:0 0 6px; font-size:14px; }
-    .ai-diag { font-size:11px; color:var(--muted); margin-top:6px; }
-    #brainFeed { max-height:320px; }
-    #brainChatOut { min-height:40px; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay Fleet</title>
+<link rel="icon" href="/favicon.png">
+<style>
+  :root { --bg:#0f1419; --fg:#e7ecf1; --muted:#8b98a5; --ok:#3dd68c; --bad:#f07178; --warn:#e6c07b; --card:#1a2332; --line:#2a3544; --accent:#59c2ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui,sans-serif; background:var(--bg); color:var(--fg); }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; padding:16px 20px; border-bottom:1px solid var(--line); }
+  h1 { font-size:1.1rem; margin:0; font-weight:600; letter-spacing:.02em; }
+  .muted { color:var(--muted); }
+  button, .btn { background:#243044; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 10px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button:disabled { opacity:.45; cursor:default; }
+  main { padding:16px 20px 48px; display:grid; gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .pill { font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+  .pill.ok { color:var(--ok); border-color:#2a5; }
+  .pill.bad { color:var(--bad); border-color:#a44; }
+  .pill.warn { color:var(--warn); border-color:#a80; }
+  .actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+  pre { white-space:pre-wrap; background:#0b1016; border:1px solid var(--line); padding:10px; border-radius:8px; max-height:240px; overflow:auto; font-size:12px; }
+  .err { color:var(--bad); }
+  .warn-list { margin:8px 0 0; padding-left:18px; color:var(--warn); }
+  .warn-list li { margin:4px 0; }
+</style>
 </head>
 <body>
 <header>
-  <div class="brand">
-    <img src="/icon.png" width="28" height="28" alt="Relay"/>
-    <h1>Relay fleet</h1>
-  </div>
-  <span id="mode" class="pill ro">read-only</span>
-  <span id="source" class="muted"></span>
-  <span id="brainPill" class="pill ro" title="Brain status">brain: —</span>
-  <div class="nav">
-    <button type="button" class="ghost on" id="navFleet" onclick="showPanel('fleet')">Fleet</button>
-    <button type="button" class="ghost" id="navInbox" onclick="showPanel('inbox')">Inbox</button>
-    <button type="button" class="ghost" id="navBrain" onclick="showPanel('brain')">Brain</button>
+  <h1>Relay Fleet</h1>
+  <span id="mode" class="pill">…</span>
+  <span id="credit" class="pill">…</span>
+  <span id="topo" class="muted"></span>
+  <div class="row" style="margin-left:auto">
+    <button id="refresh">Refresh</button>
+    <button id="warmAll">Warm indexes</button>
+    <button id="fleetDns">Fleet DNS</button>
+    <button id="knownHosts">Reset known_hosts</button>
   </div>
 </header>
 <main>
-  <div id="panelFleet" class="panel on">
-  <section class="card">
-    <div class="row"><span>GitLab</span><span id="gitlab" class="muted"></span></div>
-    <div class="row"><span>Inventory</span><span id="inv" class="muted"></span></div>
-    <h2>Observer</h2>
-    <div class="actions">
-      <button title="Re-probe DNS, HTTPS, and git tips now." onclick="refresh()">Refresh</button>
-      <button title="Print fleet FQDNs, SSH user, and identity path." onclick="job({kind:'hosts'})">Hosts</button>
-      <button title="QUERY smoke (+ SSL) against each node." onclick="job({kind:'health'})">Health</button>
-      <button title="HTTPS report for node and parked domains." onclick="job({kind:'ssl'})">SSL</button>
-      <button id="btnIndexWarm" disabled title="Warm SearchStore indexes on nodes where git tip is ahead of indexed_head (post-fetch / startup gap)." onclick="confirmJob('Warm stale SearchStore indexes across the fleet', {kind:'index-warm'})">Warm indexes</button>
-    </div>
-    <h2>Admin / DNS</h2>
-    <div class="actions">
-      <button id="btnSsh" disabled title="SSH true on every node (Admin)." onclick="job({kind:'ssh-check'})">SSH check</button>
-      <button id="btnDrift" disabled title="Compare catalog git HEAD across the fleet (report only; use Synchronize on a cell to fetch)." onclick="job({kind:'drift'})">Drift</button>
-      <button id="btnKh" disabled title="Resets SSH host keys for the whole fleet so Repair/Reclaim can connect after Spot replacement." onclick="resetFleetKnownHosts()">Reset known_hosts</button>
-      <button id="btnDrop" disabled title="Sync fleet.relaygateway.net A records to healthy node IPs (add missing, drop stale). Never empties the set." onclick="act('/api/fleet-dns-drop')">Sync fleet A</button>
-      <button id="btnDnsDry" disabled title="Show desired fleet ingress A set without writing Vercel DNS." onclick="job({kind:'fleet-dns', dry_run:true})">Fleet DNS dry-run</button>
-    </div>
-    <div id="syncBanner"></div>
-  </section>
-  <section id="nodes" class="grid"></section>
-  <section id="browser" class="card browser">
-    <div class="row">
-      <h2 id="browserTitle">Repository browser</h2>
-      <button class="ghost" onclick="closeBrowser()">Close</button>
-    </div>
-    <div id="browserMeta" class="muted"></div>
-    <div class="browser-cols">
-      <div>
-        <h2>Repositories</h2>
-        <div id="repoList" class="list"></div>
-      </div>
-      <div>
-        <h2>Branches</h2>
-        <div id="branchList" class="list"></div>
-      </div>
-      <div>
-        <h2>Files</h2>
-        <div id="crumb" class="crumb muted"></div>
-        <div id="treeList" class="list"></div>
-      </div>
-    </div>
-    <pre id="fileView" class="fileview">Select a file</pre>
-  </section>
-  <section class="card">
-    <h2>Job log</h2>
-    <pre id="log">idle</pre>
-  </section>
-  </div>
-
-  <div id="panelInbox" class="panel">
-    <section class="card">
-      <div class="row">
-        <h2>Inbox</h2>
-        <span id="mailMeta" class="muted">Inbound Maildir (single MX host)</span>
-      </div>
-      <p class="muted" style="margin:6px 0 10px;font-size:13px">
-        Receive-only OpenSMTPD catch-all on one fleet host. Opening a message moves it <code>new/</code> → <code>cur/</code> on the server. Point DNS MX at that host only — do not multi-MX the mesh.
-      </p>
-      <div class="actions">
-        <button type="button" onclick="mailRefresh()">Refresh</button>
-        <button type="button" class="ghost" id="btnMailRead" disabled onclick="mailMarkRead()" title="Already applied on open; use if list is stale">Mark read</button>
-      </div>
-      <div id="mailErr" class="banner" style="display:none"></div>
-      <div class="browser-cols" style="margin-top:12px">
-        <div>
-          <h2>Messages</h2>
-          <div id="mailList" class="list" style="max-height:420px"></div>
-        </div>
-        <div style="grid-column: span 2">
-          <h2 id="mailSubject">Select a message</h2>
-          <div id="mailHdr" class="muted" style="font-size:13px;margin-bottom:8px"></div>
-          <pre id="mailBody" class="fileview" style="max-height:480px">—</pre>
-        </div>
-      </div>
-    </section>
-  </div>
-
-  <div id="panelBrain" class="panel">
-    <section class="card">
-      <div class="row">
-        <h2>Brain</h2>
-        <span id="brainMeta" class="muted"></span>
-        <span id="brainIrcBadge" class="muted" title="Optional IRC ops bus (RELAY_OPS_IRC)"></span>
-      </div>
-      <div class="actions">
-        <button type="button" onclick="brainRefresh()">Refresh brain</button>
-        <button type="button" class="ghost" onclick="brainPost('/api/brain/resume')">Resume</button>
-        <button type="button" class="ghost" onclick="brainPost('/api/brain/pause')">Pause</button>
-        <button type="button" class="ghost" onclick="brainNanoSummary()" title="Uses Gemini Nano Prompt API when available">AI summarize feed</button>
-      </div>
-      <div id="brainAiDiag" class="ai-diag"></div>
-      <h2>Pending requests</h2>
-      <div id="brainRequests" class="muted">Loading…</div>
-      <h2>Activity feed</h2>
-      <pre id="brainFeed">…</pre>
-      <h2>Chat</h2>
-      <div class="actions">
-        <input id="brainChatIn" style="flex:1;min-width:180px" placeholder="status / blocked / message for Cursor…"
-               onkeydown="if(event.key==='Enter')brainSay()"/>
-        <button type="button" onclick="brainSay()">Send</button>
-      </div>
-      <div id="brainChatOut" class="muted"></div>
-      <pre id="brainHandoff" class="fileview" style="display:none"></pre>
-    </section>
+  <div id="banner" class="card muted">Loading…</div>
+  <div id="nodes"></div>
+  <div class="card">
+    <div class="muted">Job log</div>
+    <pre id="job">—</pre>
   </div>
 </main>
 <script>
-let lastSnap = null;
-const browse = { fqdn: null, repo: null, branch: null, prefix: '', loading: false };
-const uiState = { openRepos: new Set(), repoScroll: {} };
+const $ = (id) => document.getElementById(id);
+let snap = null;
 
-function esc(s) {
-  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-function shortSha(s) { return s ? String(s).slice(0, 8) : '—'; }
-
-function parkHostRank(host) {
-  const h = String(host || '').toLowerCase();
-  if (h === 'flashbackrepository.org' || h.endsWith('.flashbackrepository.org')) return 0;
-  if (h.includes('flashback')) return 1;
-  return 2;
-}
-
-function httpStrip(n) {
-  const h = n && n.http;
-  if (!h || h.enabled === false) return '';
-  const p95 = h.p95_ms != null ? (h.p95_ms + 'ms p95') : '—';
-  const p50 = h.p50_ms != null ? (h.p50_ms + 'ms p50') : '';
-  const w = h.window_1h || {};
-  const s5 = w.status_5xx || 0;
-  const s4 = w.status_4xx || 0;
-  const assetN = w.asset || 0;
-  const req1h = h.req_1h != null ? h.req_1h : (w.requests || 0);
-  const errCls = (s5 > 0 || s4 > 20) ? 'warn' : 'muted';
-  const mix = [w.html != null ? ('html ' + w.html) : '', w.api != null ? ('api ' + w.api) : '', w.asset != null ? ('asset ' + w.asset) : '']
-    .filter(Boolean).join(' · ');
-  const hostList = (h.hosts && h.hosts.length)
-    ? h.hosts.slice()
-    : (h.top_hosts || []).map(x => ({ host: x.host, req_1h: x.requests, html: 0 }));
-  hostList.sort((a, b) => parkHostRank(a.host) - parkHostRank(b.host) || ((b.req_1h || b.requests || 0) - (a.req_1h || a.requests || 0)));
-  const hosts = hostList.slice(0, 4).map(x => {
-    const nreq = x.req_1h != null ? x.req_1h : x.requests;
-    const html = x.html != null && x.html > 0 ? (' html ' + x.html) : '';
-    const asset = x.asset != null && x.asset > 0 ? (' asset ' + x.asset) : '';
-    const s5h = x.s5xx != null && x.s5xx > 0 ? (' ' + x.s5xx + '×5xx') : '';
-    const mark = parkHostRank(x.host) <= 1 ? '★ ' : '';
-    return mark + esc(x.host) + ' ' + nreq + html + asset + s5h;
-  }).join(', ');
-  const paths = (h.top_paths || []).slice(0, 3).map(x => esc(x.path) + ' ' + x.requests).join(', ');
-  const errBits = [];
-  if (s5) errBits.push(s5 + '×5xx/h');
-  if (s4) errBits.push(s4 + '×4xx/h');
-  if (assetN && (s4 || s5)) errBits.push('asset ' + assetN + '/h');
-  return `<div class="${errCls}">HTTP ${req1h}/h · ${p50}${p50 && p95 ? ' / ' : ''}${p95}${errBits.length ? (' · ' + errBits.join(' · ')) : ''}</div>`
-    + (mix ? `<div class="muted">${esc(mix)}${hosts ? ' · ' + hosts : ''}</div>` : (hosts ? `<div class="muted">${hosts}</div>` : ''))
-    + (paths ? `<div class="muted">paths ${paths}</div>` : '')
-    + rumStrip(n);
-}
-
-/** IPFS seed lag from /api/status repos[].ipfs (probe.ipfs_repos). */
-function ipfsStrip(n) {
-  if (!n) return '';
-  const parts = [];
-  if (n.ipfs_ok === false) {
-    parts.push('<div class="bad">IPFS down (ipfs_ok=false)</div>');
-  } else if (n.ipfs_ok === true) {
-    parts.push('<div class="muted">IPFS ok</div>');
-  }
-  const repos = n.ipfs_repos || [];
-  if (!repos.length) return parts.join('');
-  const lines = repos.map(r => {
-    const cid = r.cid_count || 0;
-    const cached = r.cached_count || 0;
-    const lag = Math.max(0, cid - cached);
-    const ratio = cid > 0 ? (cached / cid) : 1;
-    const label = esc(r.repo || '?') + ' ' + cached + '/' + cid
-      + (lag ? (' · ' + lag + ' uncached') : '');
-    const hot = lag >= 3 || (cid >= 5 && ratio < 0.9) || (r.repo === 'fan-edits' && lag >= 1);
-    return `<div class="${hot ? 'warn' : 'muted'}">seed ${label}</div>`;
-  });
-  return parts.join('') + lines.join('');
-}
-
-/** Theater typed RUM counts (major/minor + top codes). */
-function rumStrip(n) {
-  if (!n || !n.rum || !n.rum.enabled) return '';
-  const rum = n.rum;
-  const p75 = 'RUM p75 ' + (rum.p75_lcp_ms != null ? Math.round(rum.p75_lcp_ms) + 'ms LCP' : '—')
-    + (rum.p75_ttfc_ms != null ? (' / ' + Math.round(rum.p75_ttfc_ms) + 'ms TTFC') : '')
-    + (rum.events ? (' · ' + rum.events + ' ev') : '');
-  let out = `<div class="muted">${esc(p75)}</div>`;
-  const t = rum.theater24h;
-  if (!t) return out;
-  const major = t.major || 0;
-  const minor = t.minor || 0;
-  const bySev = t.by_severity_code || {};
-  const majorCodes = bySev.major || t.by_code || {};
-  const minorCodes = bySev.minor || {};
-  const top = (obj, nmax) => Object.entries(obj || {})
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, nmax)
-    .map(([k, v]) => esc(k) + '×' + v)
-    .join(' ');
-  const majCls = major >= 5 ? 'warn' : 'muted';
-  const majTop = top(majorCodes, 4);
-  out += `<div class="${majCls}">theater major/24h ${major}${majTop ? (' · ' + majTop) : ''}</div>`;
-  if (minor > 0) {
-    const minTop = top(minorCodes, 3);
-    out += `<div class="muted">theater minor/24h ${minor}${minTop ? (' · ' + minTop) : ''}</div>`;
-  }
-  return out;
-}
-
-function captureRepoUi() {
-  document.querySelectorAll('#nodes [data-fqdn] details.repos').forEach(d => {
-    const fqdn = d.closest('[data-fqdn]')?.dataset.fqdn;
-    if (!fqdn) return;
-    if (d.open) uiState.openRepos.add(fqdn);
-    else uiState.openRepos.delete(fqdn);
-    const ul = d.querySelector('ul');
-    if (ul) uiState.repoScroll[fqdn] = ul.scrollTop;
-  });
-}
-
-function restoreRepoUi(card) {
-  const fqdn = card.dataset.fqdn;
-  const details = card.querySelector('details.repos');
-  if (!details) return;
-  details.open = uiState.openRepos.has(fqdn) || browse.fqdn === fqdn;
-  const ul = details.querySelector('ul');
-  if (ul && uiState.repoScroll[fqdn]) ul.scrollTop = uiState.repoScroll[fqdn];
-  details.addEventListener('toggle', () => {
-    if (details.open) uiState.openRepos.add(fqdn);
-    else uiState.openRepos.delete(fqdn);
-  });
-}
-
-function nodeCardHtml(n, d) {
-  const inv = d.inventory || {};
-  const admin = !!inv.admin_ready;
-  const spot = (d.spot || []).find(s => (n.spot_cloudspace && s.cloudspace === n.spot_cloudspace));
-  const drift = spot && n.dns && n.dns.length && !n.dns.includes(spot.ip);
-  const cfg = n.https_config || {};
-  const repos = cfg.repos || [];
-  const auth = cfg.authorized_repos || [];
-  const missing = n.missing_repos || [];
-  const driftRows = n.drift || [];
-  const indexStale = n.index_stale_repos || [];
-  const anomalies = n.sync_anomalies || [];
-  const tips = n.git_tips || [];
-  const names = [...new Set([...(repos), ...missing])];
-  const rec = n.recommendation || null;
-  const primary = rec && rec.primary_action ? rec.primary_action : '';
-  const repoItems = names.map(name => {
-    const tip = tips.find(t => t.repo === name);
-    const sha = tip && tip.sha ? shortSha(tip.sha) : '';
-    const err = tip && tip.error ? ' ' + tip.error : '';
-    const isMissing = missing.includes(name);
-    const drow = driftRows.find(x => x.repo === name);
-    const staleRow = indexStale.find(x => x.repo === name);
-    const driftLabel = drow
-      ? (drow.kind === 'replica_ahead'
-          ? ' <span class="bad">ahead of publisher ' + esc(drow.branch) + '</span>'
-          : ' <span class="warn">drift ' + esc(drow.branch) + '</span>')
-      : '';
-    const indexLabel = staleRow
-      ? ' <span class="warn">index stale</span>'
-      : '';
-    const ip = (n.ipfs_repos || []).find(x => x.repo === name);
-    let seedLabel = '';
-    if (ip && (ip.cid_count || 0) > 0) {
-      const lag = Math.max(0, (ip.cid_count || 0) - (ip.cached_count || 0));
-      const seedCls = lag >= 1 ? 'warn' : 'ok';
-      seedLabel = ` <span class="${seedCls}">seed ${ip.cached_count || 0}/${ip.cid_count}${lag ? (' · ' + lag + ' lag') : ''}</span>`;
-    }
-    const mark = isMissing ? ' <span class="bad">missing</span>' : driftLabel + indexLabel;
-    return `<li><span class="link" onclick="openBrowser('${esc(n.fqdn)}','${esc(name)}')">${esc(name)}</span>` +
-      (sha ? ` <span class="sha">${esc(sha)}</span>` : '') +
-      mark +
-      seedLabel +
-      (err ? ` <span class="bad">${esc(err)}</span>` : '') +
-      `</li>`;
-  }).join('');
-  const extraTips = tips.filter(t => !names.includes(t.repo)).map(t =>
-    `<li class="muted">${esc(t.repo)} ${t.sha ? esc(shortSha(t.sha)) : esc(t.error || '')}</li>`
-  ).join('');
-  const syncClass = !n.healthy ? 'bad' : (anomalies.length ? 'bad' : (n.park_tls_ok === false ? 'warn' : (!n.sync_ok ? 'warn' : (!n.index_ok ? 'warn' : 'ok'))));
-  const syncLabel = !n.healthy ? 'down' : (anomalies.length ? 'anomaly' : (n.park_tls_ok === false ? 'tls' : (!n.sync_ok ? 'sync' : (!n.index_ok ? 'index' : 'up'))));
-  const repoCountLabel = repos.length
-    ? (repos.length + ' repo' + (repos.length === 1 ? '' : 's'))
-    : (tips.length ? (tips.length + ' repo' + (tips.length === 1 ? '' : 's')) : '0 repos');
-  const syncDetail = !n.sync_ok
-    ? `<div class="warn">${missing.length ? ('missing ' + missing.join(', ')) : ''}` +
-      `${missing.length && driftRows.length ? ' · ' : ''}` +
-      `${driftRows.length ? ('drift ' + driftRows.map(x => x.repo + '@' + x.branch + (x.kind === 'replica_ahead' ? ' (ahead)' : '')).join(', ')) : ''}</div>`
-    : '';
-  const parkTlsDetail = n.park_tls_ok === false
-    ? `<div class="warn">park TLS broken${n.park_tls_domain ? (' (' + esc(n.park_tls_domain) + ' via node IP)') : ''} — run SSL</div>`
-    : '';
-  const anomalyDetail = anomalies.length
-    ? `<div class="bad">${anomalies.map(a => esc(a.repo + '@' + a.branch + ': publisher ' + a.publisher_fqdn + ' behind ' + a.replica_fqdn)).join(' · ')}</div>`
-    : '';
-  const indexDetail = indexStale.length
-    ? `<div class="warn">index stale: ${indexStale.map(s => esc(s.repo + '@' + shortSha(s.tip_sha))).join(', ')}</div>`
-    : '';
-  const recHtml = rec && rec.message
-    ? `<div class="rec">${esc(rec.message)}</div>`
-    : '';
-  const btn = (action, label, extraClass, onclick) => {
-    const isPri = primary === action;
-    const cls = [extraClass, isPri ? 'primary' : ''].filter(Boolean).join(' ');
-    return `<button class="${cls}" data-action="${action}" title="${esc(ACTION_TITLES[action] || '')}" onclick="${onclick}">${label}</button>`;
-  };
-  const peer = healthyPeer(n.fqdn);
-  const vis = n.visible_actions || {};
-  const actions = [];
-  if (inv.vercel_token && vis['point-dns']) {
-    actions.push(btn('point-dns', 'Point DNS to Spot IP', '', `point('${esc(n.fqdn)}', '${spot ? esc(spot.ip) : ''}')`));
-  }
-  if (admin && vis.sync) {
-    actions.push(btn('sync', 'Synchronize', '', `confirmJob('Synchronize ' + '${esc(n.fqdn)}' + ' with catalog/peer tips', {kind:'sync', fqdn:'${esc(n.fqdn)}', peer:'${esc(peer)}'})`));
-  }
-  if (admin && vis['index-warm']) {
-    actions.push(btn('index-warm', 'Warm indexes', '', `confirmJob('Warm stale indexes on ' + '${esc(n.fqdn)}', {kind:'index-warm', fqdn:'${esc(n.fqdn)}'})`));
-  }
-  if (admin && vis.repair) {
-    actions.push(btn('repair', 'Repair', '', `confirmJob('Repair (install.sh) ' + '${esc(n.fqdn)}', {kind:'repair', fqdn:'${esc(n.fqdn)}'})`));
-  }
-  if (admin && vis.reclaim) {
-    const ip = spot ? esc(spot.ip) : esc((n.dns && n.dns[0]) || '');
-    actions.push(btn('reclaim', 'Reclaim', 'warn', `confirmJob('Reclaim (Spot install-only) ' + '${esc(n.fqdn)}', {kind:'reclaim', fqdn:'${esc(n.fqdn)}', ip: '${ip}'} )`));
-  }
-  if (n.park_tls_ok === false) {
-    actions.push(btn('ssl', 'SSL report', '', `job({kind:'ssl'})`));
-  }
-  return `
-      <div class="row"><strong>${esc(n.fqdn)}</strong><span class="${syncClass}">${syncLabel}</span></div>
-      <div class="muted">DNS ${ (n.dns||[]).join(', ') || '—' }</div>
-      <div class="muted">tcp 22=${n.tcp22} 443=${n.tcp443} git=${n.tcp_git}</div>
-      <div class="muted">${esc(cfg.relay_server_id || 'no /api/config')}</div>
-      ${httpStrip(n)}
-      ${ipfsStrip(n)}
-      <div class="row">
-        <span>${repoCountLabel}${auth.length ? ' · ' + auth.length + ' authorized' : ''}${n.sync_ok && n.healthy ? ' · in sync' : ''}</span>
-        <span class="link" onclick="openBrowser('${esc(n.fqdn)}')">${(repos.length || tips.length) ? 'Browse' : ''}</span>
-      </div>
-      ${syncDetail}
-      ${parkTlsDetail}
-      ${anomalyDetail}
-      ${indexDetail}
-      ${spot ? `<div class="${drift ? 'bad' : 'ok'}">Spot ${esc(spot.ip)}${drift ? ' (DNS mismatch)' : ''}</div>` : ''}
-      ${recHtml}
-      <details class="repos">
-        <summary class="muted">Repositories</summary>
-        <ul>${repoItems || '<li class="muted">none from /api/config</li>'}${extraTips}</ul>
-      </details>
-      ${actions.length ? `<div class="actions">${actions.join('')}</div>` : ''}`;
-}
-
-function paintNodes(d) {
-  captureRepoUi();
-  const root = document.getElementById('nodes');
-  const seen = new Set();
-  (d.nodes || []).forEach(n => {
-    seen.add(n.fqdn);
-    let el = root.querySelector(`[data-fqdn="${CSS.escape(n.fqdn)}"]`);
-    if (!el) {
-      el = document.createElement('div');
-      el.dataset.fqdn = n.fqdn;
-      root.appendChild(el);
-    }
-    el.className = 'card' + (browse.fqdn === n.fqdn ? ' sel' : '');
-    el.innerHTML = nodeCardHtml(n, d);
-    restoreRepoUi(el);
-  });
-  root.querySelectorAll('[data-fqdn]').forEach(el => {
-    if (el.dataset.fqdn === 'ingress') return;
-    if (!seen.has(el.dataset.fqdn)) el.remove();
-  });
-  let ing = root.querySelector('[data-fqdn="ingress"]');
-  if (d.ingress) {
-    if (!ing) {
-      ing = document.createElement('div');
-      ing.dataset.fqdn = 'ingress';
-      ing.className = 'card';
-      root.appendChild(ing);
-    }
-    ing.innerHTML = `<div class="row"><strong>${esc(d.ingress.fqdn)}</strong><span class="muted">ingress</span></div>
-      <div class="muted">${esc((d.ingress.dns||[]).join(', ')||'—')}</div>`;
-  } else if (ing) {
-    ing.remove();
-  }
-}
-
-async function snap() {
-  const r = await fetch('/api/snapshot');
-  const d = await r.json();
-  lastSnap = d;
-  document.getElementById('gitlab').textContent = d.gitlab_url || '';
-  document.getElementById('source').textContent = d.topology_source || '';
-  const inv = d.inventory || {};
-  document.getElementById('mode').textContent = inv.admin_ready ? 'admin' : 'read-only';
-  document.getElementById('mode').className = 'pill ' + (inv.admin_ready ? 'admin' : 'ro');
-  document.getElementById('inv').textContent =
-    'ssh=' + inv.ssh_binary + ' identity/agent=' + (inv.identity_file || inv.ssh_agent) +
-    ' vercel=' + inv.vercel_token + ' spot=' + inv.spot_token +
-    ' checkout=' + inv.gateway_checkout;
-  document.getElementById('btnDrop').disabled = !inv.vercel_token;
-  document.getElementById('btnDnsDry').disabled = !inv.vercel_token;
-  document.getElementById('btnSsh').disabled = !inv.admin_ready;
-  document.getElementById('btnDrift').disabled = !inv.admin_ready;
-  document.getElementById('btnIndexWarm').disabled = !inv.admin_ready;
-  const btnKh = document.getElementById('btnKh');
-  btnKh.disabled = !inv.admin_ready;
-  const khNeeded = (d.nodes || []).some(n => n.recommendation && n.recommendation.primary_action === 'known-hosts');
-  btnKh.classList.toggle('primary', !!(inv.admin_ready && khNeeded));
-  const syncNodes = (d.nodes || []).filter(n => n.healthy && n.sync_ok === false);
-  const indexNodes = (d.nodes || []).filter(n => n.healthy && n.index_ok === false);
-  const anomalyNodes = (d.nodes || []).filter(n => n.healthy && (n.sync_anomalies || []).length);
-  const downNodes = (d.nodes || []).filter(n => !n.healthy);
-  const banner = document.getElementById('syncBanner');
-  if (syncNodes.length || indexNodes.length || anomalyNodes.length || downNodes.length) {
-    const bits = [];
-    if (downNodes.length) bits.push(downNodes.length + ' down');
-    if (anomalyNodes.length) bits.push(anomalyNodes.length + ' publish-origin anomaly');
-    if (syncNodes.length) bits.push(syncNodes.length + ' out of sync with publish origin');
-    if (indexNodes.length) bits.push(indexNodes.length + ' index stale');
-    banner.className = 'banner warn';
-    banner.textContent = bits.join(' · ') + (d.catalog_repos && d.catalog_repos.length ? ' · catalog ' + d.catalog_repos.length + ' repos' : '');
-  } else {
-    banner.className = 'muted';
-    banner.textContent = (d.catalog_repos && d.catalog_repos.length)
-      ? ('catalog ' + d.catalog_repos.length + ' repos · all nodes in sync')
-      : '';
-  }
-  paintNodes(d);
-  if (d.job) {
-    document.getElementById('log').textContent = (d.job.kind + ' ' + d.job.target + (d.job.running ? ' running' : '') + '\n' + (d.job.log||''));
-  }
-  if (browse.fqdn) paintBrowserShell();
-}
-
-function nodeCfg(fqdn) {
-  return (lastSnap && lastSnap.nodes || []).find(n => n.fqdn === fqdn);
-}
-
-function healthyPeer(exceptFqdn) {
-  const n = (lastSnap && lastSnap.nodes || []).find(x => x.fqdn !== exceptFqdn && x.healthy && x.sync_ok);
-  return n ? n.fqdn : '';
-}
-
-const ACTION_TITLES = {
-  'point-dns': 'Point this node FQDN A record at the current Spot IP. Use when DNS A ≠ Spot IP (SSH may hit the wrong box). Not for git tip drift.',
-  'sync': 'Click to synchronize this node with catalog/peer tips.',
-  'index-warm': 'Rebuild SearchStore for repos whose indexed_head lags git tip (after peer fetch without post-receive).',
-  'repair': 'Run install.sh repair on an existing /opt/relay install. Use when units are broken. Not for host-key change, empty VMs, or git tip drift.',
-  'reclaim': 'Spot install-only (relay-master-deploy.sh). Use when SSH works but /opt/relay is missing (new empty VM). Reinstalls; not for git tip drift.',
-  'known-hosts': 'Resets SSH host keys for the whole fleet so Repair/Reclaim can connect after Spot replacement.',
-  'ssl': 'HTTPS report for node FQDNs and parked domains (per-IP SNI). Use when park TLS is broken on a master.'
-};
-
-function paintBrowserShell() {
-  const panel = document.getElementById('browser');
-  panel.classList.add('on');
-  document.getElementById('browserTitle').textContent = browse.fqdn;
-  const n = nodeCfg(browse.fqdn);
-  const repos = (n && n.https_config && n.https_config.repos) || [];
-  document.getElementById('browserMeta').textContent =
-    repos.length + ' bare repos on this node · HTTPS X-Relay-Tree (git:// fallback)';
-  document.getElementById('repoList').innerHTML = repos.map(name =>
-    `<div class="${browse.repo === name ? 'on' : ''} link" onclick="selectRepo('${esc(name)}')">${esc(name)}</div>`
-  ).join('') || '<div class="muted">no repos</div>';
-}
-
-async function openBrowser(fqdn, repo) {
-  browse.fqdn = fqdn;
-  browse.prefix = '';
-  document.getElementById('fileView').textContent = 'Select a file';
-  paintBrowserShell();
-  document.getElementById('browser').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  if (repo) await selectRepo(repo);
-}
-
-function closeBrowser() {
-  browse.fqdn = null; browse.repo = null; browse.branch = null; browse.prefix = '';
-  document.getElementById('browser').classList.remove('on');
-  snap();
-}
-
-async function selectRepo(repo) {
-  browse.repo = repo;
-  browse.branch = null;
-  browse.prefix = '';
-  paintBrowserShell();
-  document.getElementById('branchList').textContent = 'loading…';
-  document.getElementById('treeList').innerHTML = '';
-  document.getElementById('crumb').textContent = '';
-  document.getElementById('fileView').textContent = 'Select a file';
-  const q = new URLSearchParams({ fqdn: browse.fqdn, repo });
-  const r = await fetch('/api/git/refs?' + q.toString());
-  const d = await r.json();
-  if (!r.ok) {
-    document.getElementById('branchList').innerHTML = `<div class="bad">${esc(d.error || r.status)}</div>`;
-    return;
-  }
-  const rows = Array.isArray(d) ? d : [];
-  document.getElementById('branchList').innerHTML = rows.map(b =>
-    `<div class="link" data-br="${esc(b.name)}" onclick="selectBranch('${esc(b.name)}')">` +
-    `${esc(b.name)} <span class="sha">${esc(shortSha(b.sha))}</span></div>`
-  ).join('') || '<div class="muted">no branches</div>';
-  const prefer = rows.find(b => b.name === 'release') || rows.find(b => b.name === 'main') || rows[0];
-  if (prefer) await selectBranch(prefer.name);
-}
-
-async function selectBranch(name) {
-  browse.branch = name;
-  browse.prefix = '';
-  [...document.querySelectorAll('#branchList [data-br]')].forEach(el => {
-    el.classList.toggle('on', el.getAttribute('data-br') === name);
-  });
-  await loadTree('');
-}
-
-function crumbHtml() {
-  const parts = browse.prefix ? browse.prefix.split('/') : [];
-  let acc = '';
-  let html = `<span class="link" onclick="loadTree('')">${esc(browse.repo)}</span>`;
-  parts.forEach((p, i) => {
-    acc = parts.slice(0, i + 1).join('/');
-    html += ` / <span class="link" onclick="loadTree('${esc(acc)}')">${esc(p)}</span>`;
-  });
-  return html + (browse.branch ? ` <span class="sha">@ ${esc(browse.branch)}</span>` : '');
-}
-
-async function loadTree(prefix) {
-  browse.prefix = prefix || '';
-  document.getElementById('crumb').innerHTML = crumbHtml();
-  document.getElementById('treeList').textContent = 'loading…';
-  const q = new URLSearchParams({ fqdn: browse.fqdn, repo: browse.repo, git_ref: browse.branch, prefix: browse.prefix });
-  const r = await fetch('/api/git/tree?' + q.toString());
-  const d = await r.json();
-  if (!r.ok) {
-    document.getElementById('treeList').innerHTML = `<div class="bad">${esc(d.error || r.status)}</div>`;
-    return;
-  }
-  const rows = Array.isArray(d) ? d : [];
-  document.getElementById('treeList').innerHTML = rows.map(e => {
-    const next = browse.prefix ? browse.prefix + '/' + e.name : e.name;
-    if (e.kind === 'tree') {
-      return `<div class="link" onclick="loadTree('${esc(next)}')">📁 ${esc(e.name)}/</div>`;
-    }
-    return `<div class="link" onclick="openFile('${esc(next)}')">📄 ${esc(e.name)}</div>`;
-  }).join('') || '<div class="muted">empty</div>';
-}
-
-async function openFile(path) {
-  document.getElementById('fileView').textContent = 'loading ' + path + '…';
-  const q = new URLSearchParams({ fqdn: browse.fqdn, repo: browse.repo, git_ref: browse.branch, path });
-  const r = await fetch('/api/git/file?' + q.toString());
-  const d = await r.json();
-  if (!r.ok) {
-    document.getElementById('fileView').textContent = d.error || ('HTTP ' + r.status);
-    return;
-  }
-  const note = (d.binary ? 'binary · ' : '') + (d.truncated ? 'truncated · ' : '');
-  document.getElementById('fileView').textContent = (note ? '# ' + note + d.path + '\n\n' : '') + (d.text || '');
-}
-
-async function refresh() { await fetch('/api/refresh', {method:'POST'}); await snap(); }
-async function act(url, body) {
-  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : '{}'});
+async function api(path, opts) {
+  const r = await fetch(path, opts);
   const t = await r.text();
-  document.getElementById('log').textContent = t;
-  await snap();
-}
-function job(body) { return act('/api/job', body); }
-function confirmJob(label, body) {
-  if (!confirm(label + '?')) return;
-  return job(body);
-}
-function point(fqdn, ip) { if (!ip) return; act('/api/point-dns', {fqdn, ip}); }
-function resetFleetKnownHosts() {
-  act('/api/known-hosts-reset', {});
-}
-snap();
-setInterval(snap, 8000);
-
-function showPanel(name) {
-  document.getElementById('panelFleet').classList.toggle('on', name === 'fleet');
-  document.getElementById('panelInbox').classList.toggle('on', name === 'inbox');
-  document.getElementById('panelBrain').classList.toggle('on', name === 'brain');
-  document.getElementById('navFleet').classList.toggle('on', name === 'fleet');
-  document.getElementById('navInbox').classList.toggle('on', name === 'inbox');
-  document.getElementById('navBrain').classList.toggle('on', name === 'brain');
-  if (name === 'brain') brainRefresh();
-  if (name === 'inbox') mailRefresh();
+  if (!r.ok) throw new Error(t || r.statusText);
+  try { return JSON.parse(t); } catch { return t; }
 }
 
-const mailState = { messages: [], selected: null };
-
-function mailShowErr(msg) {
-  const el = document.getElementById('mailErr');
-  if (!msg) { el.style.display = 'none'; el.textContent = ''; return; }
-  el.style.display = 'block';
-  el.textContent = msg;
+function pill(ok, label, kind) {
+  const cls = kind || (ok ? 'ok' : 'bad');
+  return `<span class="pill ${cls}">${label}</span>`;
 }
 
-async function mailRefresh() {
-  mailShowErr('');
-  document.getElementById('mailList').innerHTML = '<div class="muted">Loading…</div>';
-  try {
-    const r = await fetch('/api/mail/list');
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || r.statusText);
-    mailState.messages = j.messages || [];
-    document.getElementById('mailMeta').textContent =
-      'MX host: ' + (j.host || j.mx || '?') +
-      (j.maildir ? ' · ' + j.maildir : '') +
-      ' · ' + mailState.messages.length + ' msg';
-    mailRenderList();
-    if (mailState.selected) {
-      const still = mailState.messages.find(m => m.id === mailState.selected);
-      if (still) mailOpen(still.id);
-      else { mailState.selected = null; document.getElementById('btnMailRead').disabled = true; }
-    }
-  } catch (e) {
-    document.getElementById('mailList').innerHTML = '';
-    mailShowErr(String(e.message || e));
+function render() {
+  if (!snap) return;
+  const inv = snap.inventory || {};
+  $('mode').textContent = inv.admin_ready ? 'Admin' : 'Observer';
+  $('mode').className = 'pill ' + (inv.admin_ready ? 'ok' : '');
+  $('topo').textContent = (snap.topology_source || '') + ' · ' + (snap.gitlab_url || '');
+  const c = snap.credit;
+  if (c) {
+    const d = c.days_to_scale_down_target;
+    const label = c.scale_down_due
+      ? `Credit scale-down due · ${d.toFixed(1)}d`
+      : `${c.promo} · ${d.toFixed(1)}d to scale-down · $${c.credit_usd}`;
+    $('credit').textContent = label;
+    $('credit').className = 'pill ' + (c.scale_down_due ? 'warn' : '');
+    $('credit').title = c.notes || '';
+  } else {
+    $('credit').textContent = 'no credit calendar';
+    $('credit').className = 'pill';
   }
-}
+  const down = (snap.nodes||[]).filter(n => !n.healthy).length;
+  const syncBad = (snap.nodes||[]).filter(n => n.healthy && !n.sync_ok).length;
+  const idxBad = (snap.nodes||[]).filter(n => n.healthy && !n.index_ok).length;
+  const pending = (snap.nodes||[]).filter(n => (n.index_pending_repos||[]).length).length;
+  const ghost = (snap.nodes||[]).filter(n => (n.unreachable_peers||[]).length).length;
+  const warns = snap.warnings || [];
+  $('banner').innerHTML = `${pill(down===0, down===0?'All up':down+' down')}
+    ${pill(syncBad===0, syncBad===0?'tips sync':'tips drift '+syncBad)}
+    ${pill(idxBad===0, idxBad===0?'indexes ok':'index stale '+idxBad)}
+    ${pending ? pill(false, 'warming '+pending, 'warn') : ''}
+    ${ghost ? pill(false, 'ghost peers '+ghost, 'warn') : ''}
+    <span class="muted">ingress ${snap.ingress?.fqdn||'—'} ${(snap.ingress?.dns||[]).join(' ')}</span>
+    ${warns.length ? `<ul class="warn-list">${warns.map(w => `<li>${w}</li>`).join('')}</ul>` : ''}
+    ${snap.last_error ? `<div class="err">${snap.last_error}</div>` : ''}`;
 
-function mailRenderList() {
-  const box = document.getElementById('mailList');
-  if (!mailState.messages.length) {
-    box.innerHTML = '<div class="muted">Empty</div>';
-    return;
-  }
-  box.innerHTML = mailState.messages.map(m => {
-    const on = mailState.selected === m.id ? ' on' : '';
-    const badge = m.unread ? '<span class="warn">●</span> ' : '';
-    return '<div class="' + on.trim() + '" data-id="' + esc(m.id) + '" onclick="mailOpen(this.dataset.id)">' +
-      badge + '<strong>' + esc(m.subject || '(no subject)') + '</strong><br/>' +
-      '<span class="muted">' + esc(m.from) + ' → ' + esc(m.to) + '</span></div>';
+  $('nodes').innerHTML = (snap.nodes||[]).map(n => {
+    const va = n.visible_actions || {};
+    const role = n.role || '';
+    const acts = [];
+    if (va.sync) acts.push(btn('Synchronize', () => job('sync', n.fqdn)));
+    if (va['index-warm']) acts.push(btn('Warm indexes', () => job('index-warm', n.fqdn)));
+    if (va['point-dns'] && n.dns?.[0]) acts.push(btn('Point DNS', () => pointDns(n.fqdn, n.dns[0])));
+    if (va.repair) acts.push(btn('Repair/update', () => job('update', n.fqdn)));
+    if (va['fix-repo-ownership']) acts.push(btn('Fix ownership', () => job('fix-repo-ownership', n.fqdn)));
+    const rec = n.recommendation?.message || '';
+    const pendingRepos = (n.index_pending_repos||[]).join(', ');
+    const idxErr = (n.index_errors||[]).join('; ');
+    const peers = (n.configured_peers||[]).join(', ');
+    const badPeers = (n.unreachable_peers||[]).join(', ');
+    return `<div class="card">
+      <div class="row">
+        <strong>${n.fqdn}</strong>
+        ${pill(n.healthy, n.healthy?'up':'down')}
+        ${role ? `<span class="pill">${role}${n.fleet_dns?' · fleetDns':''}</span>` : ''}
+        ${pill(n.sync_ok, n.sync_ok?'sync':'out of sync')}
+        ${pill(n.index_ok, n.index_ok?'index':'index stale')}
+        ${pendingRepos ? pill(false, 'warming', 'warn') : ''}
+      </div>
+      <div class="muted">DNS ${(n.dns||[]).join(', ')||'—'} · 443 ${n.tcp443?'open':'closed'} · git ${n.tcp_git?'open':'closed'}</div>
+      ${peers ? `<div class="muted">peers ${peers}${badPeers ? ` · unreachable ${badPeers}` : ''}</div>` : ''}
+      ${pendingRepos ? `<div class="muted">index pending: ${pendingRepos}</div>` : ''}
+      ${idxErr ? `<div class="err">index error: ${idxErr}</div>` : ''}
+      ${rec ? `<div style="margin-top:6px">${rec}</div>` : ''}
+      <div class="actions">${acts.join('') || '<span class="muted">No actions</span>'}</div>
+    </div>`;
   }).join('');
+
+  const j = snap.job;
+  $('job').textContent = j ? `#${j.id} ${j.kind} ${j.target} ${j.running?'RUNNING':(j.ok?'OK':'FAIL')}\n${j.log||''}` : '—';
 }
 
-function mailApplyReadLocal(id) {
-  const m = mailState.messages.find(x => x.id === id);
-  if (m) {
-    m.unread = false;
-    m.folder = 'cur';
-  }
-  mailRenderList();
-  document.getElementById('btnMailRead').disabled = true;
+function btn(label, fn) {
+  const id = 'b'+Math.random().toString(36).slice(2);
+  queueMicrotask(() => { const el=$(id); if (el) el.onclick = fn; });
+  return `<button id="${id}">${label}</button>`;
 }
 
-async function mailOpen(id) {
-  mailState.selected = id;
-  mailRenderList();
-  const wasUnread = !!(mailState.messages.find(m => m.id === id) || {}).unread;
-  document.getElementById('btnMailRead').disabled = !wasUnread;
-  document.getElementById('mailBody').textContent = 'Loading…';
-  mailShowErr('');
+async function load() {
+  snap = await api('/api/snapshot');
+  render();
+}
+
+async function job(kind, fqdn) {
   try {
-    // GET /api/mail/message marks unread (new/) as read on the MX host.
-    const r = await fetch('/api/mail/message?id=' + encodeURIComponent(id));
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || r.statusText);
-    document.getElementById('mailSubject').textContent = j.subject || '(no subject)';
-    document.getElementById('mailHdr').textContent =
-      (j.from || '') + ' → ' + (j.to || '') + (j.date ? ' · ' + j.date : '');
-    document.getElementById('mailBody').textContent = j.body || '(empty body)';
-    mailApplyReadLocal(id);
-  } catch (e) {
-    document.getElementById('mailBody').textContent = String(e.message || e);
-  }
+    await api('/api/job', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ kind, fqdn }) });
+    await load();
+  } catch (e) { alert(e.message); }
 }
 
-async function mailMarkRead() {
-  if (!mailState.selected) return;
+async function pointDns(fqdn, ip) {
   try {
-    const r = await fetch('/api/mail/mark-read', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: mailState.selected }),
-    });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || r.statusText);
-    mailApplyReadLocal(mailState.selected);
-  } catch (e) {
-    mailShowErr(String(e.message || e));
-  }
+    await api('/api/point-dns', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ fqdn, ip }) });
+    await load();
+  } catch (e) { alert(e.message); }
 }
 
-const brainClient = {
-  async status() {
-    const r = await fetch('/api/brain/status');
-    if (!r.ok) throw new Error(await r.text());
-    return r.json();
-  },
-  async requests() {
-    const r = await fetch('/api/brain/requests');
-    if (!r.ok) throw new Error(await r.text());
-    return r.json();
-  },
-  async feed(tail) {
-    const r = await fetch('/api/brain/feed?tail=' + (tail || 80));
-    if (!r.ok) throw new Error(await r.text());
-    return r.json();
-  },
-  async approve(id) {
-    const r = await fetch('/api/brain/requests/' + encodeURIComponent(id) + '/approve', { method: 'POST' });
-    return r.text();
-  },
-  async decline(id) {
-    const r = await fetch('/api/brain/requests/' + encodeURIComponent(id) + '/decline', { method: 'POST' });
-    return r.text();
-  },
-  async say(text) {
-    const r = await fetch('/api/brain/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-    return r.text();
-  },
-  async post(path) {
-    const r = await fetch(path, { method: 'POST' });
-    return r.text();
-  },
+$('refresh').onclick = async () => { await api('/api/refresh', { method:'POST' }); await load(); };
+$('warmAll').onclick = () => job('index-warm', null);
+$('fleetDns').onclick = () => job('fleet-dns', null);
+$('knownHosts').onclick = async () => {
+  try {
+    await api('/api/known-hosts-reset', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ fqdn: '' }) });
+    await load();
+  } catch (e) { alert(e.message); }
 };
 
-async function brainRefresh() {
-  const pill = document.getElementById('brainPill');
-  const meta = document.getElementById('brainMeta');
-  const reqEl = document.getElementById('brainRequests');
-  const feedEl = document.getElementById('brainFeed');
-  try {
-    const [st, reqs, feed] = await Promise.all([
-      brainClient.status(),
-      brainClient.requests(),
-      brainClient.feed(80),
-    ]);
-    const pending = (reqs.pending || []).length;
-    pill.textContent = st.blocked ? 'brain: BLOCKED' : (st.online ? 'brain: online' : 'brain: offline');
-    pill.className = 'pill ' + (st.blocked ? 'ro' : 'admin');
-    meta.textContent = (st.observe_only ? 'observe-only' : 'execute') +
-      (st.paused ? ' · paused' : '') +
-      ' · pending ' + pending +
-      (st.last_scenario ? ' · ' + st.last_scenario : '');
-    const ircBadge = document.getElementById('brainIrcBadge');
-    if (ircBadge) {
-      ircBadge.textContent = st.irc_bus ? 'IRC bus: up' : 'IRC bus: off';
-      ircBadge.className = st.irc_bus ? 'pill admin' : 'muted';
-    }
-    if (!(reqs.pending || []).length) {
-      reqEl.innerHTML = '<div class="muted">No pending requests</div>';
-    } else {
-      reqEl.innerHTML = (reqs.pending || []).map(r => `
-        <div class="req" data-id="${esc(r.id)}" onclick="this.classList.toggle('open')">
-          <h3>${esc(r.title)} <span class="muted">${esc(r.severity)}</span></h3>
-          <div class="muted">${esc(r.fqdn || '')} · ${esc(r.scenario_id || '')} · ${esc(r.id)}</div>
-          <p>${esc(r.description)}</p>
-          <div class="actions" onclick="event.stopPropagation()">
-            <button type="button" class="primary" onclick="brainApprove('${esc(r.id)}')">Approve</button>
-            <button type="button" class="warn" onclick="brainDecline('${esc(r.id)}')">Decline</button>
-            <button type="button" class="ghost" onclick="brainHandoff('${esc(r.id)}')">Hand off to Cursor</button>
-          </div>
-        </div>`).join('');
-    }
-    const lines = (feed.lines || []).slice().reverse();
-    feedEl.textContent = lines.map(l => JSON.stringify(l)).join('\n') || '(empty feed)';
-  } catch (e) {
-    pill.textContent = 'brain: offline';
-    pill.className = 'pill ro';
-    meta.textContent = String(e.message || e);
-    reqEl.innerHTML = '<div class="bad">Brain unreachable — start <code>relay-brain</code> or <code>relay-ops brain serve</code></div>';
-    feedEl.textContent = '';
-  }
-  updateAiDiag();
-}
-
-async function brainApprove(id) {
-  document.getElementById('brainChatOut').textContent = await brainClient.approve(id);
-  await brainRefresh();
-}
-async function brainDecline(id) {
-  document.getElementById('brainChatOut').textContent = await brainClient.decline(id);
-  await brainRefresh();
-}
-async function brainHandoff(id) {
-  const reqs = await brainClient.requests();
-  const r = (reqs.pending || []).find(x => x.id === id);
-  if (!r) return;
-  const prompt = `Relay brain request ${r.id} needs attention.\nTitle: ${r.title}\nFQDN: ${r.fqdn || '-'}\nScenario: ${r.scenario_id || '-'}\nSeverity: ${r.severity}\nDescription: ${r.description}\nProposed steps: ${JSON.stringify(r.proposed_steps)}\n\nPlease inspect ops/scenarios/, extend YAML if BLOCKED/unknown, then relay-ops brain approve ${r.id} or decline.`;
-  const box = document.getElementById('brainHandoff');
-  box.style.display = 'block';
-  box.textContent = prompt;
-  try { await navigator.clipboard.writeText(prompt); document.getElementById('brainChatOut').textContent = 'Handoff copied to clipboard'; }
-  catch (_) { document.getElementById('brainChatOut').textContent = 'Handoff ready — copy from box below'; }
-}
-async function brainSay() {
-  const input = document.getElementById('brainChatIn');
-  const text = input.value.trim();
-  if (!text) return;
-  document.getElementById('brainChatOut').textContent = await brainClient.say(text);
-  input.value = '';
-  await brainRefresh();
-}
-async function brainPost(path) {
-  document.getElementById('brainChatOut').textContent = await brainClient.post(path);
-  await brainRefresh();
-}
-
-function updateAiDiag() {
-  const el = document.getElementById('brainAiDiag');
-  const webmcp = !!(document.modelContext && document.modelContext.registerTool);
-  const nano = !!(window.ai && window.ai.languageModel) || !!(window.LanguageModel);
-  el.textContent = 'WebMCP: ' + (webmcp ? 'available' : 'unavailable') + ' · Gemini Nano Prompt API: ' + (nano ? 'available' : 'unavailable') +
-    ' (chat/requests work without either)';
-}
-
-async function brainNanoSummary() {
-  const out = document.getElementById('brainChatOut');
-  try {
-    const feed = await brainClient.feed(40);
-    const text = (feed.lines || []).map(l => JSON.stringify(l)).join('\n').slice(0, 12000);
-    let session;
-    if (window.LanguageModel && LanguageModel.create) {
-      session = await LanguageModel.create();
-    } else if (window.ai && window.ai.languageModel) {
-      session = await window.ai.languageModel.create();
-    } else {
-      out.textContent = 'Gemini Nano Prompt API not available in this browser';
-      return;
-    }
-    const reply = await session.prompt(
-      'Summarize this relay-brain activity feed for an operator in 5 short bullets. Do not approve actions.\n\n' + text
-    );
-    out.textContent = reply;
-  } catch (e) {
-    out.textContent = 'Nano summarize failed: ' + (e.message || e);
-  }
-}
-
-async function registerWebMcpTools() {
-  if (!document.modelContext || typeof document.modelContext.registerTool !== 'function') {
-    updateAiDiag();
-    return;
-  }
-  const tools = [
-    { name: 'brain_status', description: 'Relay brain status (online, blocked, scenarios)', execute: async () => ({ content: [{ type: 'text', text: JSON.stringify(await brainClient.status()) }] }) },
-    { name: 'brain_requests_list', description: 'List pending brain operator requests', execute: async () => ({ content: [{ type: 'text', text: JSON.stringify(await brainClient.requests()) }] }) },
-    { name: 'brain_feed_tail', description: 'Tail brain JSONL feed', inputSchema: { type: 'object', properties: { tail: { type: 'number' } } },
-      execute: async ({ tail }) => ({ content: [{ type: 'text', text: JSON.stringify(await brainClient.feed(tail || 40)) }] }) },
-    { name: 'brain_approve', description: 'Approve a pending brain request by id', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
-      execute: async ({ id }) => ({ content: [{ type: 'text', text: await brainClient.approve(id) }] }) },
-    { name: 'brain_decline', description: 'Decline a pending brain request by id', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
-      execute: async ({ id }) => ({ content: [{ type: 'text', text: await brainClient.decline(id) }] }) },
-    { name: 'brain_say', description: 'Send chat/keyword to brain feed', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
-      execute: async ({ text }) => ({ content: [{ type: 'text', text: await brainClient.say(text) }] }) },
-    { name: 'ops_job', description: 'Start a relay-ops job (may be refused by brain allowlist)', inputSchema: { type: 'object', properties: { kind: { type: 'string' }, fqdn: { type: 'string' } }, required: ['kind'] },
-      execute: async (args) => { await job(args); return { content: [{ type: 'text', text: 'job submitted' }] }; } },
-  ];
-  for (const t of tools) {
-    try { await document.modelContext.registerTool(t); } catch (e) { console.warn('WebMCP register', t.name, e); }
-  }
-  updateAiDiag();
-}
-
-registerWebMcpTools();
-setInterval(() => { if (document.getElementById('panelBrain').classList.contains('on')) brainRefresh(); }, 10000);
-brainRefresh();
+load();
+setInterval(load, 8000);
 </script>
 </body>
 </html>

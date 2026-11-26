@@ -10,9 +10,33 @@ pub fn parked_caddyfile_path() -> PathBuf {
     park_tls_root().join("Caddyfile.parked")
 }
 
+/// Chat hub FQDN for remote `/chat` proxy (Linode publisher). Override with
+/// `RELAY_CHAT_PRIMARY_FQDN` or `CHAT_PRIMARY_FQDN` (default `pub1.relaygateway.net`).
+fn chat_primary_fqdn() -> String {
+    std::env::var("RELAY_CHAT_PRIMARY_FQDN")
+        .or_else(|_| std::env::var("CHAT_PRIMARY_FQDN"))
+        .unwrap_or_else(|_| "pub1.relaygateway.net".into())
+        .trim()
+        .to_string()
+}
+
+fn is_chat_hub_node(node_fqdn: &str, hub: &str) -> bool {
+    let node = node_fqdn.trim().to_ascii_lowercase();
+    let hub = hub.trim().to_ascii_lowercase();
+    if node.is_empty() || hub.is_empty() {
+        return false;
+    }
+    if node == hub {
+        return true;
+    }
+    // Short label match: pub1.relaygateway.net ↔ pub1.*
+    let hub_short = hub.split('.').next().unwrap_or("");
+    !hub_short.is_empty() && (node == hub_short || node.starts_with(&format!("{hub_short}.")))
+}
+
 /// Mesh live-chat sidecar handles (inserted before apex reverse_proxy).
-/// Local chat-edge on :8098 when present; otherwise proxy API/WS to iad1.
-/// Never hairpin on iad1 itself — that loops Caddy→public HTTPS→Caddy and
+/// Local chat-edge on :8098 when present; otherwise proxy API/WS to chat primary.
+/// Never hairpin on the hub itself — that loops Caddy→public HTTPS→Caddy and
 /// balloons memory / Recv-Q until the node looks down.
 fn flashback_chat_sidecar_block() -> String {
     let local = std::net::TcpStream::connect_timeout(
@@ -21,11 +45,11 @@ fn flashback_chat_sidecar_block() -> String {
     )
     .is_ok();
     let node = std::env::var("RELAY_NODE_FQDN").unwrap_or_default();
-    let self_hub = node.eq_ignore_ascii_case("iad1.relaygateway.net")
-        || node.to_ascii_lowercase().starts_with("iad1.");
+    let hub = chat_primary_fqdn();
+    let self_hub = is_chat_hub_node(&node, &hub);
     if local || self_hub {
         // Prefer loopback. On the hub, even if chat-edge is briefly down, do not
-        // proxy to https://iad1 (self) — fail locally instead of a TLS hairpin storm.
+        // proxy to https://self — fail locally instead of a TLS hairpin storm.
         "\t# flashback-chat-sidecar\n\
 \thandle /chat/api* {\n\
 \t\treverse_proxy 127.0.0.1:8098\n\
@@ -35,24 +59,25 @@ fn flashback_chat_sidecar_block() -> String {
 \t}\n"
             .to_string()
     } else {
-        "\t# flashback-chat-sidecar\n\
-\thandle /chat/api* {\n\
-\t\treverse_proxy https://iad1.relaygateway.net {\n\
+        format!(
+            "\t# flashback-chat-sidecar\n\
+\thandle /chat/api* {{\n\
+\t\treverse_proxy https://{hub} {{\n\
 \t\t\theader_up Host flashbackrepository.org\n\
-\t\t\ttransport http {\n\
+\t\t\ttransport http {{\n\
 \t\t\t\ttls_server_name flashbackrepository.org\n\
-\t\t\t}\n\
-\t\t}\n\
-\t}\n\
-\thandle /chat/ws {\n\
-\t\treverse_proxy https://iad1.relaygateway.net {\n\
+\t\t\t}}\n\
+\t\t}}\n\
+\t}}\n\
+\thandle /chat/ws {{\n\
+\t\treverse_proxy https://{hub} {{\n\
 \t\t\theader_up Host flashbackrepository.org\n\
-\t\t\ttransport http {\n\
+\t\t\ttransport http {{\n\
 \t\t\t\ttls_server_name flashbackrepository.org\n\
-\t\t\t}\n\
-\t\t}\n\
-\t}\n"
-            .to_string()
+\t\t\t}}\n\
+\t\t}}\n\
+\t}}\n"
+        )
     }
 }
 
@@ -113,7 +138,7 @@ pub fn write_parked_caddyfile(domains: &HashMap<String, String>) -> std::io::Res
         out.push(' ');
         out.push_str(&key.display().to_string());
         out.push('\n');
-        // Mesh chat sidecar on every parked apex (same Ergo; local or proxy to iad1).
+        // Mesh chat sidecar on every parked apex (same Ergo; local or proxy to chat primary).
         out.push_str(&chat_block);
         out.push_str("\treverse_proxy 127.0.0.1:");
         out.push_str(&upstream);
@@ -165,5 +190,41 @@ mod tests {
         assert!(b.contains("handle /chat/api*"), "{b}");
         assert!(b.contains("handle /chat/ws"), "{b}");
         assert!(b.contains("flashback-chat-sidecar"), "{b}");
+    }
+
+    #[test]
+    fn chat_hub_detects_pub1_short_and_fqdn() {
+        assert!(is_chat_hub_node(
+            "pub1.relaygateway.net",
+            "pub1.relaygateway.net"
+        ));
+        assert!(is_chat_hub_node("pub1", "pub1.relaygateway.net"));
+        assert!(!is_chat_hub_node(
+            "mesh1.relaygateway.net",
+            "pub1.relaygateway.net"
+        ));
+    }
+
+    #[test]
+    fn remote_chat_block_uses_pub1_by_default() {
+        // Ensure we are not on loopback :8098 in CI; unset hub self.
+        std::env::remove_var("RELAY_NODE_FQDN");
+        std::env::remove_var("RELAY_CHAT_PRIMARY_FQDN");
+        std::env::remove_var("CHAT_PRIMARY_FQDN");
+        // If something is listening on 8098 locally, skip remote assertion.
+        let local = std::net::TcpStream::connect_timeout(
+            &"127.0.0.1:8098".parse().unwrap(),
+            std::time::Duration::from_millis(50),
+        )
+        .is_ok();
+        if local {
+            return;
+        }
+        let b = flashback_chat_sidecar_block();
+        assert!(
+            b.contains("https://pub1.relaygateway.net"),
+            "expected pub1 hub proxy, got {b}"
+        );
+        assert!(!b.contains("iad1.relaygateway.net"), "{b}");
     }
 }

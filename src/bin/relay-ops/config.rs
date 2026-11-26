@@ -13,7 +13,6 @@ pub struct OpsConfig {
     pub ssh_user: Option<String>,
     pub vercel_token: Option<String>,
     pub vercel_team_id: Option<String>,
-    pub spot_token: Option<String>,
     pub slack_webhook: Option<String>,
     pub gateway_checkout: Option<String>,
     pub bind: Option<String>,
@@ -63,9 +62,6 @@ impl OpsConfig {
         if let Ok(v) = std::env::var("VERCEL_TEAM_ID") {
             self.vercel_team_id = Some(v);
         }
-        if let Ok(v) = std::env::var("RXTSPOT_TOKEN") {
-            self.spot_token = Some(v);
-        }
         if let Ok(v) = std::env::var("RELAY_NOTIFY_SLACK_WEBHOOK_URL") {
             self.slack_webhook = Some(v);
         }
@@ -85,7 +81,6 @@ impl OpsConfig {
         for slot in [
             &mut self.gitlab_token,
             &mut self.vercel_token,
-            &mut self.spot_token,
             &mut self.slack_webhook,
             &mut self.identity_file,
         ] {
@@ -307,7 +302,6 @@ fn apply_env_kv(cfg: &mut OpsConfig, raw: &str) {
                 cfg.vercel_token = Some(v)
             }
             "VERCEL_TEAM_ID" if cfg.vercel_team_id.is_none() => cfg.vercel_team_id = Some(v),
-            "RXTSPOT_TOKEN" if cfg.spot_token.is_none() => cfg.spot_token = Some(v),
             "RELAY_SSH_IDENTITY" if cfg.identity_file.is_none() => cfg.identity_file = Some(v),
             "RELAY_SSH_USER" if cfg.ssh_user.is_none() => cfg.ssh_user = Some(v),
             "GITLAB_TOKEN" if cfg.gitlab_token.is_none() => cfg.gitlab_token = Some(v),

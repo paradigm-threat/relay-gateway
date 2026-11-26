@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Add git:// remotes for Spot fleet masters (iad1, ord1, hkg1) on local catalog checkouts.
-# Renames GitLab origin → gitlab (backup); default push targets first mesh origin (iad1).
+# Add git:// remotes for Linode fleet masters (pub1, mesh1, mesh2) on local catalog checkouts.
+# Renames GitLab origin → gitlab (backup); default push targets first mesh origin (pub1).
 #
 # Usage (from relay-gateway/):
 #   ./scripts/relay-local-remotes.sh              # add missing remotes + push defaults
@@ -9,15 +9,15 @@
 #   ./scripts/relay-local-remotes.sh --all        # ensure-bare + remotes + probe
 #
 # Map file: scripts/relay-local-repos.map (repo-name<TAB>path)
-# Override primary mesh remote: RELAY_PRIMARY_ORIGIN=iad1
+# Override primary mesh remote: RELAY_PRIMARY_ORIGIN=pub1
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MAP="${RELAY_LOCAL_REPOS_MAP:-$ROOT/scripts/relay-local-repos.map}"
 GIT_PORT="${RELAY_GIT_PORT:-9418}"
-NODES=(iad1 ord1 hkg1)
-STALE_NODES=(lon1)
-PRIMARY_NODE="${RELAY_PRIMARY_ORIGIN:-iad1}"
+NODES=(pub1 mesh1 mesh2)
+STALE_NODES=(lon1 iad1 ord1 hkg1)
+PRIMARY_NODE="${RELAY_PRIMARY_ORIGIN:-pub1}"
 GITLAB_REMOTE="${RELAY_GITLAB_REMOTE_NAME:-gitlab}"
 
 DO_PROBE=0

@@ -1,0 +1,29 @@
+{
+  "schema": "relay.ssr-qa.v1",
+  "forbid_always": [
+    "relay-error-boundary",
+    "data-error-boundary",
+    "Runtime error",
+    "Property 'origin' not found",
+    "CleverScript hook panicked",
+    "ssrClientHookFromGetContext disabled"
+  ],
+  "routes": [
+    {
+      "class": "home",
+      "require": [],
+      "forbid": ["pt-live-chat-slot"]
+    },
+    {
+      "class": "article",
+      "require": [],
+      "forbid": ["pt-live-chat-slot"]
+    },
+    {
+      "class": "chat",
+      "require": [],
+      "forbid": []
+    }
+  ],
+  "notes": "Hard forbid list is also compiled into ssr_html_quality::FORBIDDEN_HARD. Site-specific require markers (e.g. data-pt-article) belong in the content repo `.relay/ssr-qa.json` so fan-edits/clevertree are not blocked. Park smoke scripts should stay aligned with forbid_always."
+}

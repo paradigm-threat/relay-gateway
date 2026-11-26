@@ -36,8 +36,12 @@ pub mod sitemap;
 pub mod sqlite_index;
 pub mod ssr_client_hook;
 pub mod ssr_html_cache;
+pub mod ssr_html_quality;
 pub mod ssr_limits;
 pub mod ssr_policy;
+pub mod ssr_pre_receive;
+pub mod ssr_render;
+pub mod ssr_static_cache;
 pub mod web_assets;
 pub mod worktree;
 
@@ -54,8 +58,9 @@ pub use hooks::{execute_repo_hook, HookContext};
 pub use index_policy::has_index_hook;
 pub use indexing::{
     branch_data_dir, branch_hash_short, branch_index_paths, branch_operation_mutex,
-    branch_sqlite_path, ensure_indexed, ensure_indexed_force, reconcile_stale_indexes,
-    spawn_ensure_indexed, spawn_periodic_reconcile_stale_indexes, spawn_reconcile_stale_indexes,
+    branch_sqlite_path, ensure_indexed, ensure_indexed_force, ensure_indexed_with_retries,
+    index_pending_for, reconcile_stale_indexes, spawn_ensure_indexed,
+    spawn_periodic_reconcile_stale_indexes, spawn_reconcile_stale_indexes, IndexPendingInfo,
 };
 pub use repo::{
     apply_bare_receive_security, apply_bare_receive_security_at_path, bare_repo_names,

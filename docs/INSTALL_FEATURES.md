@@ -41,7 +41,7 @@ These are not toggled off by the installer today; they define the baseline node.
 
 ## Kubo IPFS (`features.ipfs_kubo`)
 
-Default **on** for **`install`**, **`update`**, and **`repair`** (`RELAY_INSTALL_IPFS=0` to skip). Downloads **Kubo v0.32.1** into **`/opt/relay/lib/kubo/`**, repo at **`/opt/relay/ipfs`**, systemd **`relay-ipfs.service`**.
+Default **off** for **`install`**, **`update`**, and **`repair`**. Set **`RELAY_INSTALL_IPFS=1`** when expanding the mesh needs seed pins again. Downloads **Kubo v0.32.1** into **`/opt/relay/lib/kubo/`**, repo at **`/opt/relay/ipfs`**, systemd **`relay-ipfs.service`**. When left at the default, install stops/disables any prior Kubo units and records `features.ipfs_kubo.enabled=false`.
 
 | Field | Meaning |
 |-------|---------|
@@ -74,7 +74,7 @@ After adding or removing **`.onnx`** models under **`lib/piper/models`**, run **
 
 | Variable | Values |
 |----------|--------|
-| **`RELAY_FEAT_PIPER`** | `1` / `0` |
+| **`RELAY_FEAT_PIPER`** | `1` / `0` — **Linode fleet default is `1`** (`relay-ops features-set`, `relay-master-deploy`). Caddy exposes **`/voices`** + **`/tts`** to `relay-tts-piper`. Pass `--piper 0` only to disable. |
 
 ---
 

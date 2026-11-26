@@ -341,25 +341,18 @@ pub fn short_host(fqdn: &str) -> &str {
 pub fn node_line(
     fqdn: &str,
     healthy: bool,
-    spot_ip: Option<&str>,
     dns: &[String],
     tcp443: bool,
     https_ok: bool,
     tcp_git: bool,
 ) -> String {
     let name = short_host(fqdn);
-    let mismatch = spot_ip
-        .map(|ip| !dns.is_empty() && !dns.iter().any(|d| d == ip))
-        .unwrap_or(false);
-    if healthy && !mismatch {
+    if healthy {
         return format!("{name}  up");
     }
-    if healthy && mismatch {
-        return format!("{name}  up  DNS≠Spot");
-    }
     let mut bits = Vec::new();
-    if mismatch {
-        bits.push("DNS≠Spot");
+    if dns.is_empty() {
+        bits.push("no DNS");
     }
     if !tcp443 {
         bits.push("no https");
@@ -378,23 +371,15 @@ pub fn node_line(
 
 pub fn menu_lines(
     nodes: &[crate::probe::NodeProbe],
-    fleet: &crate::topology::FleetFile,
-    spot: &[crate::spot::SpotAssignment],
+    _fleet: &crate::topology::FleetFile,
     ingress: Option<&crate::probe::IngressProbe>,
 ) -> Vec<String> {
     let mut lines = Vec::new();
     for n in nodes {
         let https_ok = n.https_config.as_ref().map(|c| c.ok).unwrap_or(false);
-        let spot_ip = fleet.node(&n.fqdn).and_then(|node| {
-            node.spot_cloudspace.as_ref().and_then(|cs| {
-                spot.iter()
-                    .find(|s| s.cloudspace == *cs)
-                    .map(|s| s.ip.as_str())
-            })
-        });
         lines.push({
             let mut line = node_line(
-                &n.fqdn, n.healthy, spot_ip, &n.dns, n.tcp443, https_ok, n.tcp_git,
+                &n.fqdn, n.healthy, &n.dns, n.tcp443, https_ok, n.tcp_git,
             );
             if let Some(c) = &n.https_config {
                 let nrepos = if !c.repos.is_empty() {
@@ -523,17 +508,16 @@ mod tests {
     }
 
     #[test]
-    fn node_line_lon1_fresh_vm() {
+    fn node_line_down_no_services() {
         let line = node_line(
-            "lon1.relaygateway.net",
+            "mesh1.relaygateway.net",
             false,
-            Some("134.213.138.108"),
-            &["134.213.138.38".into()],
+            &["172.237.134.22".into()],
             false,
             false,
             false,
         );
-        assert_eq!(line, "lon1  DOWN  DNS≠Spot  no https  no git");
+        assert_eq!(line, "mesh1  DOWN  no https  no git");
     }
 
     #[test]

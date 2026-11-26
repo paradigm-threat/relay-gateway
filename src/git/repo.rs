@@ -196,6 +196,10 @@ pub fn read_file_from_revision(
     rev: &str,
     path: &str,
 ) -> Result<Vec<u8>, ReadError> {
+    // Prefer `git show` so pre-receive quarantine objects are visible.
+    if let Ok(bytes) = read_file_via_git_show(repo_path, rev, path) {
+        return Ok(bytes);
+    }
     let repo = Repository::open_bare(repo_path).map_err(|e| ReadError::Other(e.into()))?;
     let obj = repo.revparse_single(rev).map_err(|_| ReadError::NotFound)?;
     let commit = obj.peel_to_commit().map_err(|_| ReadError::NotFound)?;
@@ -209,12 +213,36 @@ pub fn read_file_from_revision(
     Ok(blob.content().to_vec())
 }
 
+/// Quarantine-safe blob read (`git show rev:path`). Works for branch names and commit OIDs.
+pub fn read_file_via_git_show(
+    repo_path: &Path,
+    rev: &str,
+    path: &str,
+) -> Result<Vec<u8>, ReadError> {
+    let path = path.trim_start_matches('/');
+    let spec = format!("{rev}:{path}");
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["show", &spec])
+        .output()
+        .map_err(|e| ReadError::Other(e.into()))?;
+    if !out.status.success() {
+        return Err(ReadError::NotFound);
+    }
+    Ok(out.stdout)
+}
+
 /// Read a file from a git repository at the branch tip.
 pub fn read_file_from_repo(
     repo_path: &PathBuf,
     branch: &str,
     path: &str,
 ) -> Result<Vec<u8>, ReadError> {
+    // git show sees quarantine during pre-receive; also accepts bare OIDs as `branch`.
+    if let Ok(bytes) = read_file_via_git_show(repo_path, branch, path) {
+        return Ok(bytes);
+    }
     let repo = Repository::open_bare(repo_path).map_err(|e| ReadError::Other(e.into()))?;
     let refname = format!("refs/heads/{}", branch);
     let reference = repo

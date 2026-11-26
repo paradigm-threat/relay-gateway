@@ -3,7 +3,7 @@
 **Status:** client write fence is implemented (`enforce_publish_origin_fence` on `pre-receive` and HTTP PUT/DELETE). Replica skip (`enforce_push_range` on peer-fetch) is **not**. Gateways parse catalog `publish_origin` and reject client writes on non-publishers when the field is set. Empty/omitted = no fence (compat).  
 **Settled product model:** **update the SearchStore on commit**, not on QUERY. QUERY / MCP are **read-only**. If `docs_indexed_head` lags the git tip, they return rows with **`indexFresh: false`** — they never JIT-rebuild.
 
-**This fleet:** `publish_branch` is **`main`**. `publish_origin` is **`iad1.relaygateway.net`** (a hostname, not a git branch). Authors `git push` `main` to iad1; ord1/hkg1 fast-forward `main`. Do not add a second publish ref.
+**This fleet:** `publish_branch` is **`main`**. `publish_origin` is the fat publisher FQDN (e.g. **`pub1.relaygateway.net`** — a hostname, not a git branch — **never** `fleet.relaygateway.net`). Authors `git push` `main` to the publisher; mesh peers fast-forward `main`. Do not add a second publish ref. The publisher also owns the **`relay-ssr-cache` bake queue**; mesh peers only fetch that bare ([`RELAY_NETWORK_DNS.md`](./RELAY_NETWORK_DNS.md), [`RELAY_MESH_OPS.md`](./RELAY_MESH_OPS.md)). **Mesh tip sync ≠ SearchStore sync** — index is per-node after tip accept.
 
 This document analyzes a **publish-once** mesh: run the expensive full cycle **once** on the publishing node, advance `publish_branch` under an existing catalog signature, let replicas **take Git immediately**, and **warm each replica’s SearchStore in the background**. It does **not** propose a new server signing key.
 
@@ -29,14 +29,16 @@ JIT-on-QUERY is **out**. The old idea in [`archive/REPODB_PLAN.md`](./archive/RE
 | Path | Writes SearchStore? | Blocks git client? | QUERY |
 |------|---------------------|--------------------|-------|
 | Origin `git push` → `pre-receive` | No | **Yes** (must reject) | n/a |
-| Origin `post-receive` | **Yes, inline `ensure_indexed` today** | **Yes** (ACK waits) | After ACK, store should match tip |
-| Peer-fetch (`POST /hooks/peer`) | **Yes, `spawn_ensure_indexed`** | No (HTTP returns; ingest in a thread) | May lag; `indexFresh: false` until warm |
+| Origin `pre-receive` (catalog `publish_branch`) | **Yes, `ensure_indexed_with_retries` — fail-closed** | **Yes** (reject tip if warm fails) | Tip does not advance without SearchStore stamp |
+| Origin `post-receive` | **Yes, retrying `ensure_indexed`** (idempotent) | Side effects after ACK | Safety net |
+| Peer-fetch (`POST /hooks/peer`) | **Yes, `spawn_ensure_indexed` + retries** | No (HTTP returns; ingest in a thread) | `index_pending` / `index_last_error` on status until warm |
+| HTTP PUT/DELETE | **Yes, `ensure_indexed_with_retries` after tip** | Blocks HTTP success | Closes former “PUT never warms” gap |
 | Catalog apply / `POST /api/index/warm/:repo` | Yes, sync | Not a git client | HTTP waits on warm |
 | QUERY / MCP | **Never** | n/a | Read-only |
 
 Implication: **every node that should answer QUERY with `indexFresh: true` still runs ingest after it accepts the tip.** Async only moves that work off the receive ACK. It does not delete the work.
 
-[`RELAY_MESH_OPS.md`](./RELAY_MESH_OPS.md) still says post-receive does **not** wait for index. **Code disagrees** ([`relay-hook-handler.rs`](../src/bin/relay-hook-handler.rs): “Index inline so QUERY never JITs”). That split is a first, trust-free performance fix (option A below).
+Publish-origin mesh wait remains **git-tip only** ([`RELAY_MESH_OPS.md`](./RELAY_MESH_OPS.md)). Catalog `publish_branch` pre-receive is fail-closed on SearchStore; peer-fetch warms asynchronously with `index_pending`.
 
 ---
 

@@ -1,4 +1,6 @@
-# Import existing atlanta2 (do not reprovision)
+# Import existing atlanta2 (HISTORICAL — host decom)
+
+**Do not use.** Live masters are **iad1 / ord1 / hkg1**. This TF path is kept only for archival import notes.
 
 **Goal:** Terraform state reflects the **live** Linode without replacing the instance or wiping `/opt/relay/data`.
 

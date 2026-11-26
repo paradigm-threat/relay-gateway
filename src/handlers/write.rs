@@ -252,6 +252,10 @@ pub fn write_file_to_repo(
         };
         // This is usually async in a real post-receive, but for PUT we can just execute or spawn
         let _ = git::execute_repo_hook(&ctx, "post-receive");
+        // Always warm SearchStore after accepted tip (CS post-receive alone does not).
+        git::ensure_indexed_with_retries(&ctx, 3).map_err(|e| {
+            RepoEditError::Other(anyhow::anyhow!("SearchStore index failed after PUT: {e}"))
+        })?;
     }
 
     Ok((commit_oid.to_string(), branch.to_string()))
@@ -339,6 +343,10 @@ pub fn delete_file_in_repo(
         .find_tree(new_oid)
         .map_err(|e| RepoEditError::Other(e.into()))?;
     let msg = format!("DELETE {}", path);
+    let old_oid = parent_commit
+        .as_ref()
+        .map(|c| c.id().to_string())
+        .unwrap_or_else(|| String::from("0000000000000000000000000000000000000000"));
     let commit_oid = if let Some(ref parent) = parent_commit {
         repo.commit(Some(&refname), &sig, &sig, &msg, &new_tree, &[parent])
             .map_err(|e| RepoEditError::Other(e.into()))?
@@ -346,5 +354,18 @@ pub fn delete_file_in_repo(
         repo.commit(Some(&refname), &sig, &sig, &msg, &new_tree, &[])
             .map_err(|e| RepoEditError::Other(e.into()))?
     };
+    let ctx = git::HookContext {
+        repo_path: repo.path().to_path_buf(),
+        old_commit: old_oid,
+        new_commit: commit_oid.to_string(),
+        refname: refname.clone(),
+        branch: branch.to_string(),
+        files: Default::default(),
+        is_verified: true,
+    };
+    let _ = git::execute_repo_hook(&ctx, "post-receive");
+    git::ensure_indexed_with_retries(&ctx, 3).map_err(|e| {
+        RepoEditError::Other(anyhow::anyhow!("SearchStore index failed after DELETE: {e}"))
+    })?;
     Ok((commit_oid.to_string(), branch.to_string()))
 }

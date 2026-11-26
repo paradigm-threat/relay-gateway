@@ -113,35 +113,6 @@ impl Jobs {
         Ok(id)
     }
 
-    pub async fn start_reclaim(
-        &self,
-        cfg: OpsConfig,
-        fleet: FleetFile,
-        fqdn: String,
-        ip: Option<String>,
-    ) -> Result<u64> {
-        let mut g = self.inner.lock().await;
-        if g.as_ref().map(|j| j.running).unwrap_or(false) {
-            return Err(anyhow!("a job is already running"));
-        }
-        let id = g.as_ref().map(|j| j.id + 1).unwrap_or(1);
-        *g = Some(JobState {
-            id,
-            kind: "reclaim".into(),
-            target: fqdn.clone(),
-            running: true,
-            ok: None,
-            log: String::new(),
-        });
-        drop(g);
-        let jobs = self.clone();
-        tokio::spawn(async move {
-            let result = run_reclaim(&cfg, &fleet, &fqdn, ip.as_deref(), &jobs).await;
-            jobs.finish(result).await;
-        });
-        Ok(id)
-    }
-
     async fn append(&self, line: &str) {
         let mut g = self.inner.lock().await;
         if let Some(j) = g.as_mut() {
@@ -153,76 +124,6 @@ impl Jobs {
     }
 }
 
-async fn run_reclaim(
-    cfg: &OpsConfig,
-    fleet: &FleetFile,
-    fqdn: &str,
-    ip: Option<&str>,
-    jobs: &Jobs,
-) -> Result<String> {
-    let node = fleet
-        .node(fqdn)
-        .ok_or_else(|| anyhow!("unknown node {fqdn}"))?;
-    let target = node
-        .deploy_target
-        .clone()
-        .ok_or_else(|| anyhow!("node {fqdn} has no deployTarget in ops/fleet.json"))?;
-    let checkout = cfg
-        .checkout_path()
-        .ok_or_else(|| anyhow!("no gateway checkout (set gateway_checkout)"))?;
-    let script = checkout.join("scripts/relay-master-deploy.sh");
-    if !script.is_file() {
-        anyhow::bail!("missing {}", script.display());
-    }
-    jobs.append(&format!("reclaim {fqdn} target={target}"))
-        .await;
-    let mut cmd = Command::new("bash");
-    cmd.arg(script.as_os_str())
-        .arg(format!("--target={target}"))
-        .arg("--install-only")
-        .arg("--build")
-        .current_dir(&checkout)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(ip) = ip {
-        let slug = fqdn.split('.').next().unwrap_or("node").to_uppercase();
-        cmd.env(format!("SPOT_{slug}_IP"), ip);
-        cmd.env("RELAY_OPS_REPAIR_IP", ip);
-    }
-    if let Some(key) = cfg.identity_path() {
-        cmd.env("RELAY_SSH_IDENTITY", key);
-    }
-    if let Some(user) = node.ssh_user.as_ref().or(cfg.ssh_user.as_ref()) {
-        cmd.env("RELAY_SSH_USER", user);
-    }
-    let mut child = cmd.spawn()?;
-    if let Some(stdout) = child.stdout.take() {
-        let jobs2 = jobs.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                jobs2.append(&line).await;
-            }
-        });
-    }
-    if let Some(stderr) = child.stderr.take() {
-        let jobs2 = jobs.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                jobs2.append(&line).await;
-            }
-        });
-    }
-    let status = child.wait().await?;
-    if status.success() {
-        Ok("deploy finished".into())
-    } else {
-        Err(anyhow!("deploy exited {status}"))
-    }
-}
-
-/// Local `~/.ssh/known_hosts` only (`ssh-keygen -R`). Never `/etc/hosts`, never sudo.
 pub fn reset_known_hosts(host: &str, ips: &[String]) -> Result<String> {
     reset_known_hosts_file(&user_known_hosts_path()?, host, ips)
 }

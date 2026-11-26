@@ -6,9 +6,12 @@ Shared browser hosts + channel prefixes (`fb` / `ct` / `pt`, `#logs-*`): [`RELAY
 
 ## Architecture
 
-- **Ergo** stays external (Flashback: `ops/chat` on the chat primary). Do not embed a full IRCd in `relay-gateway`.
-- Each fleet node runs **irc-agent** (nick = short hostname: `iad1` / `ord1` / `hkg1`) publishing into `#logs`, `#relay`, `#relay-stats`.
-- Tip sync authority remains **`POST /hooks/peer`**. Fleet health authority remains **`relay-ops` / `relay-brain` probe**.
+- **Ergo** stays external (Flashback: `fan-edits/ops/chat` on the chat primary). Do not embed a full IRCd in `relay-gateway`.
+- **Topology:** single Ergo network. **`pub1.relaygateway.net`** runs Ergo + chat-edge + irc-agent. **`mesh1` / `mesh2`** are `--edge-only` (socat `:6667` → pub1, Caddy `/chat/*` → pub1). Set `CHAT_PRIMARY_FQDN` / `RELAY_CHAT_PRIMARY_FQDN=pub1.relaygateway.net`.
+- Each fleet node runs **irc-agent** (nick = short hostname: `pub1` / `mesh1` / `mesh2`). Historical Rackspace nicks `iad1` / `ord1` / `hkg1` are retired for this fleet.
+- **Trim policy:** journal mirror is **warn/error only** (`PRIORITY ≤ 4`) into `#logs`. Curated `/emit` info is allowed on `#relay` / `#relay-stats` (tip apply, heartbeats); info is **not** accepted into `#logs*`. Ergo durable history is for **chat**, not server INFO.
+- **Web traffic + RUM** stay on HTTP: `/api/status` `http` (`http_stats.sqlite`) and `/api/rum` — not IRC.
+- Tip sync authority remains **`POST /hooks/peer`**. Fleet health authority remains **`relay-ops` probe**.
 
 ## Enable on gateway nodes
 
@@ -37,7 +40,7 @@ The brain joins as nick `RelayOps`, appends channel traffic into the JSONL feed,
 | IRC | Brain |
 | --- | ----- |
 | `!status` | overall brain status |
-| `!status iad1` | last classification for that node |
+| `!status pub1` | last classification for that node |
 | `!pause` / `!resume` / `!blocked` | same as `relay-ops brain say` |
 
 UI **Brain** panel shows `IRC bus: up` when the subscriber is registered.

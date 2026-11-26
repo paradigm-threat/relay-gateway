@@ -10,6 +10,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -65,6 +66,12 @@ pub fn build_router(state: AppState) -> Router {
                 .post(handlers::api_rum),
         )
         .route(
+            "/api/hits",
+            get(handlers::api_hits)
+                .head(handlers::api_hits)
+                .post(handlers::api_hits),
+        )
+        .route(
             "/api/mcp/:repo",
             get(handlers::mcp::get_mcp)
                 .post(handlers::mcp::post_mcp)
@@ -114,8 +121,14 @@ pub fn build_router(state: AppState) -> Router {
                 .fallback(relay_path_fallback),
         )
         .layer(cors)
-        // Compress QUERY catalogs + page.md for browsers (Accept-Encoding). No topology change.
-        .layer(CompressionLayer::new())
+        // Compress QUERY catalogs + page.md for browsers. Never gzip/br movies or audio —
+        // that breaks byte ranges and stalls the first frame.
+        .layer(CompressionLayer::new().compress_when(
+            DefaultPredicate::new()
+                .and(NotForContentType::const_new("video/"))
+                .and(NotForContentType::const_new("audio/"))
+                .and(NotForContentType::const_new("application/octet-stream")),
+        ))
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn(crate::http_stats::http_stats_middleware))
         .with_state(state)

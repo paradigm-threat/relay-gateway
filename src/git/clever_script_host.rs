@@ -815,7 +815,8 @@ fn ssr_public_origin(ctx: &HashMap<String, CsValue>) -> String {
 }
 
 /// Client-hydrate HTML without running the client hook (bots / timeout / full slots).
-/// `notice`: visible `#root` placeholder (timeout/busy). `None` for silent skip (HEAD/bots).
+/// `notice` is `None` on every request path: the shell has no status essay. The browser
+/// mounts the client hook. A render that finishes still writes `ssr_html_cache`.
 fn cheap_client_shell(
     repo: &str,
     request_branch: &str,
@@ -952,6 +953,16 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                 .unwrap_or("")
                 .trim_start_matches('/')
         );
+        // Parked repos with catalog `ssrCache.enabled` must not realtime-SSR the client hook.
+        // Serve path composes fragments from `relay-ssr-cache`; this helper is a hard refuse.
+        let repo_for_cache = cs_obj_str(ctx, "repo").unwrap_or("");
+        if !repo_for_cache.is_empty()
+            && crate::git::ssr_static_cache::catalog_ssr_cache_enabled(repo_for_cache)
+        {
+            return Err(format!(
+                "ssrClientHookFromGetContext disabled for repo '{repo_for_cache}' (catalog ssrCache.enabled); use pre-rendered fragments"
+            ));
+        }
         // Render path is the URL path only. Do not substitute `/` or another cached page.
         let render_path = crate::git::ssr_policy::normalize_request_path(&request_path);
         let initial_path = render_path.clone();
@@ -968,7 +979,7 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                 client_hook_path,
                 &repo_root,
                 ctx,
-                Some(crate::git::embed_html::ssr_timeout_notice_html()),
+                None,
             ));
         }
         let skip = crate::git::ssr_policy::should_skip_ssr_from_ctx(ctx);
@@ -1020,6 +1031,11 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                 slots_full,
                 "SSR skipped; no cache (cheap client shell)"
             );
+            let notice = if slots_full {
+                crate::git::embed_html::ssr_busy_notice_html()
+            } else {
+                crate::git::embed_html::ssr_timeout_notice_html()
+            };
             return Ok(cheap_client_shell(
                 repo,
                 request_branch,
@@ -1027,11 +1043,7 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                 client_hook_path,
                 &repo_root,
                 ctx,
-                if skip {
-                    None
-                } else {
-                    Some(crate::git::embed_html::ssr_busy_notice_html())
-                },
+                Some(notice),
             ));
         }
 
@@ -1048,7 +1060,7 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             tracing::warn!(
                 target: "relay_ssr",
                 path = %request_path,
-                "SSR miss/timeout; no cache (cheap client shell)"
+                "SSR miss/timeout; cheap client shell. Slot released; a finished body is kept for the HTML cache"
             );
             return Ok(cheap_client_shell(
                 repo,
@@ -1202,11 +1214,12 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
             html
         };
         let html = crate::git::embed_html::guard_relay_image_gallery_hosts(&html);
-        if !crate::git::embed_html::ssr_html_matches_request(&html, &render_path) {
+        if let Err(e) = crate::git::ssr_html_quality::check_ssr_document(&html, &render_path) {
             tracing::error!(
                 target: "relay_ssr",
                 path = %render_path,
-                "SSR document path marker mismatch; not caching"
+                reason = %e.reason,
+                "SSR document failed quality gate; not caching"
             );
             return Ok(cheap_client_shell(
                 repo,
@@ -1802,6 +1815,23 @@ fn default_plain_file_hook_from_context(
         Ok(bytes) => Ok(default_plain_ok_response(&ct, &bytes)),
         Err(_) => Ok(default_plain_not_found(rel)),
     }
+}
+
+/// `governance/war/world-war-3-anyway` → `governance/war/world-war-3-anyway.md`.
+/// A path that already has an extension, or a `.` / `..` segment, is left alone.
+pub(crate) fn extensionless_markdown_rel(rel: &str) -> Option<String> {
+    let rel = rel.trim_matches('/');
+    if rel.is_empty() || rel.contains('\0') {
+        return None;
+    }
+    if rel.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..") {
+        return None;
+    }
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    if name.contains('.') {
+        return None;
+    }
+    Some(format!("{rel}.md"))
 }
 
 fn default_plain_ok_response(declared_ct: &str, bytes: &[u8]) -> CsValue {

@@ -33,8 +33,56 @@ relay-master/
 | `signing_keys` | Append-only identity list (`active` / `disabled`) |
 | `signing_keys_source` | `repo` \| `catalog` \| `hybrid` |
 | `domains` | Optional globally unique parked apex/subdomain hosts served by this repo |
+| `clientHook` | Tip-owned client GET hook path (e.g. `hooks/client/get.jsx`). Required association for hosting repos unless `defaultClientHook` / fleet default applies |
+| `defaultClientHook` | Catalog-assigned client GET hook when the tip has no `clientHook` (stub may later grow auto-index) |
+| `ssrCache` | Optional pre-rendered HTML fragment cache for parked Hosts (see below) |
 | `branch_features` | Optional `comments` / `dev` branches |
 | `limits` | Per-repo overrides; inherit from `policy-profiles.json` when empty. For thin catalogs: `thin_ipfs_assets`, optional `fleet_pin_ipfs` (**`false`** = catalog-only, no fleet Kubo pin / movie disk cache — Flashback `fan-edits`), `max_ipfs_bytes` |
+
+Fleet `catalog/index.json` may set **`defaultClientHook`** (same path shape). Load-time validation fails if any **hosting** repo (`domains[]` non-empty) resolves neither tip `clientHook`, per-repo `defaultClientHook`, nor the fleet default.
+
+## Client hook obligation (hosting repos)
+
+**Every hosting Relay repo must declare how the browser views its data:** an in-repo client hook (`clientHook`) **or** a catalog-assigned default (`defaultClientHook` / fleet `defaultClientHook`). Tip `.relay.yaml` `client.hooks.get.path` still wins at serve time when present; the catalog association is the policy SoT and must not be omitted for parked Hosts.
+
+| Field | Who owns the hook file | Typical use |
+|-------|------------------------|-------------|
+| `clientHook` | This content tip | Park sites with a real UI (`hooks/client/get.jsx`) |
+| `defaultClientHook` | Tip copy of the stub / future shared default | Hosting domain without a custom shell yet |
+| `catalog/index.json` → `defaultClientHook` | Fleet fallback | Soft default so new hosting rows inherit until overridden |
+
+**Non-SSR HTML:** when `ssrCache` is off (or a cache body misses), document navigations still get the **standard embed shell** (`relay-embed-config` + `embed.js`) pointed at the resolved client hook. SSR cache is optional acceleration, not the only way to get a shell. Do **not** run live full-app SSR on Nanodes — shell + client hook is the answer.
+
+Stub for copy-into-tip: [`relay-template/hooks/client/default-get.jsx`](../../relay-template/hooks/client/default-get.jsx).
+
+## Pre-rendered SSR cache (`ssrCache`)
+
+When `ssrCache.enabled` is true, browsers on this repo’s `domains[]` get **composed static HTML** from a mesh-synced bare (default `relay-ssr-cache`): one shared shell + per-path body fragments. Cache miss → **standard CSR shell** (same embed bootstrap as non-SSR). **No live request-path SSR** (`ssrClientHookFromGetContext` is refused for these repos). Bake runs only on the **publisher / fat** node.
+
+```json
+"ssrCache": {
+  "enabled": true,
+  "repo": "relay-ssr-cache",
+  "prefix": "sites/paradigmthreat.net/",
+  "shellPath": "sites/paradigmthreat.net/_shell.html",
+  "hookAssetsRepo": "relay-web-assets",
+  "hookAssetsBranch": "release",
+  "requirePreReceiveQa": true
+}
+```
+
+| Field | Purpose |
+|-------|---------|
+| `enabled` | Opt into fragment compose on the serve path |
+| `repo` | Cache bare slug (default `relay-ssr-cache`) |
+| `prefix` | Site root inside the cache tip |
+| `shellPath` | Shared `_shell.html` (must contain `<!--RELAY_SSR_BODY-->` or a `</main>`/`</body>` insert point) |
+| `hookAssetsRepo` / `hookAssetsBranch` | Tip used for full re-bake invalidation when embed/WASM changes |
+| `requirePreReceiveQa` | Publisher `pre-receive` runs CleverScript SSR + HTML QA on changed pages (default **true** when omitted). Set `false` to skip the push gate. |
+
+Layout under the cache tip: `_shell.html`, `_meta.json` (`contentTip`, `hookAssetsTip`), `*.body.html` paths. See [`RELAY_POLICY_AND_PERFORMANCE.md`](./RELAY_POLICY_AND_PERFORMANCE.md), `scripts/relay-ssr-bake.py`, and `relay-ssr-bake` (CleverScript). Validation: enabled requires non-empty `prefix` + `shellPath` (no `..`).
+
+Optional tip file **`.relay/ssr-qa.json`** adds site-specific require/forbid markers (examples: [`examples/ssr-qa.markers.json`](./examples/ssr-qa.markers.json), [`examples/ssr-qa.paradigmthreat.json`](./examples/ssr-qa.paradigmthreat.json)). Hard forbids always apply in Rust (`ssr_html_quality`).
 
 ## Parked domains
 
@@ -155,6 +203,7 @@ No binaries in Git for `hosted`; pointers only.
 | `relay-master/scripts/build-relay-catalog-json.sh` | Regenerate `relay-catalog.json` from `catalog/repos/` |
 | `relay-master/scripts/sync-relay-catalog.sh` | Bare mirrors + optional `authorized-repos.yaml` |
 | `relay-master/scripts/check-catalog-pr-signing-keys.sh` | Warn on key removal without `relay_root_commit` change |
+| `relay-master/scripts/check-catalog-client-hooks.sh` | Fail if a hosting repo lacks `clientHook` / `defaultClientHook` / fleet default |
 
 ## Related docs
 

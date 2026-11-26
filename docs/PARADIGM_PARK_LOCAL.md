@@ -7,13 +7,14 @@
 
 ## Goal
 
-Local-first loop:
+Local-first loop (all three parks):
 
-1. Edit tip CleverScript / content in the files checkout.
-2. Mirror worktree → local bare (`park-local sync`).
-3. Serve gateway on `:9080` (default; avoids host Kubo `:8080`) with park `Host`.
-4. Run SSR smoke + Rust unit regressions.
-5. Only then push GitLab / Relay remotes (or deploy gateway binary).
+1. Edit tip CleverScript / content in the checkouts (PT / fan-edits / clevertree-site).
+2. Mirror worktrees → local bares (`park-local sync`).
+3. Serve gateway on `:9080` with live CleverScript SSR (fleet catalog unset so `ssrCache` does not short-circuit).
+4. Browser via Host proxy `:9081` (`/pt/`, `/fb/`, `/ct/`) or `curl -H 'Host: …'`.
+5. `park-local dump` → `docker-data/park-local/ssr-out/` HTML for marker review; `warm` for QUERY.
+6. Smoke / unit, then push remotes.
 
 Fleet deploy and `autossh` tunnels are **confirmation**, not the debugger.
 
@@ -23,6 +24,7 @@ Fleet deploy and `autossh` tunnels are **confirmation**, not the debugger.
 |-------|------|
 | **Rust** (`relay-gateway` / `relay-runtime`) | Park Host routing, SSR document assembly + HTML cache, `@relay/md|ssr|image|ipfs|web-assets`, `@relay/search/*`, tip ergonomics `@relay/catalog|path|date|util|ui|tts` |
 | **CleverScript tip** | **Routing and composition** — thin `hooks/server/get.cs`, client shell JSX. Prefer host helpers over reimplementing parse/sort/path/date in tip. |
+| **Catalog** | Hosting repos must declare **`clientHook`** or **`defaultClientHook`** ([`RELAY_CATALOG.md`](./RELAY_CATALOG.md)). Non-SSR HTML still gets the standard embed shell; `ssrCache` is optional bake acceleration. |
 
 ## Commands
 
@@ -31,14 +33,16 @@ From **`relay-gateway/`**:
 ```bash
 chmod +x scripts/park-local.sh   # once
 
-./scripts/park-local.sh prepare  # bares + parked-domains.json
-./scripts/park-local.sh sync     # worktree snapshot → bare main (dirty OK)
-./scripts/park-local.sh serve    # sync + gateway on :9080
+./scripts/park-local.sh prepare  # bares + multi-host parked-domains.json
+./scripts/park-local.sh sync     # worktree snapshots → bares (dirty OK)
+./scripts/park-local.sh serve    # sync + gateway on :9080 (live SSR + QUERY)
 
-# other terminal
-./scripts/park-local.sh smoke    # Host: relay.paradigmthreat.net SSR checks
-./scripts/park-local.sh unit     # cargo: stdlib helpers + park Host/SSR tests
-./scripts/park-local.sh regress  # unit only
+# other terminals
+python3 scripts/park-local-host-proxy.py   # browser: http://127.0.0.1:9081/pt/|/fb/|/ct/
+./scripts/park-local.sh dump               # SSR HTML → docker-data/park-local/ssr-out/
+./scripts/park-local.sh warm               # SearchStore warm for QUERY
+./scripts/park-local.sh smoke              # PT SSR + hydrate
+./scripts/park-local.sh unit
 ```
 
 **Chrome toggles (theme / font):** after hydrate in the browser, theme and font must update via `documentElement` class / `data-font` only — **no** full article remount. Multi-second clicks almost always mean tip `setState` (or `setCurrentTheme`). Tip canon: park checkout `hooks/CLEVERSCRIPT_TIP.md` § Render rarity; product doctrine: [`RELAY_CLEVERSCRIPT_REACT_RENDERING.md`](./RELAY_CLEVERSCRIPT_REACT_RENDERING.md).
@@ -89,8 +93,21 @@ No fleet `RELAY_AUTHORIZED_REPOS_PATH` / catalog trust root — local mirrors ar
 | Unknown Host ≠ fallback | `test_unknown_host_does_not_fall_back_when_parked` | G-005 neighbor |
 | SSR fail → 500 | `test_parked_host_ssr_failure_returns_500_not_unknown_host` | G-005 |
 | Live SSR markers | `park-local.sh smoke` / `ssr-smoke.sh` | article-first SSR, TOC, DirNav placeholder |
+| Pre-receive SSR QA | catalog `ssrCache.requirePreReceiveQa` + `ssr_html_quality` | Bad tip rejected on publisher; `RELAY_SSR_PRE_RECEIVE_QA=0` emergency bypass |
+| Shared hard forbids | [`examples/ssr-qa.markers.json`](./examples/ssr-qa.markers.json) + [`scripts/ssr-qa-check-html.sh`](../scripts/ssr-qa-check-html.sh) | Align smoke/dump forbids with Rust `FORBIDDEN_HARD` |
 | QUERY (optional) | `scripts/local-query-e2e.sh` | sqlite search |
 | Thin IPFS (optional) | `scripts/docker-ipfs-dev.sh` | media GET / `?w=` |
+
+## Local repro: pre-receive SSR reject
+
+On a publisher with catalog `ssrCache.enabled` (and `requirePreReceiveQa` default/true):
+
+1. Push a tip whose client hook returns an error boundary (or empty body) for a changed `.md` path.
+2. Publisher `pre-receive` (`relay-hook-handler`) runs CleverScript SSR + `ssr_html_quality` against the quarantine OID and **rejects** with path + reason (Slack notify when configured).
+3. Emergency bypass (publisher only): `RELAY_SSR_PRE_RECEIVE_QA=0` — tip advances; bake still QA-fails and must not commit bad fragments.
+4. Shared hard forbids: [`examples/ssr-qa.markers.json`](./examples/ssr-qa.markers.json) / [`scripts/ssr-qa-check-html.sh`](../scripts/ssr-qa-check-html.sh). Site require markers: tip `.relay/ssr-qa.json` (see [`examples/ssr-qa.paradigmthreat.json`](./examples/ssr-qa.paradigmthreat.json)).
+
+Nanodes / peer-fetch do **not** re-run this gate (publish-origin only).
 
 ## Troubleshooting
 
@@ -112,4 +129,4 @@ No fleet `RELAY_AUTHORIZED_REPOS_PATH` / catalog trust root — local mirrors ar
 - [`relay-runtime/docs/CLEVERSCRIPT_COMPONENT_TESTING.md`](../../relay-runtime/docs/CLEVERSCRIPT_COMPONENT_TESTING.md) — vnode + handler unit tests for DirNav/Nav (OS smoke second)
 - [`DOCKER_IPFS_DEV.md`](./DOCKER_IPFS_DEV.md) — thin media canary (separate from park SSR)
 
-*Last updated: 2026-08-02*
+*Last updated: 2026-11-26*

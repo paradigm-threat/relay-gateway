@@ -6,7 +6,8 @@
 //! - `RELAY_SSR_MAX_CONCURRENT` — default 2 (clamp 1..=64).
 //!
 //! On timeout the waiting request fails fast **and** signals [`relay_runtime::signal_ssr_cancel`]
-//! so the worker aborts hot loops and drops its concurrency permit promptly (no multi-minute orphans).
+//! so the worker aborts hot loops. The concurrency permit is released at that signal, not when
+//! the thread finally exits, so a cancelled render does not keep the next reader on the busy path.
 //!
 //! Same coalesce key ⇒ one leader thread; waiters share the leader result under the same deadline.
 
@@ -49,11 +50,21 @@ pub fn ssr_overdue() -> usize {
     OVERDUE.load(Ordering::Acquire)
 }
 
-struct Permit;
+/// Shared so the waiter can drop the inflight count at cancel time.
+/// `Drop` and [`release_counted`] are idempotent.
+struct Permit {
+    counted: Arc<AtomicBool>,
+}
+
+fn release_counted(counted: &AtomicBool) {
+    if counted.swap(false, Ordering::AcqRel) {
+        INFLIGHT.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 impl Drop for Permit {
     fn drop(&mut self) {
-        INFLIGHT.fetch_sub(1, Ordering::AcqRel);
+        release_counted(&self.counted);
     }
 }
 
@@ -68,13 +79,17 @@ fn try_acquire_permit() -> Option<Permit> {
             .compare_exchange(cur, cur + 1, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            return Some(Permit);
+            return Some(Permit {
+                counted: Arc::new(AtomicBool::new(true)),
+            });
         }
     }
 }
 
 struct ErasedSlot {
     cancel: Arc<AtomicBool>,
+    /// Permit flag for the leader. Set before the slot is visible to joiners.
+    counted: Mutex<Option<Arc<AtomicBool>>>,
     waiter_count: AtomicUsize,
 }
 
@@ -105,6 +120,7 @@ fn await_with_timeout<T>(
     rx: Receiver<Option<T>>,
     timeout: Option<u64>,
     cancel: &Arc<AtomicBool>,
+    counted: &Arc<AtomicBool>,
 ) -> Option<T> {
     match timeout {
         None => rx.recv().ok().flatten(),
@@ -113,6 +129,8 @@ fn await_with_timeout<T>(
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let already = cancel.load(Ordering::Acquire);
                 relay_runtime::signal_ssr_cancel(cancel);
+                // The thread may still be unwinding. New readers must not wait on it.
+                release_counted(counted);
                 if !already {
                     OVERDUE.fetch_add(1, Ordering::AcqRel);
                 }
@@ -120,7 +138,8 @@ fn await_with_timeout<T>(
                     target: "relay_ssr",
                     timeout_secs = secs,
                     overdue = ssr_overdue(),
-                    "SSR wall-clock timeout; cancel signaled so worker can free concurrency slot"
+                    inflight = INFLIGHT.load(Ordering::Acquire),
+                    "SSR wall-clock timeout; cancel signaled and concurrency slot released"
                 );
                 None
             }
@@ -142,6 +161,7 @@ fn wake_all_value<T: Clone + Send>(waiters: &TypedWaiters<T>, out: &Option<T>) {
 }
 
 fn spawn_leader<T, F>(
+    permit: Permit,
     cancel: Arc<AtomicBool>,
     waiters: Arc<TypedWaiters<T>>,
     key: String,
@@ -152,20 +172,6 @@ where
     T: Clone + Send + 'static,
     F: FnOnce() -> Option<T> + Send + 'static,
 {
-    let Some(permit) = try_acquire_permit() else {
-        tracing::warn!(
-            target: "relay_ssr",
-            max = max_concurrent(),
-            "SSR concurrency limit reached; failing fast"
-        );
-        if let Ok(mut map) = registry.map.lock() {
-            if let Some((_, tw)) = map.remove(&key) {
-                wake_all_none(&tw);
-            }
-        }
-        return false;
-    };
-
     let builder = std::thread::Builder::new().name("relay-ssr".into());
     let cancel_worker = cancel.clone();
     let key_worker = key.clone();
@@ -234,7 +240,7 @@ where
     let timeout = timeout_secs();
     let (tx, rx) = mpsc::channel::<Option<T>>();
 
-    let cancel = {
+    {
         let mut map = registry.map.lock().unwrap_or_else(|p| p.into_inner());
         if let Some((slot, waiters)) = map.get(&key) {
             if let Ok(mut s) = waiters.senders.lock() {
@@ -242,11 +248,36 @@ where
             }
             slot.waiter_count.fetch_add(1, Ordering::Relaxed);
             tracing::debug!(target: "relay_ssr", key = %key, "SSR coalesce join");
-            slot.cancel.clone()
+            let cancel = slot.cancel.clone();
+            let counted = slot
+                .counted
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            drop(map);
+            let Some(counted) = counted else {
+                return await_with_timeout(
+                    rx,
+                    timeout,
+                    &cancel,
+                    &Arc::new(AtomicBool::new(false)),
+                );
+            };
+            return await_with_timeout(rx, timeout, &cancel, &counted);
         } else {
+            let Some(permit) = try_acquire_permit() else {
+                tracing::warn!(
+                    target: "relay_ssr",
+                    max = max_concurrent(),
+                    "SSR concurrency limit reached; failing fast"
+                );
+                return None;
+            };
+            let counted = permit.counted.clone();
             let cancel = Arc::new(AtomicBool::new(false));
             let slot = Arc::new(ErasedSlot {
                 cancel: cancel.clone(),
+                counted: Mutex::new(Some(counted.clone())),
                 waiter_count: AtomicUsize::new(1),
             });
             let waiters = Arc::new(TypedWaiters {
@@ -254,17 +285,21 @@ where
             });
             map.insert(key.clone(), (slot, waiters.clone()));
             drop(map);
-            let started =
-                spawn_leader(cancel.clone(), waiters, key.clone(), registry.clone(), work);
+            let started = spawn_leader(
+                permit,
+                cancel.clone(),
+                waiters,
+                key.clone(),
+                registry.clone(),
+                work,
+            );
             if !started {
                 return None;
             }
             tracing::debug!(target: "relay_ssr", key = %key, "SSR coalesce leader");
-            cancel
+            return await_with_timeout(rx, timeout, &cancel, &counted);
         }
-    };
-
-    await_with_timeout(rx, timeout, &cancel)
+    }
 }
 
 /// Non-coalesced isolated run (tests / single-shot). Still uses cancel on timeout.
@@ -285,13 +320,18 @@ where
     let timeout = timeout_secs();
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_worker = cancel.clone();
+    let counted = permit.counted.clone();
     let (tx, rx) = mpsc::channel();
     let builder = std::thread::Builder::new().name("relay-ssr".into());
     if builder
         .spawn(move || {
             let _permit = permit;
             relay_runtime::install_ssr_cancel(Some(cancel_worker.clone()));
-            let out = work();
+            let out = if relay_runtime::ssr_is_cancelled() {
+                None
+            } else {
+                work()
+            };
             if cancel_worker.load(Ordering::Acquire) {
                 OVERDUE
                     .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
@@ -308,7 +348,7 @@ where
         return None;
     }
 
-    await_with_timeout(rx, timeout, &cancel)
+    await_with_timeout(rx, timeout, &cancel, &counted)
 }
 
 /// Build coalesce key from repo/branch/tip/path/hook.
@@ -403,6 +443,43 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(ok, "permit should free after cooperative cancel");
+        std::env::remove_var("RELAY_SSR_MAX_CONCURRENT");
+        std::env::remove_var("RELAY_SSR_TIMEOUT_SECS");
+    }
+
+    #[test]
+    fn timeout_releases_slot_before_worker_exits() {
+        let _g = LOCK.lock().unwrap();
+        std::env::set_var("RELAY_SSR_MAX_CONCURRENT", "1");
+        std::env::set_var("RELAY_SSR_TIMEOUT_SECS", "2");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let h = std::thread::spawn(move || {
+            run_ssr_isolated(move || {
+                let _ = started_tx.send(());
+                // Ignore cancel: the waiter must free the slot without this thread exiting.
+                let _ = release_rx.recv_timeout(Duration::from_secs(20));
+                Some(1u8)
+            })
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let mut finished = false;
+        for _ in 0..50 {
+            if h.is_finished() {
+                finished = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(finished, "waiter should return at the wall-clock timeout");
+        assert!(h.join().unwrap().is_none());
+        assert_eq!(
+            run_ssr_isolated(|| Some(9u8)),
+            Some(9),
+            "cancelled render must not keep the only slot"
+        );
+        let _ = release_tx.send(());
+        std::thread::sleep(Duration::from_millis(50));
         std::env::remove_var("RELAY_SSR_MAX_CONCURRENT");
         std::env::remove_var("RELAY_SSR_TIMEOUT_SECS");
     }

@@ -7,7 +7,7 @@
 # Usage:
 #   VERCEL_API_TOKEN=... ./vercel-dns-fleet-reconcile.sh
 #   ./vercel-dns-fleet-reconcile.sh --dry-run
-#   ./vercel-dns-fleet-reconcile.sh --fleet=fleet.relaygateway.net iad1.relaygateway.net ord1.relaygateway.net hkg1.relaygateway.net
+#   ./vercel-dns-fleet-reconcile.sh --fleet=fleet.relaygateway.net pub1.relaygateway.net
 #
 # Env:
 #   VERCEL_API_TOKEN / VERCEL_TOKEN  required (unless --dry-run and no API calls needed — still required)
@@ -30,7 +30,7 @@ Usage: vercel-dns-fleet-reconcile.sh [--dry-run] [--fleet=FQDN] [node.fqdn ...]
 
 Reconcile A/AAAA records for the fleet ingress name from node hostnames.
 With no node args, uses RELAY_OPERATOR_FLEET or RELAY_MASTER_PEER_LIST
-(default: iad1;ord1;hkg1.relaygateway.net).
+(default: pub1.relaygateway.net only — fat publisher; do not pass Nanodes).
 EOF
   exit "${1:-0}"
 }
@@ -52,7 +52,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#NODES[@]} -eq 0 ]]; then
-  raw="${RELAY_OPERATOR_FLEET:-${RELAY_MASTER_PEER_LIST:-iad1.relaygateway.net;ord1.relaygateway.net;hkg1.relaygateway.net}}"
+  # Default fleet A set = publisher only (never Nanode mesh IPs).
+  raw="${RELAY_FLEET_DNS_PEERS:-${RELAY_OPERATOR_FLEET:-${RELAY_MASTER_PEER_LIST:-pub1.relaygateway.net}}}"
   IFS=';' read -ra NODES <<<"$raw"
 fi
 

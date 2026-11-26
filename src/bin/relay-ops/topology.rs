@@ -26,7 +26,7 @@ pub struct FleetFile {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MailSpec {
-    /// MX host FQDN (OpenSMTPD). Default iad1.relaygateway.net.
+    /// MX host FQDN (OpenSMTPD). Default pub1.relaygateway.net.
     #[serde(default)]
     pub host: Option<String>,
     /// Absolute Maildir path on that host. Default /home/arl/Maildir.
@@ -51,8 +51,28 @@ pub struct FleetNode {
     pub ssh_user: Option<String>,
     #[serde(rename = "deployTarget", default)]
     pub deploy_target: Option<String>,
-    #[serde(rename = "spotCloudspace", default)]
-    pub spot_cloudspace: Option<String>,
+    /// When false, node is mesh-only: peer git sync OK, but **not** included in
+    /// `fleet.relaygateway.net` multi-A reconcile. Default true.
+    #[serde(rename = "fleetDns", default = "default_fleet_dns")]
+    pub fleet_dns: bool,
+    /// Optional role hint: `publisher` (fat / bake + HTTPS) or `mesh` (peer-only).
+    #[serde(default)]
+    pub role: Option<String>,
+}
+
+fn default_fleet_dns() -> bool {
+    true
+}
+
+impl FleetNode {
+    /// Nodes that may appear in the fleet ingress A/AAAA set.
+    pub fn participates_in_fleet_dns(&self) -> bool {
+        self.fleet_dns
+            && !self
+                .role
+                .as_deref()
+                .is_some_and(|r| r.eq_ignore_ascii_case("mesh"))
+    }
 }
 
 impl FleetFile {
@@ -98,7 +118,8 @@ impl FleetFile {
                     fqdn,
                     ssh_user: None,
                     deploy_target: None,
-                    spot_cloudspace: None,
+                    fleet_dns: true,
+                    role: None,
                 })
                 .collect(),
             git_repos: Vec::new(),
@@ -106,7 +127,7 @@ impl FleetFile {
             catalog_path: None,
             data_root: None,
             mail: Some(MailSpec {
-                host: Some("iad1.relaygateway.net".into()),
+                host: Some("pub1.relaygateway.net".into()),
                 maildir: Some("/home/arl/Maildir".into()),
             }),
         })
@@ -123,7 +144,8 @@ impl FleetFile {
                     fqdn: p.to_string(),
                     ssh_user: None,
                     deploy_target: None,
-                    spot_cloudspace: None,
+                    fleet_dns: true,
+                    role: None,
                 });
             }
         }
@@ -261,7 +283,8 @@ RELAY_MASTER_PEER_LIST="a.example.net;b.example.net"
             .unwrap()
             .contains("relaygateway.net"));
         assert!(f.nodes.iter().all(|n| n.fqdn.contains('.')));
-        assert!(f.nodes.iter().all(|n| n.spot_cloudspace.is_some()));
+        assert!(f.nodes.iter().any(|n| n.participates_in_fleet_dns()));
+        assert!(f.nodes.iter().any(|n| !n.participates_in_fleet_dns()));
         assert!(!f.health_repos().is_empty());
         assert!(!f.health_query().is_empty());
     }

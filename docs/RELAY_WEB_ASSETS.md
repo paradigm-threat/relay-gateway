@@ -56,11 +56,14 @@ parked sites.
 assets/embed.js
 assets/embed.css
 assets/chunk-*.js          # only modules reachable from embed.js
+assets/chat/*.host.js      # mesh LiveChat hosts (from relay-client-web/park-native/chat)
 wasm/relay_runtime_pkg/…
 MANIFEST.json              # profile: embed-no-react + source SHAs
 .relay.yaml                # branchRules + allowedKeys (signed pushes)
 README.md
 ```
+
+Mesh chat channel prefixes: [`RELAY_CHAT.md`](RELAY_CHAT.md).
 
 **Never published here:** `main.js`, `main.css`, React SPA `index.html`, or any chunk only
 reachable from the React shell. `publish-web-assets.sh` walks the embed import graph and runs

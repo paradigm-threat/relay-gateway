@@ -49,11 +49,11 @@ BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 npm --prefix "$CLIENT_WEB" run build
 test -f "$CLIENT_WEB/dist/assets/embed.js"
 test -f "$CLIENT_WEB/dist/wasm/relay_runtime_pkg/relay_runtime_bg.wasm"
-cargo build --release --bin relay-gateway --bin relay-hook-handler --bin relay-git-proxy
+cargo build --release --bin relay-gateway --bin relay-hook-handler --bin relay-git-proxy --bin relay-ssr-bake
 DIST="$ROOT/target/linode-deploy"
 rm -rf "$DIST"
 mkdir -p "$DIST"
-cp target/release/relay-gateway target/release/relay-hook-handler target/release/relay-git-proxy "$DIST/"
+cp target/release/relay-gateway target/release/relay-hook-handler target/release/relay-git-proxy target/release/relay-ssr-bake "$DIST/"
 cp "$ROOT/scripts/relay-install.sh" "$DIST/install.sh"
 cp "$ROOT/scripts/piper-tts-http.py" "$DIST/piper-tts-http.py"
 cp "$ROOT/scripts/relay-probe-features.py" "$DIST/relay-probe-features.py"

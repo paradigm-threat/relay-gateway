@@ -29,7 +29,7 @@ A dense stretch of fleet + park work. Two **major** capability adds; most of the
 ### Hardening, ops, and park front-end (highlights)
 
 - **Fleet ops:** unified **`relay-ops`** CLI + local UI; tray mark; Spot reclaim / empty-VM brain scenarios; windowed per-host HTTP stats; RUM / theater error beacons (errors only — no analytics); SSL SNI checks for parked Hosts; publisher-aware sync / `publish_origin`.
-- **Live mesh:** **iad1 / ord1 / hkg1** (sjc1 / atlanta2 retired); first-push bare provision; mesh tip notify; catalog SearchStore warm on publish branch.
+- **Live mesh:** **iad1 / ord1 / hkg1** (atlanta2 retired); first-push bare provision; mesh tip notify; catalog SearchStore warm on publish branch.
 - **Parked SSR:** path-correct renders (no homepage hydrate on article URLs); coalesce + timeouts so crawlers cannot wedge the gateway; refuse wrong-URL cache; soft shells for missing `page.md` trees; omit CleverScript `embed.js` when tip `hydrate: false`.
 - **Flashback park-native:** inject `*.host.js` islands (LobbyAudio, NowShowing, ExternalPlay, LiveChat stubs, …); tip policy for posters / `downloads/*.apk`; soft routes (`/setup`, `/board`, `/request`, …); theater-bg CSS on SSR head; **in-tab TheaterPlayer left off** (external player / VLC path).
 - **Thin IPFS:** fleet skips pin/sync for catalog-only / movie-cache repos; pin-on-tip/miss for thin trees; workstation seeding remains the heavy path.

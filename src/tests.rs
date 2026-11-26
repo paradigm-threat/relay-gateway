@@ -2471,4 +2471,77 @@ git:
         .into_response();
         assert_eq!(put.into_response().status(), StatusCode::OK);
     }
+
+    /// HTTP PUT tip advance must warm SearchStore so docs_indexed_head == tip / indexFresh true
+    /// without a manual `/api/index/warm`.
+    #[tokio::test]
+    #[serial(catalog_path_env)]
+    async fn put_tip_advance_warms_searchstore_index_fresh() {
+        let catalog = catalog_worktree("repo", None);
+        let _guard = CatalogPathGuard::set(catalog.path());
+        let (tmpdir, mut state) = query_text_fixture(
+            r#"
+git:
+  branchRules:
+    default:
+      requireSigned: false
+      allowUnsigned: true
+server:
+  hooks:
+    index:
+      path: hooks/server/index.cs
+"#,
+        );
+        let _ = tmpdir;
+        let bare = state.repo_path.join("repo.git");
+        state.node_fqdn = Some("iad1.relaygateway.net".into());
+        let headers = host_on("repo", "iad1.relaygateway.net");
+        let put = handlers::put_file(
+            State(state.clone()),
+            headers.clone(),
+            AxPath("extra.txt".into()),
+            None,
+            bytes::Bytes::from_static(b"after-put"),
+        )
+        .await
+        .into_response();
+        let (parts, body) = put.into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(body, usize::MAX).await.unwrap(),
+        )
+        .unwrap();
+        let tip = json["commit"].as_str().expect("commit in PUT response");
+        let store = git::store_for_bare_repo(&bare).unwrap();
+        let key = git::store_key_for_bare(&bare, "main");
+        assert_eq!(
+            store.docs_indexed_head(&key).unwrap().as_deref(),
+            Some(tip),
+            "PUT must stamp docs_indexed_head == tip without manual warm"
+        );
+
+        let mut qh = headers;
+        qh.insert(HEADER_BRANCH, "main".parse().unwrap());
+        qh.insert(ACCEPT, "application/json".parse().unwrap());
+        let response = handlers::handle_query(
+            State(state),
+            qh,
+            AxPath("query".to_string()),
+            None,
+            Some(Json(serde_json::json!({
+                "collection": "index",
+                "query": { "title": "Test Item" }
+            }))),
+        )
+        .await;
+        let (qparts, qbody) = response.into_response().into_parts();
+        assert_eq!(qparts.status, StatusCode::OK);
+        let qjson: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(qbody, usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(
+            qjson["indexFresh"], true,
+            "QUERY must report indexFresh true after PUT warm: {qjson}"
+        );
+    }
 }

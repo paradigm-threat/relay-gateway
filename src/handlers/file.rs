@@ -70,6 +70,9 @@ pub async fn handle_get_file(
         if let Some(resp) = try_static(&state, &decoded).await {
             return resp;
         }
+        if let Some(resp) = node_repo_door_hint(&state, &headers, &decoded) {
+            return resp;
+        }
         let hint = state
             .node_fqdn
             .as_deref()
@@ -187,6 +190,17 @@ mod static_path_tests {
         assert!(!is_relay_runtime_static_path("README.md"));
         assert!(!is_relay_runtime_static_path("assets/../relay.env"));
     }
+
+    #[test]
+    fn repo_door_sentence_names_git_port_and_files_host() {
+        let s = super::repo_door_sentence("iad1.relaygateway.net", 9418, "paradigm-threat-files");
+        assert_eq!(
+            s,
+            "Clone git://iad1.relaygateway.net:9418/paradigm-threat-files.git and open files at https://paradigm-threat-files.iad1.relaygateway.net/.\n"
+        );
+        assert!(!s.contains('\n') || s.matches('\n').count() == 1);
+        assert!(!s.to_ascii_lowercase().contains("index of"));
+    }
 }
 
 async fn run_get_clever_or_404(
@@ -290,6 +304,56 @@ async fn run_get_clever_or_404(
         "Not Found",
     )
         .into_response()
+}
+
+/// One sentence for `GET /{slug}` on the node apex when `{slug}.git` exists.
+/// Not a directory listing. Git stays on the git port.
+pub(crate) fn repo_door_sentence(node: &str, port: u16, slug: &str) -> String {
+    format!("Clone git://{node}:{port}/{slug}.git and open files at https://{slug}.{node}/.\n")
+}
+
+fn node_repo_door_hint(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    decoded: &str,
+) -> Option<Response> {
+    if !helpers::host_is_node_apex(state.node_fqdn.as_deref(), headers) {
+        return None;
+    }
+    let slug = decoded.trim().trim_matches('/');
+    if slug.is_empty() || slug.contains('/') || slug.contains('\\') || slug.contains("..") {
+        return None;
+    }
+    let slug = slug.strip_suffix(".git").unwrap_or(slug);
+    if slug.is_empty()
+        || slug.contains('.')
+        || !slug
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    let bare = state.repo_path.join(format!("{slug}.git"));
+    if !bare.is_dir() {
+        return None;
+    }
+    let node = state.node_fqdn.clone().unwrap_or_else(|| {
+        headers
+            .get(axum::http::header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|h| h.split(':').next())
+            .unwrap_or("localhost")
+            .to_string()
+    });
+    let body = repo_door_sentence(&node, crate::post_push_sync::git_port(), slug);
+    Some(
+        (
+            StatusCode::OK,
+            [("Content-Type", "text/plain; charset=utf-8")],
+            body,
+        )
+            .into_response(),
+    )
 }
 
 /// Try to serve a file from static paths

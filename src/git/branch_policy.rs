@@ -836,6 +836,9 @@ mod tests {
             limits: None,
             last_history_reset: None,
             description: None,
+            ssr_cache: None,
+            client_hook: None,
+            default_client_hook: None,
         }
     }
 

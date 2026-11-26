@@ -127,6 +127,10 @@ write_caddyfile() {
 	handle /tts* {
 		reverse_proxy 127.0.0.1:${PIPER_PORT}
 	}
+	# Flashback/Relay chat edge (or mesh proxy to CHAT_PRIMARY) until park-tls embeds sidecar.
+	handle /chat/* {
+		reverse_proxy 127.0.0.1:8098
+	}
 	handle {
 		redir https://{host}{uri} permanent
 	}
@@ -149,6 +153,9 @@ https:// {
 	}
 	handle /tts* {
 		reverse_proxy 127.0.0.1:${PIPER_PORT}
+	}
+	handle /chat/* {
+		reverse_proxy 127.0.0.1:8098
 	}
 	handle {
 		reverse_proxy 127.0.0.1:${UPSTREAM} {
@@ -183,6 +190,16 @@ cat >/etc/systemd/system/caddy.service.d/relay-ask.conf <<'EOF'
 [Unit]
 After=relay-caddy-ask.service
 Requires=relay-caddy-ask.service
+EOF
+# Stock caddy.service is Restart=no + OOMPolicy=stop. A chat hairpin / traffic
+# storm has ballooned Caddy to multi‑GiB RSS and left HTTPS dead. Prefer a hard
+# MemoryMax + Restart over MemoryHigh soft-throttle (throttle caused Recv-Q wedges).
+cat >/etc/systemd/system/caddy.service.d/relay-harden.conf <<'EOF'
+[Service]
+Restart=always
+RestartSec=3
+OOMPolicy=continue
+MemoryMax=3G
 EOF
 
 systemctl daemon-reload

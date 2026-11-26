@@ -63,6 +63,14 @@ if [[ "$recvq" =~ ^[0-9]+$ ]] && (( recvq >= RECVQ_LIMIT )); then
   exit 0
 fi
 
+# Caddy can OOM-die while relay-gateway loopback stays healthy. Stock unit did
+# not restart; HTTPS then looks like a gateway wedge to the fleet UI.
+if ! systemctl is-active --quiet caddy; then
+  log "caddy is not active — starting caddy (gateway loopback may still be fine)"
+  systemctl reset-failed caddy 2>/dev/null || true
+  systemctl start caddy || true
+fi
+
 if curl -sS -m 3 -o /dev/null -X POST "$URL"; then
   rm -f "$STATE"
   _repatch_caddy_timeouts

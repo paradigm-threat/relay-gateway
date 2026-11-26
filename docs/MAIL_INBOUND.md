@@ -92,7 +92,7 @@ APIs: `GET /api/mail/list`, `GET /api/mail/message?id=…` (**opening marks read
 ### SSH (fallback)
 
 ```bash
-ssh -i ~/.ssh/id_ed25519_relay_gateway ubuntu@MX_HOST \
+ssh -i ~/.ssh/id_ed25519_relay_gateway root@MX_HOST \
   'sudo ls -la /home/relaymail/Maildir/new'
 ```
 
@@ -106,7 +106,7 @@ Canonical reader used by **relay-ops Inbox** and batch consumers (e.g. QuizGate)
 |------|------|
 | [`scripts/maildir_inbox.py`](../scripts/maildir_inbox.py) | `list` / `get` / `mark-read` → JSON |
 | `relay-ops` `mail.rs` | `include_str!` of that script; SSH + sudo on MX host |
-| Host copy (iad1) | `/usr/local/lib/relay/maildir_inbox.py` |
+| Host copy (pub1) | `/usr/local/lib/relay/maildir_inbox.py` |
 
 ```bash
 python3 scripts/maildir_inbox.py list /home/arl/Maildir
@@ -117,16 +117,18 @@ Do **not** invent a parallel IMAP stack — extend this helper.
 
 ---
 
-## Production — iad1 (multi-domain)
+## Production — pub1 (multi-domain)
 
-Live mesh: **`iad1` / `ord1` / `hkg1`**. Only **iad1** runs the catcher. **One** Maildir for all inbound domains.
+Live mesh: **`pub1` / `mesh1` / `mesh2`** (Linode). Only **pub1** runs the catcher. **One** Maildir for all inbound domains.
 
 | | |
 |--|--|
-| MX host | `iad1.relaygateway.net` (`162.209.124.53`) |
+| MX host | `pub1.relaygateway.net` (`172.234.148.70`) |
 | Banner | `mail.paradigmthreat.net` |
 | User / Maildir | `arl` / `/home/arl/Maildir` |
 | SPF | `v=spf1 -all` on each apex (receive-only) |
+
+**DNS cutover (operator):** point `mail.paradigmthreat.net`, `mail.clevertree.net`, and `mail.quizgate.app` **A** records at `172.234.148.70` only after local SMTP on pub1 is proven. Leave MX owners pointing at those `mail.*` names. Do not destroy Rackspace iad1 until mail A records have flipped and a test message lands in `/home/arl/Maildir`.
 
 | Domain | DNS name | Delivery |
 |--------|----------|----------|
@@ -134,7 +136,7 @@ Live mesh: **`iad1` / `ord1` / `hkg1`**. Only **iad1** runs the catcher. **One**
 | `@clevertree.net` | `mail.clevertree.net` | MDA → Maildir (+ optional msmtp Gmail notify) |
 | `@quizgate.app` | `mail.quizgate.app` | Maildir (`batch@quizgate.app`) |
 
-Live `/etc/smtpd.conf` is **surgically** multi-table (PT / CT / QG). The installer single-domain template still works for greenfield nodes; do not blindly `reconfigure-features` on iad1 without merging those tables.
+Live `/etc/smtpd.conf` is **surgically** multi-table (PT / CT / QG). The installer single-domain template still works for greenfield nodes; do not blindly `reconfigure-features` on pub1 without merging those tables.
 
 Installer shape (PT-only greenfield / rebuild baseline):
 
@@ -151,7 +153,7 @@ sudo RELAY_INSTALL_NONINTERACTIVE=1 \
 
 ```json
 "mail": {
-  "host": "iad1.relaygateway.net",
+  "host": "pub1.relaygateway.net",
   "maildir": "/home/arl/Maildir"
 }
 ```
@@ -162,7 +164,7 @@ From another mesh node (many residential ISPs block **outbound** :25):
 
 ```bash
 # SMTP to mail.paradigmthreat.net:25, RCPT someone@paradigmthreat.net
-# or on iad1: SMTP 127.0.0.1:25 RCPT batch@quizgate.app
+# or on pub1: SMTP 127.0.0.1:25 RCPT batch@quizgate.app
 ```
 
 Expect delivery under `/home/arl/Maildir/new` and `journalctl -u opensmtpd`.

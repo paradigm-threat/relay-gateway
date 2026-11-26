@@ -2,33 +2,40 @@
   "schema": "relay.ops.fleet.v1",
   "fleetIngress": "fleet.relaygateway.net",
   "gitPort": 9418,
+  "features": {
+    "piperTts": true
+  },
   "mail": {
-    "host": "iad1.relaygateway.net",
+    "host": "pub1.relaygateway.net",
     "maildir": "/home/arl/Maildir"
   },
   "nodes": [
     {
-      "fqdn": "iad1.relaygateway.net",
-      "sshUser": "ubuntu",
-      "deployTarget": "spot-iad1",
-      "spotCloudspace": "relay-network-iad"
+      "fqdn": "pub1.relaygateway.net",
+      "sshUser": "root",
+      "deployTarget": "linode-pub1",
+      "role": "publisher",
+      "fleetDns": true
     },
     {
-      "fqdn": "ord1.relaygateway.net",
-      "sshUser": "ubuntu",
-      "deployTarget": "spot-ord1",
-      "spotCloudspace": "relay-network-ord"
+      "fqdn": "mesh1.relaygateway.net",
+      "sshUser": "root",
+      "deployTarget": "linode-mesh1",
+      "role": "mesh",
+      "fleetDns": false
     },
     {
-      "fqdn": "hkg1.relaygateway.net",
-      "sshUser": "ubuntu",
-      "deployTarget": "spot-hkg1",
-      "spotCloudspace": "relay-network-hkg"
+      "fqdn": "mesh2.relaygateway.net",
+      "sshUser": "root",
+      "deployTarget": "linode-mesh2",
+      "role": "mesh",
+      "fleetDns": false
     }
   ],
   "gitRepos": [
     "paradigm-threat-files",
-    "relay-master"
+    "relay-master",
+    "relay-ssr-cache"
   ],
   "health": {
     "query": "venus",

@@ -150,6 +150,14 @@
       "brain_gated": true
     },
     {
+      "name": "ops_fix_repo_ownership",
+      "description": "Chown /opt/relay/data/*.git to relay:relay (fix dubious-ownership warm failures)",
+      "cli": "relay-ops fix-repo-ownership",
+      "job_kind": "fix-repo-ownership",
+      "high_risk": false,
+      "brain_gated": true
+    },
+    {
       "name": "ops_known_hosts_reset",
       "description": "Reset SSH known_hosts for fqdn/IPs",
       "cli": "relay-ops known-hosts-reset --fqdn FQDN",

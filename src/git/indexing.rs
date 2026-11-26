@@ -220,64 +220,182 @@ pub fn spawn_periodic_reconcile_stale_indexes(repo_root: PathBuf) {
 pub fn reconcile_stale_indexes(repo_root: &Path) -> anyhow::Result<()> {
     let root = repo_root.to_path_buf();
     let names = bare_repo_names(&root);
+    let catalog_publish: HashMap<String, String> = crate::catalog_policy::catalog_path_from_env()
+        .and_then(|p| crate::catalog_policy::try_load_catalog_index(&p))
+        .map(|idx| {
+            idx.repos
+                .iter()
+                .map(|(slug, rec)| (slug.clone(), rec.publish_branch.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
     for name in names {
         let bare = root.join(format!("{name}.git"));
-        let branch = match default_branch_from_bare_head(&root, &name) {
-            Some(b) => b,
-            None => continue,
-        };
+        let head_branch = default_branch_from_bare_head(&root, &name);
+        let publish = catalog_publish.get(&name).cloned();
+        let mut branches: Vec<String> = Vec::new();
+        if let Some(b) = publish {
+            branches.push(b);
+        }
+        if let Some(b) = head_branch {
+            if !branches.iter().any(|x| x == &b) {
+                branches.push(b);
+            }
+        }
         let repo = match git2::Repository::open_bare(&bare) {
             Ok(r) => r,
             Err(_) => continue,
         };
-        let refname = format!("refs/heads/{branch}");
-        let tip = match repo.refname_to_id(&refname) {
-            Ok(id) => id.to_string(),
-            Err(_) => continue,
-        };
-        let relay = read_relay_config(&repo, &tip).unwrap_or_default();
-        if !index_policy::branch_allowed_for_index(&relay, &branch) {
-            continue;
+        for branch in branches {
+            let refname = format!("refs/heads/{branch}");
+            let tip = match repo.refname_to_id(&refname) {
+                Ok(id) => id.to_string(),
+                Err(_) => continue,
+            };
+            let relay = read_relay_config(&repo, &tip).unwrap_or_default();
+            if !index_policy::branch_allowed_for_index(&relay, &branch) {
+                continue;
+            }
+            let store = store_for_bare_repo(&bare)?;
+            let key = store_key_for_bare(&bare, &branch);
+            let indexed_head = store.docs_indexed_head(&key)?.unwrap_or_default();
+            if indexed_head == tip {
+                continue;
+            }
+            info!(
+                repo = %name,
+                branch = %branch,
+                indexed_head = %indexed_head,
+                tip = %tip,
+                "SearchStore lags git tip — scheduling index warm"
+            );
+            spawn_ensure_indexed(bare.clone(), branch, indexed_head, tip);
         }
-        let store = store_for_bare_repo(&bare)?;
-        let key = store_key_for_bare(&bare, &branch);
-        let indexed_head = store.docs_indexed_head(&key)?.unwrap_or_default();
-        if indexed_head == tip {
-            continue;
-        }
-        info!(
-            repo = %name,
-            branch = %branch,
-            indexed_head = %indexed_head,
-            tip = %tip,
-            "SearchStore lags git tip — scheduling index warm"
-        );
-        spawn_ensure_indexed(bare, branch, indexed_head, tip);
     }
     Ok(())
 }
 
-/// Async index warm after peer-fetch / catalog apply (errors logged only).
+/// In-memory SearchStore warm progress (peer spawn / background). Key: `(bare, branch)`.
+#[derive(Clone, Debug, Default)]
+pub struct IndexPendingInfo {
+    pub pending: bool,
+    pub tip_sha: String,
+    pub last_error: Option<String>,
+    pub attempts: u32,
+}
+
+fn index_pending_map() -> &'static Mutex<HashMap<(String, String), IndexPendingInfo>> {
+    static M: OnceLock<Mutex<HashMap<(String, String), IndexPendingInfo>>> = OnceLock::new();
+    M.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn pending_key(repo_path: &Path, branch: &str) -> (String, String) {
+    (
+        repo_path.to_string_lossy().to_string(),
+        branch.to_string(),
+    )
+}
+
+pub fn index_pending_for(repo_path: &Path, branch: &str) -> Option<IndexPendingInfo> {
+    index_pending_map()
+        .lock()
+        .ok()?
+        .get(&pending_key(repo_path, branch))
+        .cloned()
+}
+
+fn set_index_pending(repo_path: &Path, branch: &str, tip: &str, pending: bool, err: Option<String>, attempts: u32) {
+    if let Ok(mut m) = index_pending_map().lock() {
+        m.insert(
+            pending_key(repo_path, branch),
+            IndexPendingInfo {
+                pending,
+                tip_sha: tip.to_string(),
+                last_error: err,
+                attempts,
+            },
+        );
+    }
+}
+
+fn index_spawn_max_attempts() -> u32 {
+    std::env::var("RELAY_INDEX_SPAWN_RETRIES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(3)
+}
+
+/// Async index warm after peer-fetch / catalog apply. Retries on failure; stamps pending state.
 pub fn spawn_ensure_indexed(
     repo_path: PathBuf,
     branch: String,
     old_commit: String,
     tip_sha: String,
 ) {
+    set_index_pending(&repo_path, &branch, &tip_sha, true, None, 0);
     std::thread::spawn(move || {
-        let ctx = HookContext {
-            repo_path: repo_path.clone(),
-            old_commit,
-            new_commit: tip_sha.clone(),
-            refname: format!("refs/heads/{}", branch),
-            branch: branch.clone(),
-            is_verified: true,
-            files: Default::default(),
-        };
-        if let Err(e) = ensure_indexed(&ctx) {
-            tracing::warn!(error = %e, "spawn_ensure_indexed failed");
+        let max = index_spawn_max_attempts();
+        let mut last_err: Option<String> = None;
+        for attempt in 1..=max {
+            let ctx = HookContext {
+                repo_path: repo_path.clone(),
+                old_commit: old_commit.clone(),
+                new_commit: tip_sha.clone(),
+                refname: format!("refs/heads/{}", branch),
+                branch: branch.clone(),
+                is_verified: true,
+                files: Default::default(),
+            };
+            match ensure_indexed(&ctx) {
+                Ok(()) => {
+                    set_index_pending(&repo_path, &branch, &tip_sha, false, None, attempt);
+                    return;
+                }
+                Err(e) => {
+                    last_err = Some(e.to_string());
+                    tracing::warn!(
+                        error = %e,
+                        attempt,
+                        max,
+                        "spawn_ensure_indexed failed; retrying"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(250 * attempt as u64));
+                }
+            }
         }
+        set_index_pending(
+            &repo_path,
+            &branch,
+            &tip_sha,
+            false,
+            last_err.clone(),
+            max,
+        );
+        tracing::error!(
+            error = %last_err.unwrap_or_default(),
+            attempts = max,
+            "spawn_ensure_indexed exhausted retries"
+        );
     });
+}
+
+/// Retrying sync warm for publish_branch fail-closed paths (pre-receive / PUT).
+pub fn ensure_indexed_with_retries(ctx: &HookContext, max_attempts: u32) -> anyhow::Result<()> {
+    let max = max_attempts.max(1);
+    let mut last = None;
+    for attempt in 1..=max {
+        match ensure_indexed(ctx) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last = Some(e);
+                if attempt < max {
+                    std::thread::sleep(std::time::Duration::from_millis(200 * attempt as u64));
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("ensure_indexed failed")))
 }
 
 #[cfg(test)]
@@ -342,6 +460,47 @@ server:
             files: HashMap::new(),
         };
         (dir, repo_path, commit, ctx)
+    }
+
+    #[test]
+    fn ensure_indexed_with_retries_matches_tip() {
+        let (_dir, repo_path, commit, ctx) = meta_index_bare_fixture();
+        ensure_indexed_with_retries(&ctx, 3).unwrap();
+        let store = store_for_bare_repo(&repo_path).unwrap();
+        let key = store_key_for_bare(&repo_path, "main");
+        assert_eq!(
+            store.docs_indexed_head(&key).unwrap().as_deref(),
+            Some(commit.as_str())
+        );
+        let pending = index_pending_for(&repo_path, "main");
+        assert!(pending.is_none() || pending.as_ref().is_some_and(|p| !p.pending));
+    }
+
+    /// Peer-fetch path: async spawn must stamp docs_indexed_head == tip without manual warm.
+    #[test]
+    fn spawn_ensure_indexed_matches_tip_without_manual_warm() {
+        let (_dir, repo_path, commit, _ctx) = meta_index_bare_fixture();
+        spawn_ensure_indexed(
+            repo_path.clone(),
+            "main".into(),
+            String::new(),
+            commit.clone(),
+        );
+        let key = store_key_for_bare(&repo_path, "main");
+        for _ in 0..200 {
+            let head_ok = store_for_bare_repo(&repo_path)
+                .ok()
+                .and_then(|store| store.docs_indexed_head(&key).ok().flatten())
+                .as_deref()
+                == Some(commit.as_str());
+            let pending = index_pending_for(&repo_path, "main");
+            let pending_clear = pending.is_none() || pending.as_ref().is_some_and(|p| !p.pending);
+            if head_ok && pending_clear {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        panic!("spawn_ensure_indexed did not stamp docs_indexed_head == tip in time");
     }
 
     /// Regression: `ensure_indexed` must not wipe+rebuild SQLite twice.

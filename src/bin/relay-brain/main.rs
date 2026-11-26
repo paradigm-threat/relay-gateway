@@ -12,6 +12,8 @@ mod fleet_cmd;
 mod gitlab;
 #[path = "../relay-ops/inventory.rs"]
 mod inventory;
+#[path = "../relay-ops/irc_bus.rs"]
+mod irc_bus;
 #[path = "../relay-ops/notify.rs"]
 mod notify;
 #[path = "../relay-ops/probe.rs"]

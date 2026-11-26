@@ -1,4 +1,4 @@
-//! Inbound mailbox reader: SSH to the single MX host (iad1) and list/read Maildir.
+//! Inbound mailbox reader: SSH to the single MX host (pub1) and list/read Maildir.
 //!
 //! Remote Python is the shared helper at `scripts/maildir_inbox.py` (include_str!).
 //! Same semantics as QuizGate batch SI inbound mail and the Inbox UI.
@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_MAIL_HOST: &str = "iad1.relaygateway.net";
+pub const DEFAULT_MAIL_HOST: &str = "pub1.relaygateway.net";
 pub const DEFAULT_MAILDIR: &str = "/home/arl/Maildir";
 
 /// Shared Maildir helper (canonical source: scripts/maildir_inbox.py).
@@ -175,7 +175,8 @@ mod tests {
                 fqdn: "iad1.relaygateway.net".into(),
                 ssh_user: Some("ubuntu".into()),
                 deploy_target: None,
-                spot_cloudspace: None,
+                fleet_dns: true,
+                role: None,
             }],
             git_repos: vec![],
             health: Default::default(),

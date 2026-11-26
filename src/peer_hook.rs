@@ -506,6 +506,12 @@ pub async fn post_peer_hook(
         Ok(r) => {
             if r.ok && !r.skipped && r.after.is_some() && r.before.as_ref() != r.after.as_ref() {
                 if let Some(ref sha) = r.after {
+                    crate::irc_bus::spawn_emit_tip_apply(
+                        &r.repo,
+                        &r.branch,
+                        sha,
+                        state.node_fqdn.as_deref(),
+                    );
                     notify::spawn_commit_update_notify(
                         "peer_fetch",
                         r.repo.clone(),

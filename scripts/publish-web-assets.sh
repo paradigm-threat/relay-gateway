@@ -174,6 +174,18 @@ for (const forbidden of ['main.js', 'main.css', 'index.css']) {
 console.log('[publish-web-assets] staged', seen.size, 'JS module(s) + embed.css (no main.js)')
 EOF
 
+# Mesh chat park-native hosts (shared across parked sites; see docs/RELAY_CHAT.md).
+CHAT_SRC="$CLIENT_WEB/park-native/chat"
+if [[ -d "$CHAT_SRC" ]]; then
+  mkdir -p "$STAGE/assets/chat"
+  for f in ChatCommon.host.js LiveChat.host.js ChatApp.host.js; do
+    if [[ -f "$CHAT_SRC/$f" ]]; then
+      cp -a "$CHAT_SRC/$f" "$STAGE/assets/chat/$f"
+    fi
+  done
+  echo "[publish-web-assets] staged assets/chat/ from park-native/chat"
+fi
+
 # Replace published tree (keep .relay.yaml / README / .git*)
 # Delete previous assets/wasm content, then copy stage.
 rm -rf "$ASSETS_REPO/assets" "$ASSETS_REPO/wasm" "$ASSETS_REPO/index.html" "$ASSETS_REPO/hooks"

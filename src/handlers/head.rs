@@ -143,11 +143,21 @@ pub async fn head_file(
         repo_name = repo_name_opt.unwrap();
     }
 
-    // Resolve via Git - if found, return headers without body
+    // Resolve via Git - if found, return headers without body.
+    // 206 is valid for ranged HEAD on finished media; 425/410 asset-status
+    // errors must keep their status (not collapse to a bare 404).
     match git::git_resolve_and_respond(&state, &headers, &branch, &repo_name, &decoded, qmap) {
         GitResolveResult::Respond(resp) => {
+            let status = resp.status();
             let head_resp = headify_response(resp, &branch, &repo_name);
-            if head_resp.status() == StatusCode::OK {
+            if status.is_success() || status == StatusCode::PARTIAL_CONTENT {
+                head_resp
+            } else if status == StatusCode::TOO_EARLY
+                || status == StatusCode::GONE
+                || status == StatusCode::BAD_GATEWAY
+                || status == StatusCode::GATEWAY_TIMEOUT
+                || status == StatusCode::SERVICE_UNAVAILABLE
+            {
                 head_resp
             } else {
                 StatusCode::NOT_FOUND.into_response()

@@ -6,7 +6,9 @@ Normative **product / ops** notes for serving **relay-server** and **multiple st
 
 **Code status:** This document describes **planned** behavior. Implementations should update the “Implementation status” section at the bottom as pieces land.
 
-**Related:** **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (VM install), **[`RELAY_WEB_ASSETS.md`](./RELAY_WEB_ASSETS.md)** (signed git CDN for `embed.js` / WASM), **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)** (**`relay.env`**, rotation, shared deploy SSH key), **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** (**`relay-master`** catalog, submodules + **`relayRootCommit`**, emitted **`authorized-repos.yaml`**), **[`SERVER_HOOKS.md`](./SERVER_HOOKS.md)** (per-repo `.relay.yaml`, hooks), **[`PARADIGM_PARK_LOCAL.md`](./PARADIGM_PARK_LOCAL.md)** (local park SSR hardening).
+**Related:** **[`DEPLOY_LINODE.md`](./DEPLOY_LINODE.md)** (VM install), **[`RELAY_WEB_ASSETS.md`](./RELAY_WEB_ASSETS.md)** (signed git CDN for `embed.js` / WASM), **[`SECRETS_POLICY.md`](./SECRETS_POLICY.md)** (**`relay.env`**, rotation, shared deploy SSH key), **[`RELAY_TRUST_AND_BOOTSTRAP.md`](./RELAY_TRUST_AND_BOOTSTRAP.md)** (**`relay-master`** catalog, submodules + **`relayRootCommit`**, emitted **`authorized-repos.yaml`**), **[`SERVER_HOOKS.md`](./SERVER_HOOKS.md)** (per-repo `.relay.yaml`, hooks), **[`PARADIGM_PARK_LOCAL.md`](./PARADIGM_PARK_LOCAL.md)** (local park SSR hardening), **[`RELAY_POLICY_AND_PERFORMANCE.md`](./RELAY_POLICY_AND_PERFORMANCE.md)** (pre-rendered `ssrCache` + publisher bake).
+
+**Park HTML:** production parked Hosts use catalog **`ssrCache`** — bake on the fat publisher only (`scripts/relay-ssr-bake.py` / bake queue); Nanodes serve composed fragments from **`relay-ssr-cache`**. Do not run live CleverScript SSR on Nanode request paths. Fleet multi-A is fat-only ([`RELAY_NETWORK_DNS.md`](./RELAY_NETWORK_DNS.md)).
 
 **Note:** **Git hooks** may run **CleverScript** (`.cs`) validation scripts defined **in** repositories — that is separate from hosting a long-lived Next/Node **HTTP** stack for public sites.
 

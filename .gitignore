@@ -94,3 +94,4 @@ terraform/rackspace-spot-vm/hkg1.tfvars
 terraform/linode-relay/terraform.tfvars
 terraform/linode-relay/stacks/*/terraform.tfvars
 .ci-registry-deps
+ops/scale-down-last-check.log

@@ -1,9 +1,0 @@
-# Copy to ord1.tfvars (gitignored) for spot-ord1 deploys.
-
-relay_node         = "ord1"
-region             = "us-central-ord-1"
-cloudspace_name    = "relay-network-ord"
-server_class       = "gp.vs1.large-ord"
-bid_price          = 0.01
-vm_pool_name       = ""
-public_ip_override = ""

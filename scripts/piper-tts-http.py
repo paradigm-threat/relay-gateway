@@ -179,11 +179,40 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         sys.stderr.write("%s\n" % (args[0],))
 
+    def _cors_headers(self):
+        # Browser TTS from Vercel (thirdstory.site, *.vercel.app) is cross-origin.
+        origin = (self.headers.get("Origin") or "").strip() or "*"
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, Cache-Control",
+        )
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.send_header("Vary", "Origin")
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors_headers()
+        self.end_headers()
+
+    def do_HEAD(self):
+        if self.path in ("/health", "/voices"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self._cors_headers()
+            self.end_headers()
+            return
+        self.send_response(404)
+        self._cors_headers()
+        self.end_headers()
+
     def do_GET(self):
         if self.path == "/health":
             ok = os.path.isfile(PIPER) and os.path.isfile(MODEL)
             self.send_response(200 if ok else 503)
             self.send_header("Content-Type", "application/json")
+            self._cors_headers()
             self.end_headers()
             self.wfile.write(
                 json.dumps(
@@ -195,6 +224,7 @@ class Handler(BaseHTTPRequestHandler):
             voices = discover_voices()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self._cors_headers()
             self.end_headers()
             self.wfile.write(
                 json.dumps(
@@ -209,11 +239,13 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         self.send_response(404)
+        self._cors_headers()
         self.end_headers()
 
     def do_POST(self):
         if self.path != "/tts":
             self.send_response(404)
+            self._cors_headers()
             self.end_headers()
             return
         try:
@@ -224,10 +256,12 @@ class Handler(BaseHTTPRequestHandler):
             rate = body.get("rate") or 1.0
             if not text or len(text) > 8000:
                 self.send_response(400)
+                self._cors_headers()
                 self.end_headers()
                 return
         except Exception:
             self.send_response(400)
+            self._cors_headers()
             self.end_headers()
             return
         try:
@@ -237,6 +271,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not model_path:
                     self.send_response(400)
                     self.send_header("Content-Type", "application/json")
+                    self._cors_headers()
                     self.end_headers()
                     self.wfile.write(
                         json.dumps(
@@ -257,6 +292,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(cached_size))
                 self.send_header("Cache-Control", f"public, max-age={CACHE_TTL_SECONDS}")
                 self.send_header("X-Cache", "HIT")
+                self._cors_headers()
                 self.end_headers()
                 with open(cached_path, "rb") as f:
                     self.wfile.write(f.read())
@@ -269,6 +305,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             if proc.returncode != 0:
                 self.send_response(502)
+                self._cors_headers()
                 self.end_headers()
                 return
             wav = proc.stdout
@@ -279,11 +316,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(wav)))
             self.send_header("Cache-Control", f"public, max-age={CACHE_TTL_SECONDS}")
             self.send_header("X-Cache", "MISS")
+            self._cors_headers()
             self.end_headers()
             self.wfile.write(wav)
         except Exception as e:
             sys.stderr.write("piper error: %s\n" % e)
             self.send_response(500)
+            self._cors_headers()
             self.end_headers()
 
 

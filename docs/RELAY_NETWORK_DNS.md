@@ -13,28 +13,30 @@ This is the canonical DNS strategy for a Relay network whose masters may be repl
 
 Use three layers:
 
-1. **Node names:** `iad1.relaygateway.net`, `ord1.relaygateway.net`, and `hkg1.relaygateway.net`.
-   Each name has the current A record for exactly one master. `relay-master-deploy.sh` updates the node A record after provisioning or replacing that node.
+1. **Node names (canonical Linode fleet):** `pub1.relaygateway.net` (publisher), `mesh1.relaygateway.net`, `mesh2.relaygateway.net`.
+   Each name has the current A record for exactly one node (+ matching `*.pub1` / `*.mesh1` / `*.mesh2` wildcards). `relay-master-deploy.sh` / `point-dns` updates those after provisioning.
+   Historical Rackspace Spot names (`iad1` / `ord1` / `hkg1`) remain in DNS only until decommission — **do not** retarget them at the Linode fleet.
 2. **Network ingress:** `fleet.relaygateway.net`.
-   Its A/AAAA set is the materialized set of healthy fleet-node addresses. A fleet DNS reconciler resolves the configured node names and replaces stale addresses. Node names remain the source; do not copy provider IPs into configuration or documentation.
+   A/AAAA = **publisher only** (`fleetDns: true` / `RELAY_FLEET_DNS_PEERS=pub1.relaygateway.net`). Mesh nodes peer-sync git but must not appear in the fleet A set. Optional aliases: `irc.relaygateway.net` / `chat.relaygateway.net` → pub1.
 3. **Parked domains:** customer or project names point to the network ingress:
    - zone apex: `ALIAS fleet.relaygateway.net` when the authoritative DNS provider supports apex ALIAS/flattening;
    - subdomain such as `www`: `CNAME fleet.relaygateway.net`;
-   - single-node canary such as `relay.clevertree.net`: `CNAME iad1.relaygateway.net`.
+   - single-node canary such as `relay.clevertree.net`: `CNAME pub1.relaygateway.net`.
 
-Vercel DNS supports `ALIAS` records. Do not assume that multiple ALIAS records at one owner provide portable multi-target behavior. Relay therefore treats `fleet.relaygateway.net` as an ordinary, explicitly reconciled A/AAAA set.
+Vercel DNS supports `ALIAS` records. Do not assume that multiple ALIAS records at one owner provide portable multi-target behavior. Relay therefore treats `fleet.relaygateway.net` as an ordinary, explicitly reconciled A/AAAA set. Observer auto-reconcile must also filter to `fleetDns` / non-mesh nodes (not every healthy mesh IP).
 
 ## Record model
 
 Example network zone:
 
 ```text
-iad1.relaygateway.net   A      <current iad1 IPv4>
-ord1.relaygateway.net   A      <current ord1 IPv4>
-hkg1.relaygateway.net   A      <current hkg1 IPv4>
-fleet.relaygateway.net  A      <resolved iad1 IPv4>
-fleet.relaygateway.net  A      <resolved ord1 IPv4>
-fleet.relaygateway.net  A      <resolved hkg1 IPv4>
+pub1.relaygateway.net   A      172.234.148.70
+mesh1.relaygateway.net  A      172.237.134.22
+mesh2.relaygateway.net  A      172.236.146.220
+*.pub1.relaygateway.net A      172.234.148.70
+fleet.relaygateway.net  A      172.234.148.70   # publisher only
+irc.relaygateway.net    A      172.234.148.70   # optional
+chat.relaygateway.net   A      172.234.148.70   # optional
 ```
 
 Example parked zone:
@@ -47,7 +49,7 @@ www.clevertree.net  CNAME  fleet.relaygateway.net
 During a one-node canary or before multi-node TLS is ready:
 
 ```text
-relay.clevertree.net  CNAME  iad1.relaygateway.net
+relay.clevertree.net  CNAME  pub1.relaygateway.net
 ```
 
 Keep TTL at 60 seconds during rollout and recovery. Raise it only after replacement, certificate renewal, and rollback paths are proven.
@@ -75,14 +77,40 @@ Domains are normalized, globally unique across catalog records, and materialized
 
 The catalog is authoritative. Hand-written state files are permitted only as a temporary canary or recovery measure and must be removed after the signed catalog tip is active.
 
-## Spot replacement flow
+## Linode cutover (fat publisher + Nanode mesh)
+
+Target after Spot retirement:
+
+| Layer | Target |
+|--------|--------|
+| Node A | `pub1…`, `mesh1…` Linode FQDNs via `point-dns` / install Vercel DNS |
+| **`fleet.relaygateway.net` multi-A** | **Only fat publisher IP(s)** — never Nanodes |
+| Parked apex ALIAS / www CNAME | Stay on `fleet…` (no per-domain A churn) |
+| `publish_origin` / git push | Fat node FQDN only — **never** `fleet…` |
+
+**`ops/fleet.json`:** set publisher nodes `"role": "publisher"` / `"fleetDns": true`; Nanodes `"role": "mesh"` / `"fleetDns": false`. `relay-ops fleet-dns` and `relay-master-deploy.sh` reconcile **only** fleetDns participants (`RELAY_FLEET_DNS_PEERS` = fat FQDNs).
+
+Cutover checklist:
+
+1. Provision fat Linode (~8 GB) + Nanode mesh; install; sync catalog + **`relay-ssr-cache`**.
+2. `point-dns` each new node FQDN; seed park-tls on fat from current publisher.
+3. Set `publish_origin` / catalog push fence to fat FQDN; enable publisher bake queue (`RELAY_NODE_ROLE=publisher`).
+4. Nanodes: `RELAY_NODE_ROLE=mesh` (bake queue refuses); they only `git fetch` including `relay-ssr-cache`.
+5. `fleet-dns` reconcile **fat IP only**; confirm `dig fleet.relaygateway.net` has no Spot/Nanode IPs.
+6. Parked ALIAS/CNAME unchanged (still → `fleet`).
+7. Drain Spot: remove from peer list + fleet A; decommission after mesh green.
+8. Ops gate: `ops/fleet.json` `health.sslDomains` + SSL checks against fat.
+
+**Breaks if:** Nanodes remain in fleet reconcile → round-robin HTML/TLS to 1 GiB boxes; or authors push git to `fleet…`.
+
+## Spot replacement flow (legacy)
 
 When a Rackspace Spot master is replaced:
 
 1. Obtain the replacement VM's public IP (currently from the Spot UI / `public_ip_override` until the VM API is available).
 2. Run `relay-master-deploy.sh --target spot-<node> --build`.
 3. The deploy updates `<node>.relaygateway.net` and `*.<node>.relaygateway.net`.
-4. The deploy reconciles **`fleet.relaygateway.net`** from the configured peer FQDNs (`vercel-dns-fleet-reconcile.sh`).
+4. The deploy reconciles **`fleet.relaygateway.net`** from **`RELAY_FLEET_DNS_PEERS`** (fat/publisher only — not the full mesh peer list).
 5. Validate the node by its FQDN.
 6. Verify that the old IP is absent from the fleet A/AAAA set (`dig +short fleet.relaygateway.net A`).
 7. Verify parked-domain HTTP and HTTPS against the replacement node.
@@ -91,6 +119,7 @@ Manual fleet reconcile (without a full redeploy):
 
 ```bash
 cd relay-gateway
+export RELAY_FLEET_DNS_PEERS=pub1.relaygateway.net   # publisher only
 ./scripts/relay-fleet.sh fleet-dns --dry-run
 ./scripts/relay-fleet.sh fleet-dns
 ```
@@ -115,7 +144,7 @@ With the plugin enabled:
 
 **Generation (do not hand-edit on nodes):** `relay-gateway` writes `Caddyfile.parked` via `park_tls::write_parked_caddyfile` (`src/park_tls/caddy.rs`) whenever the park worker runs, fan-out receives PEMs, or the TLS allowlist is refreshed. `/etc/caddy/Caddyfile` from `scripts/install-caddy-tls.sh` always `import`s that file **before** the catch-all on-demand TLS block so multi-A apex names (e.g. `flashbackrepository.org` on `fleet.relaygateway.net`) never stall on per-node ACME.
 
-**Fleet deploy seed:** `scripts/relay-master-deploy.sh` (and reclaim paths that call it) tar-copies `state/park-tls/certs/` + `Caddyfile.parked` from `--peer` / `RELAY_PEER_CLONE_SOURCE` (default `iad1.relaygateway.net`) onto new or reclaimed Spot nodes, then reloads Caddy. That keeps ord/hkg on file certs even before the elected issuer renews. Ops should list every park-plugin apex in [`ops/fleet.json`](../ops/fleet.json) `health.sslDomains` so `./scripts/relay-fleet.sh ssl` runs per-node SNI checks (see `scripts/relay-fleet-ssl-check.sh`).
+**Fleet deploy seed:** `scripts/relay-master-deploy.sh` (and reclaim paths that call it) tar-copies `state/park-tls/certs/` + `Caddyfile.parked` from `--peer` / `RELAY_PEER_CLONE_SOURCE` (default `pub1.relaygateway.net`) onto new or reclaimed nodes, then reloads Caddy. Set `RELAY_PARK_TLS_ISSUER=1` on the publisher so alphabetical peer election cannot leave issuance on a mesh node. Ops should list every park-plugin apex in [`ops/fleet.json`](../ops/fleet.json) `health.sslDomains` so `./scripts/relay-fleet.sh ssl` runs per-node SNI checks (see `scripts/relay-fleet-ssl-check.sh`).
 
 Repos without the plugin still get Host→repo HTTP routing from `domains[]`, but do not join shared ACME.
 
@@ -130,7 +159,7 @@ With multiple A records, an ACME HTTP-01 validation request may reach a differen
 
 Renewal must use the same coordinated path. A certificate on only one node is not multi-node readiness.
 
-A single-node CNAME/ALIAS to `iad1.relaygateway.net` is safe with the existing per-node Caddy on-demand TLS path.
+A single-node CNAME/ALIAS to `pub1.relaygateway.net` is safe with the existing per-node Caddy on-demand TLS path.
 
 ## Parked-domain rollout
 
@@ -141,7 +170,7 @@ A single-node CNAME/ALIAS to `iad1.relaygateway.net` is safe with the existing p
 5. Deploy/restart the gateway and `caddy-ask` on every intended ingress node.
 6. Confirm the generated parked-domain map and ask allowlist on every node.
 7. Canary with a subdomain CNAME to one node.
-8. Verify SSR, hydration, no-JS CSS, assets, contact links, and unknown-Host rejection.
+8. Verify pre-rendered HTML (`X-Relay-Ssr-Cache: hit|miss`), client hydration, assets, contact links, and unknown-Host rejection.
 9. Complete the multi-node TLS gate.
 10. Populate/reconcile `fleet.relaygateway.net`.
 11. Point the apex ALIAS and `www` CNAME at `fleet.relaygateway.net`.
@@ -152,8 +181,9 @@ A single-node CNAME/ALIAS to `iad1.relaygateway.net` is safe with the existing p
 ## Verification
 
 ```bash
-dig +short iad1.relaygateway.net A
-dig +short ord1.relaygateway.net A
+dig +short pub1.relaygateway.net A
+dig +short mesh1.relaygateway.net A
+dig +short mesh2.relaygateway.net A
 dig +short fleet.relaygateway.net A
 dig +short clevertree.net A
 dig +short www.clevertree.net CNAME

@@ -1,0 +1,43 @@
+{
+  "schema": "relay.ops.credit_burn.v1",
+  "promo": "SUPPORT10060",
+  "creditUsd": 100,
+  "expiresAt": "2027-02-01T04:59:59Z",
+  "provisionedAt": "2026-11-26",
+  "hourlyUsd": 0.144,
+  "fullFleetDaysApprox": 29,
+  "scaleDownTargetDay": 29,
+  "notes": "Destroy mesh1+mesh2 near day 29; shrink RELAY_MASTER_PEER_LIST on pub1 BEFORE destroy or publish mesh-wait fails.",
+  "nodes": [
+    {
+      "label": "pub1",
+      "fqdn": "pub1.relaygateway.net",
+      "role": "publisher",
+      "linodeId": 111983927,
+      "ipv4": "172.234.148.70",
+      "region": "us-iad",
+      "plan": "g6-standard-4",
+      "keepAfterScaleDown": true
+    },
+    {
+      "label": "mesh1",
+      "fqdn": "mesh1.relaygateway.net",
+      "role": "mesh",
+      "linodeId": 111983931,
+      "ipv4": "172.237.134.22",
+      "region": "us-ord",
+      "plan": "g6-standard-2",
+      "keepAfterScaleDown": false
+    },
+    {
+      "label": "mesh2",
+      "fqdn": "mesh2.relaygateway.net",
+      "role": "mesh",
+      "linodeId": 111983933,
+      "ipv4": "172.236.146.220",
+      "region": "sg-sin-2",
+      "plan": "g6-standard-2",
+      "keepAfterScaleDown": false
+    }
+  ]
+}

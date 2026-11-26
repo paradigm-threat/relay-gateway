@@ -477,6 +477,90 @@ fn auto_index_dir_if_tree(tree: &git2::Tree, rel: &str) -> Option<String> {
     }
 }
 
+fn tree_has_blob(tree: &git2::Tree, rel: &str) -> bool {
+    tree.get_path(Path::new(rel))
+        .ok()
+        .and_then(|e| e.kind())
+        == Some(ObjectType::Blob)
+}
+
+/// Tip `.relay.yaml` client GET hook path, if set.
+fn tip_client_hook_rel(repo: &git2::Repository, commit_id: &str) -> Option<String> {
+    read_relay_config(repo, commit_id)
+        .unwrap_or_default()
+        .client
+        .as_ref()
+        .and_then(|c| c.hooks.get.as_ref())
+        .map(|h| h.path.trim().trim_start_matches('/').to_string())
+        .filter(|p| !p.is_empty())
+}
+
+/// Empty client shell when a page route's hook did not return HTML.
+/// The client hook paints the article or its own 404. No server essay.
+/// Hook path: tip `.relay.yaml` → catalog `clientHook` / `defaultClientHook` → universal.
+fn page_client_shell_response(
+    repo: &git2::Repository,
+    branch: &str,
+    repo_name: &str,
+    rel: &str,
+    commit_id: &str,
+    missing: bool,
+) -> Option<axum::response::Response> {
+    let cfg = read_relay_config(repo, commit_id).unwrap_or_default();
+    let tip_hook = tip_client_hook_rel(repo, commit_id);
+    let hook_path = catalog_policy::resolve_client_hook_rel(repo_name, tip_hook.as_deref());
+    let request_path = format!("/{}", rel.trim_start_matches('/'));
+    let client_hook_http = format!("/{hook_path}");
+    let html = crate::git::embed_html::embed_html_document_with_assets_and_seo_extras(
+        repo_name,
+        branch,
+        &request_path,
+        &client_hook_http,
+        None,
+        None,
+        None,
+        cfg.name.as_deref(),
+        cfg.description.as_deref(),
+        None,
+        crate::git::embed_html::EmbedSeoExtras {
+            noindex: missing,
+            csr_placeholder: false,
+            omit_embed_js: false,
+            ..Default::default()
+        },
+    );
+    let status = if missing {
+        StatusCode::NOT_FOUND
+    } else {
+        StatusCode::OK
+    };
+    let resp = (
+        status,
+        [
+            (
+                header::CONTENT_TYPE,
+                "text/html; charset=utf-8".to_string(),
+            ),
+            (header::VARY, "Accept".to_string()),
+            (
+                HeaderName::from_static("x-relay-branch"),
+                branch.to_string(),
+            ),
+            (
+                HeaderName::from_static("x-relay-repo"),
+                repo_name.to_string(),
+            ),
+        ],
+        html,
+    )
+        .into_response();
+    Some(if missing {
+        mark_missing_shell_noindex(resp)
+    } else {
+        resp
+    })
+}
+
 fn mark_missing_shell_noindex(mut resp: axum::response::Response) -> axum::response::Response {
     *resp.status_mut() = StatusCode::NOT_FOUND;
     if let Ok(hv) = HeaderValue::try_from("noindex, follow") {
@@ -508,8 +592,10 @@ fn response_content_type_is_html(resp: &axum::response::Response) -> bool {
         .unwrap_or(false)
 }
 
-/// Repo-host `/`: run `server.hooks.get` with `siteShellRequest` so sites can SSR the client
-/// hook without a markdown path or `?embed=1`. Returns HTML only when the hook opts in.
+/// Repo-host `/`: prefer pre-rendered `ssrCache` fragments; otherwise live `server.hooks.get`
+/// (legacy). When `ssrCache.enabled`, never call live SSR — compose or CSR miss only.
+/// Without SSR / without a get hook that returns HTML, still serve the **standard shell**
+/// so the catalog client hook can CSR-mount (no live full-app SSR on Nanodes).
 pub fn try_site_shell_for_root(
     state: &AppState,
     headers: &HeaderMap,
@@ -517,31 +603,46 @@ pub fn try_site_shell_for_root(
     repo_name: &str,
     query: Option<&HashMap<String, String>>,
 ) -> Option<axum::response::Response> {
+    if crate::git::ssr_static_cache::catalog_ssr_cache_enabled(repo_name) {
+        return Some(
+            crate::git::ssr_static_cache::try_compose_ssr_cache(
+                state, repo_name, "/", headers,
+            )
+            .unwrap_or_else(|| {
+                crate::git::ssr_static_cache::html_response_csr_miss(repo_name, "/")
+            }),
+        );
+    }
     let repo = open_repo_for_state(state, repo_name)?;
     let refname = format!("refs/heads/{branch}");
     let reference = repo.find_reference(&refname).ok()?;
     let commit = reference.peel_to_commit().ok()?;
-    let cfg = read_relay_config(&repo, &commit.id().to_string())?;
-    let _ = index_policy::clever_get_hook_path(&cfg)?;
+    let commit_id = commit.id().to_string();
     let qmap: HashMap<String, String> = query.cloned().unwrap_or_default();
-    let resp = try_server_get_hook(
-        &repo,
-        branch,
-        repo_name,
-        "",
-        headers,
-        &commit,
-        None,
-        "text/html",
-        None,
-        &qmap,
-        serde_json::json!({ "siteShellRequest": true }),
-    )?;
-    if response_content_type_is_html(&resp) {
-        Some(merge_vary_accept(resp))
-    } else {
-        None
+    let has_get_hook = read_relay_config(&repo, &commit_id)
+        .and_then(|cfg| index_policy::clever_get_hook_path(&cfg))
+        .is_some();
+    if has_get_hook {
+        if let Some(resp) = try_server_get_hook(
+            &repo,
+            branch,
+            repo_name,
+            "",
+            headers,
+            &commit,
+            None,
+            "text/html",
+            None,
+            &qmap,
+            serde_json::json!({ "siteShellRequest": true }),
+        ) {
+            if response_content_type_is_html(&resp) {
+                return Some(merge_vary_accept(resp));
+            }
+        }
     }
+    // Non-SSR (or get-hook miss): standard shell + client-hook bootstrap.
+    page_client_shell_response(&repo, branch, repo_name, "", &commit_id, false)
 }
 
 pub fn git_resolve_and_respond(
@@ -594,6 +695,22 @@ pub fn git_resolve_and_respond(
         return GitResolveResult::NotFound(rel.to_string());
     }
 
+    // Pre-rendered SSR cache: compose shell+body for HTML park traffic; never live SSR.
+    if crate::git::ssr_static_cache::catalog_ssr_cache_enabled(repo_name) {
+        let qmap_early: HashMap<String, String> = query.cloned().unwrap_or_default();
+        let wants_html_shell = accept_prefers_html(headers)
+            || embed_query_flag(&qmap_early)
+            || crate::git::clever_script_host::extensionless_markdown_rel(rel).is_some()
+            || rel.ends_with(".md");
+        if wants_html_shell && !is_asset_like_path(rel) {
+            if let Some(resp) = crate::git::ssr_static_cache::try_compose_ssr_cache(
+                state, repo_name, rel, headers,
+            ) {
+                return GitResolveResult::Respond(resp);
+            }
+        }
+    }
+
     if let ServeContext::LocalWorktree {
         checkout,
         checked_out_branch,
@@ -635,24 +752,30 @@ pub fn git_resolve_and_respond(
                     .first_or_octet_stream()
                     .essence_str()
                     .to_string();
-                // Multi-page CS shells: missing non-asset paths with HTML Accept / ?embed=1
-                // get the same siteShellRequest opt-in as repo-host `/` (relPath → initialPath).
-                // Soft-404 (404+noindex) unless DIR/page.md is missing but DIR is a git Tree
-                // (directory auto-index — HTTP 200 shell; tip fills Categories/Documents at P2).
-                // Known SPA/virtual routes (index.json project slugs, /search/…, legal pages)
-                // opt into the shell even when Accept is */* (bare curl -sI / bots).
+                // Page URLs are the client shell. The client hook renders the article
+                // (it appends `.md`) or its own 404. A sibling `.md` is not a miss.
+                // Raw `.md` without Accept: text/html stays the file, so the hook's fetch
+                // can still see a real not-found. Assets stay assets.
                 let rel_for_shell = spa_search_rel_from_query(rel, &qmap)
                     .unwrap_or_else(|| rel.to_string());
                 let repo_path = repo.path().to_path_buf();
                 let spa_virtual = is_shell_virtual_path(&rel_for_shell, &repo_path, branch);
+                let page_route =
+                    crate::git::clever_script_host::extensionless_markdown_rel(rel).is_some();
+                let sibling_md = crate::git::clever_script_host::extensionless_markdown_rel(rel)
+                    .filter(|md| tree_has_blob(&tree, md))
+                    .is_some();
                 let wants_shell = has_get_hook
                     && !asset_like
                     && (accept_prefers_html(headers)
                         || embed_query_flag(&qmap)
-                        || spa_virtual);
+                        || spa_virtual
+                        || page_route);
                 let auto_index_dir = auto_index_dir_if_tree(&tree, rel);
-                let missing_for_seo =
-                    wants_shell && !spa_virtual && auto_index_dir.is_none();
+                let missing_for_seo = wants_shell
+                    && !spa_virtual
+                    && auto_index_dir.is_none()
+                    && !sibling_md;
                 let extra = if wants_shell {
                     let mut map = serde_json::Map::new();
                     map.insert("siteShellRequest".into(), serde_json::json!(true));
@@ -693,9 +816,37 @@ pub fn git_resolve_and_respond(
                             };
                             return GitResolveResult::Respond(resp);
                         }
+                        // The hook answered with a file 404. The page is still the client shell.
+                        if let Some(shell) = page_client_shell_response(
+                            &repo,
+                            branch,
+                            repo_name,
+                            &rel_for_shell,
+                            &commit.id().to_string(),
+                            missing_for_seo,
+                        ) {
+                            return GitResolveResult::Respond(shell);
+                        }
                     } else {
                         return GitResolveResult::Respond(resp);
                     }
+                }
+            }
+            let page_route =
+                crate::git::clever_script_host::extensionless_markdown_rel(rel).is_some();
+            if page_route && !asset_like {
+                let sibling_md = crate::git::clever_script_host::extensionless_markdown_rel(rel)
+                    .filter(|md| tree_has_blob(&tree, md))
+                    .is_some();
+                if let Some(shell) = page_client_shell_response(
+                    &repo,
+                    branch,
+                    repo_name,
+                    rel,
+                    &commit.id().to_string(),
+                    !sibling_md,
+                ) {
+                    return GitResolveResult::Respond(shell);
                 }
             }
             return GitResolveResult::NotFound(rel.to_string());
@@ -1215,6 +1366,49 @@ export default function run(ctx, next) {
         (dir, root)
     }
 
+    /// Client hook only — no `server.hooks.get` / no live SSR. HTML must still get the
+    /// standard embed shell that bootstraps the client hook.
+    fn bare_client_hook_only_repo() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let repo_path = root.join("doc.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+        let md_oid = repo.blob(b"# Hello\n").unwrap();
+        let yaml_oid = repo
+            .blob(
+                br#"
+client:
+  hooks:
+    get:
+      path: hooks/client/get.jsx
+"#,
+            )
+            .unwrap();
+        let client_get_oid = repo
+            .blob(
+                br#"export default function App() {
+  return <main><h1>CSR only</h1></main>;
+}"#,
+            )
+            .unwrap();
+        let mut client = repo.treebuilder(None).unwrap();
+        client.insert("get.jsx", client_get_oid, 0o100644).unwrap();
+        let client_id = client.write().unwrap();
+        let mut hooks = repo.treebuilder(None).unwrap();
+        hooks.insert("client", client_id, 0o040000).unwrap();
+        let hooks_id = hooks.write().unwrap();
+        let mut root_tree = repo.treebuilder(None).unwrap();
+        root_tree.insert("readme.md", md_oid, 0o100644).unwrap();
+        root_tree.insert(".relay.yaml", yaml_oid, 0o100644).unwrap();
+        root_tree.insert("hooks", hooks_id, 0o040000).unwrap();
+        let tree_id = root_tree.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        (dir, root)
+    }
+
     #[tokio::test]
     async fn markdown_accept_html_without_hook_serves_raw() {
         let (_dir, root) = bare_md_repo(false);
@@ -1443,6 +1637,39 @@ export default function run(ctx, next) {
         assert!(html.contains("/assets/embed.js"), "{html}");
     }
 
+    #[tokio::test]
+    #[serial]
+    async fn site_shell_root_without_ssr_returns_standard_shell() {
+        let (_dir, root) = bare_client_hook_only_repo();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
+        let state = bare_fleet_state(root);
+        let resp = try_site_shell_for_root(&state, &headers, "main", "doc", None)
+            .expect("standard shell without SSR");
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let html = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(
+            html.contains("relay-embed-config"),
+            "missing embed config: {html}"
+        );
+        assert!(html.contains("embed.js"), "missing embed.js: {html}");
+        assert!(
+            html.contains("/hooks/client/get.jsx"),
+            "missing client hook bootstrap: {html}"
+        );
+        assert!(
+            !html.contains("data-relay-ssr=\"1\""),
+            "non-SSR shell must not mark SSR: {html}"
+        );
+    }
+
     #[test]
     fn spa_search_query_rewrites_to_topic_path() {
         let mut q = HashMap::new();
@@ -1585,6 +1812,53 @@ export default function run(ctx, next) {
             html.contains(r#"name="robots" content="noindex,follow""#),
             "{html}"
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn extensionless_page_without_accept_is_client_shell() {
+        let (_dir, root) = bare_ssr_opt_in_repo();
+        let state = bare_fleet_state(root);
+        let headers = HeaderMap::new();
+        let hit = git_resolve_and_respond(&state, &headers, "main", "doc", "readme", None);
+        let GitResolveResult::Respond(resp) = hit else {
+            panic!("extensionless page should be the client shell");
+        };
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        assert_ne!(parts.status, StatusCode::FOUND);
+        let html = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(html.contains("embed.js"), "{html}");
+        assert!(!html.contains("\"status\":\"not_found\""), "{html}");
+
+        let miss = git_resolve_and_respond(
+            &state,
+            &headers,
+            "main",
+            "doc",
+            "does-not-exist-path",
+            None,
+        );
+        let GitResolveResult::Respond(resp) = miss else {
+            panic!("missing page should be the client shell, not a server 404 body");
+        };
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::NOT_FOUND);
+        let html = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(html.contains("embed.js"), "{html}");
+        assert!(!html.contains("messageForReaders"), "{html}");
     }
 
     #[tokio::test]

@@ -345,7 +345,7 @@ PEER="${1:-}"
 PORT="${2:-9418}"
 DATA="${3:-/opt/relay/data}"
 if [[ ! -x "$SCRIPT" ]]; then
-  echo "NO_INSTALL: missing $SCRIPT — use Reclaim on an empty VM, not Synchronize"
+  echo "NO_INSTALL: missing $SCRIPT — use Repair/update (Linode seed) on an empty VM, not Synchronize"
   exit 1
 fi
 echo "catalog-sync begin $(hostname -f 2>/dev/null || hostname)"
@@ -440,16 +440,26 @@ pub async fn fleet_dns(
         .map(|s| s.to_string())
         .or_else(|| fleet.fleet_ingress.clone())
         .ok_or_else(|| anyhow!("no fleetIngress in topology"))?;
+    let fleet_dns_fqdns: std::collections::HashSet<String> = fleet
+        .nodes
+        .iter()
+        .filter(|n| n.participates_in_fleet_dns())
+        .map(|n| n.fqdn.to_ascii_lowercase())
+        .collect();
     let desired = if drop_unhealthy {
         let (nodes, _, _) = probe_fleet(fleet, None).await;
+        let nodes: Vec<_> = nodes
+            .into_iter()
+            .filter(|n| fleet_dns_fqdns.contains(&n.fqdn.to_ascii_lowercase()))
+            .collect();
         let keep = healthy_node_ips(&nodes);
         if keep.is_empty() {
-            anyhow::bail!("all nodes unhealthy; refusing to empty {ingress}");
+            anyhow::bail!("all fleetDns nodes unhealthy; refusing to empty {ingress}");
         }
         keep
     } else {
         let mut ips = Vec::new();
-        for n in &fleet.nodes {
+        for n in fleet.nodes.iter().filter(|n| n.participates_in_fleet_dns()) {
             for ip in resolve_ips(&n.fqdn).await {
                 if !ips.contains(&ip) {
                     ips.push(ip);
@@ -457,7 +467,9 @@ pub async fn fleet_dns(
             }
         }
         if ips.is_empty() {
-            anyhow::bail!("no A records resolved for fleet nodes");
+            anyhow::bail!(
+                "no A records resolved for fleetDns nodes (mesh-only peers are excluded)"
+            );
         }
         ips
     };
@@ -649,7 +661,8 @@ pub fn features_env(
     mail_hostname: Option<&str>,
 ) -> String {
     let mut s = String::from("RELAY_INSTALL_NONINTERACTIVE=1\n");
-    s.push_str(&format!("RELAY_FEAT_PIPER={}\n", piper.unwrap_or("0")));
+    // Fleet policy: Piper TTS (/voices + /tts) on every node unless explicitly disabled.
+    s.push_str(&format!("RELAY_FEAT_PIPER={}\n", piper.unwrap_or("1")));
     s.push_str(&format!("RELAY_FEAT_NPM_PKGS={}\n", npm_pkgs.unwrap_or("")));
     s.push_str(&format!(
         "RELAY_FEAT_TRANSLATION={}\n",
@@ -772,6 +785,63 @@ sudo systemctl restart relay-gateway relay-git-daemon relay-git-proxy 2>/dev/nul
         log.push_str(&format!("fix-bare-head {}\n", n.fqdn));
         let out = ssh.run_bash_s(&n.fqdn, &script, &[])?;
         log.push_str(&output_text(&out));
+    }
+    Ok(log)
+}
+
+/// Restore `relay:relay` ownership on bare repos under the fleet data root.
+/// Do not paper over with `git config safe.directory` — the gateway must write as `relay`.
+pub fn fix_repo_ownership(cfg: &OpsConfig, fleet: &FleetFile, interactive: bool) -> Result<String> {
+    let ssh = SshCtx {
+        cfg,
+        fleet,
+        interactive,
+    };
+    ssh.require_admin()?;
+    let data = fleet.data_root();
+    let script = r#"set -euo pipefail
+DATA="$1"
+[[ -d "$DATA" ]] || { echo "missing $DATA"; exit 1; }
+fixed=0
+ok=0
+shopt -s nullglob
+for bare in "$DATA"/*.git; do
+  [[ -d "$bare" ]] || continue
+  name=$(basename "$bare" .git)
+  owner=$(stat -c %U "$bare" 2>/dev/null || echo unknown)
+  stray=$(find "$bare" -not -user relay -print -quit 2>/dev/null || true)
+  if [[ "$owner" != "relay" || -n "$stray" ]]; then
+    sudo chown -R relay:relay "$bare"
+    sudo chmod -R u+rwX,g+rX,o+rX "$bare"
+    echo "fixed $name (was owner=$owner)"
+    fixed=$((fixed + 1))
+  else
+    echo "ok $name"
+    ok=$((ok + 1))
+  fi
+done
+echo "summary fixed=$fixed ok=$ok"
+"#;
+    let mut log = String::new();
+    let mut fail = false;
+    for n in &fleet.nodes {
+        log.push_str(&format!("fix-repo-ownership {}\n", n.fqdn));
+        match ssh.run_bash_s(&n.fqdn, script, &[data]) {
+            Ok(out) => {
+                log.push_str(&output_text(&out));
+                if !out.status.success() {
+                    fail = true;
+                    log.push_str(&format!("ERROR {} ownership fix failed\n", n.fqdn));
+                }
+            }
+            Err(e) => {
+                fail = true;
+                log.push_str(&format!("ERROR {}: {e:#}\n", n.fqdn));
+            }
+        }
+    }
+    if fail {
+        anyhow::bail!("{log}");
     }
     Ok(log)
 }
@@ -1032,9 +1102,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn features_env_defaults_off() {
+    fn features_env_defaults_piper_on() {
         let s = features_env(None, None, None, None, None, None, None, None, None);
-        assert!(s.contains("RELAY_FEAT_PIPER=0"));
+        assert!(s.contains("RELAY_FEAT_PIPER=1"));
         assert!(s.contains("RELAY_FEAT_NPM_PKGS=\n"));
         assert!(s.contains("RELAY_FEAT_INBOUND_MAIL=0"));
         assert!(s.contains("RELAY_INSTALL_NONINTERACTIVE=1"));

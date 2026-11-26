@@ -3,6 +3,7 @@ pub mod file;
 pub mod general;
 pub mod head;
 pub mod helpers;
+pub mod hits;
 pub mod ipfs;
 pub mod mcp;
 pub mod mesh_sync;
@@ -22,6 +23,7 @@ pub use general::{
 };
 pub use head::{head_file, head_root};
 pub use ipfs::{handle_get_ipfs, handle_get_ipfs_prefixed};
+pub use hits::api_hits;
 pub use mesh_sync::api_mesh_sync;
 pub use query::handle_query;
 pub use rum::api_rum;

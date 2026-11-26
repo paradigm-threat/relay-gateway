@@ -1,8 +1,9 @@
 use crate::config::OpsConfig;
 use crate::inventory::Inventory;
 use crate::jobs::Jobs;
-use crate::probe::{dead_ingress_ips, healthy_node_ips, probe_fleet, IngressProbe, NodeProbe};
-use crate::spot::SpotAssignment;
+use crate::probe::{
+    dead_ingress_ips, healthy_fleet_ingress_ips, probe_fleet, IngressProbe, NodeProbe,
+};
 use crate::topology::FleetFile;
 use crate::vercel::Vercel;
 use axum::extract::{Query, State};
@@ -30,7 +31,6 @@ pub struct Inner {
     pub nodes: Vec<NodeProbe>,
     pub ingress: Option<IngressProbe>,
     pub live_peers: Vec<String>,
-    pub spot: Vec<SpotAssignment>,
     pub last_error: Option<String>,
 }
 
@@ -43,10 +43,13 @@ struct Snapshot {
     nodes: Vec<NodeJson>,
     ingress: Option<IngressProbe>,
     live_peers: Vec<String>,
-    spot: Vec<SpotAssignment>,
     catalog_repos: Vec<String>,
     job: Option<crate::jobs::JobState>,
     last_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credit: Option<crate::credit::CreditSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -65,6 +68,16 @@ struct NodeJson {
     sync_ok: bool,
     index_ok: bool,
     index_stale_repos: Vec<crate::probe::IndexStaleRepo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    index_pending_repos: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    index_errors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    configured_peers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    unreachable_peers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ownership_bad_repos: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     http: Option<crate::probe::HttpTrafficProbe>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,7 +87,8 @@ struct NodeJson {
     install_present: Option<bool>,
     recommendation: Option<crate::recommend::Recommendation>,
     visible_actions: crate::recommend::VisibleActions,
-    spot_cloudspace: Option<String>,
+    role: Option<String>,
+    fleet_dns: bool,
     deploy_target: Option<String>,
 }
 
@@ -89,14 +103,10 @@ pub async fn refresh_inner(app: &App) {
                 attach_ssh_diags(&cfg, &fleet, &mut nodes).await;
             }
             fleet.union_peers(&live_peers);
-            let spot = if let Some(tok) = cfg.spot_token.as_deref() {
-                crate::spot::list_assignments(tok).await.unwrap_or_default()
-            } else {
-                Vec::new()
-            };
             if cfg.auto_drop() {
                 if let (Some(ing), Some(tok)) = (ingress.as_ref(), cfg.vercel_token.as_deref()) {
-                    let keep = healthy_node_ips(&nodes);
+                    // Publisher-only: never push mesh node IPs into fleet A.
+                    let keep = healthy_fleet_ingress_ips(&nodes, &fleet);
                     let stale = dead_ingress_ips(ing, &keep);
                     let missing = keep
                         .iter()
@@ -170,7 +180,7 @@ pub async fn refresh_inner(app: &App) {
                     } else {
                         "Observer".into()
                     },
-                    lines: crate::tray::menu_lines(&nodes, &fleet, &spot, ingress.as_ref()),
+                    lines: crate::tray::menu_lines(&nodes, &fleet, ingress.as_ref()),
                 }
             };
             let mut g = app.inner.lock().await;
@@ -179,7 +189,7 @@ pub async fn refresh_inner(app: &App) {
             g.nodes = nodes;
             g.ingress = ingress;
             g.live_peers = live_peers;
-            g.spot = spot;
+            
             g.last_error = None;
             drop(g);
             #[cfg(unix)]
@@ -195,6 +205,7 @@ pub async fn refresh_inner(app: &App) {
 
 async fn attach_ssh_diags(cfg: &OpsConfig, fleet: &FleetFile, nodes: &mut [NodeProbe]) {
     crate::ssh::attach_diags(cfg, fleet, nodes).await;
+    crate::ssh::attach_repo_ownership(cfg, fleet, nodes).await;
 }
 
 pub async fn serve(app: App, bind: &str) -> anyhow::Result<()> {
@@ -223,8 +234,7 @@ pub async fn serve(app: App, bind: &str) -> anyhow::Result<()> {
         .route("/api/refresh", post(refresh))
         .route("/api/fleet-dns-drop", post(fleet_dns_drop))
         .route("/api/point-dns", post(point_dns))
-        .route("/api/repair", post(reclaim))
-        .route("/api/reclaim", post(reclaim))
+        .route("/api/repair", post(repair_job))
         .route("/api/job", post(job))
         .route("/api/known-hosts-reset", post(known_hosts))
         .route("/api/git/refs", get(git_refs))
@@ -233,14 +243,6 @@ pub async fn serve(app: App, bind: &str) -> anyhow::Result<()> {
         .route("/api/mail/list", get(mail_list))
         .route("/api/mail/message", get(mail_message))
         .route("/api/mail/mark-read", post(mail_mark_read))
-        .route("/api/brain/status", get(brain_proxy_get))
-        .route("/api/brain/feed", get(brain_proxy_get))
-        .route("/api/brain/requests", get(brain_proxy_get))
-        .route("/api/brain/chat", post(brain_proxy_post))
-        .route("/api/brain/resume", post(brain_proxy_post))
-        .route("/api/brain/pause", post(brain_proxy_post))
-        .route("/api/brain/requests/:id/approve", post(brain_proxy_post))
-        .route("/api/brain/requests/:id/decline", post(brain_proxy_post))
         .route("/api/mcp-tools", get(mcp_tools))
         .with_state(app.clone());
     let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -288,97 +290,6 @@ async fn mcp_tools() -> impl IntoResponse {
     }
 }
 
-fn brain_upstream_path(uri_path: &str) -> String {
-    uri_path
-        .strip_prefix("/api/brain")
-        .unwrap_or(uri_path)
-        .to_string()
-}
-
-async fn brain_proxy_get(
-    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
-) -> impl IntoResponse {
-    let path = brain_upstream_path(uri.path());
-    let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
-    match crate::brain_client::get_json_async(&format!("{path}{q}")).await {
-        Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
-    }
-}
-
-async fn brain_proxy_post(
-    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
-    body: Option<Json<serde_json::Value>>,
-) -> impl IntoResponse {
-    let path = brain_upstream_path(uri.path());
-    let body = body.map(|Json(v)| v);
-    match crate::brain_client::post_auth_async(&path, body).await {
-        Ok(t) => (StatusCode::OK, t).into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
-    }
-}
-
-/// When brain is reachable, refuse remediations that are not allowlisted /
-/// approved for the target fqdn.
-async fn brain_job_gate(kind: &str, fqdn: Option<&str>) -> Result<(), String> {
-    const GATED: &[&str] = &[
-        "repair",
-        "reclaim",
-        "sync",
-        "point-dns",
-        "index-warm",
-        "update",
-        "deploy-all",
-        "reclone-repo",
-    ];
-    if !GATED.contains(&kind) {
-        return Ok(());
-    }
-    let Ok(st) = crate::brain_client::get_json_async("/status").await else {
-        return Ok(());
-    };
-    if !st.get("online").and_then(|v| v.as_bool()).unwrap_or(false) {
-        return Ok(());
-    }
-    let Some(fqdn) = fqdn.filter(|s| !s.is_empty()) else {
-        return Ok(());
-    };
-    if let Some(nodes) = st.get("nodes").and_then(|n| n.as_array()) {
-        for n in nodes {
-            if n.get("fqdn").and_then(|x| x.as_str()) != Some(fqdn) {
-                continue;
-            }
-            let blocked = n.get("blocked").and_then(|v| v.as_bool()).unwrap_or(false);
-            let confirm = n
-                .get("requires_confirm")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            let steps: Vec<&str> = n
-                .get("steps")
-                .and_then(|s| s.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
-                .unwrap_or_default();
-            if blocked {
-                return Err(format!(
-                    "brain BLOCKED for {fqdn} — approve/decline the pending request or extend ops/scenarios"
-                ));
-            }
-            if confirm {
-                return Err(format!(
-                    "brain requires confirmation for {fqdn} ({kind}) — open Brain tab and Approve the request first"
-                ));
-            }
-            if !steps.is_empty() && !steps.contains(&kind) {
-                return Err(format!(
-                    "brain allowlist for {fqdn} is {steps:?}; refused {kind}"
-                ));
-            }
-            return Ok(());
-        }
-    }
-    Ok(())
-}
-
 async fn snapshot(State(app): State<App>) -> Json<Snapshot> {
     let g = app.inner.lock().await;
     let inv = Inventory::collect(&app.cfg);
@@ -387,15 +298,9 @@ async fn snapshot(State(app): State<App>) -> Json<Snapshot> {
         .iter()
         .map(|n| {
             let meta = g.fleet.node(&n.fqdn);
-            let spot_ip = meta
-                .and_then(|m| m.spot_cloudspace.as_ref())
-                .and_then(|cs| {
-                    g.spot
-                        .iter()
-                        .find(|a| a.cloudspace == *cs)
-                        .map(|a| a.ip.as_str())
-                });
-            let (rec, vis) = crate::recommend::for_node(n, spot_ip);
+            let node_ip = n.dns.first().map(|s| s.as_str());
+            let fleet_dns = meta.map(|m| m.participates_in_fleet_dns()).unwrap_or(true);
+            let (rec, vis) = crate::recommend::for_node(n, node_ip, fleet_dns);
             NodeJson {
                 fqdn: n.fqdn.clone(),
                 dns: n.dns.clone(),
@@ -411,6 +316,11 @@ async fn snapshot(State(app): State<App>) -> Json<Snapshot> {
                 sync_ok: n.sync_ok,
                 index_ok: n.index_ok,
                 index_stale_repos: n.index_stale_repos.clone(),
+                index_pending_repos: n.index_pending_repos.clone(),
+                index_errors: n.index_errors.clone(),
+                configured_peers: n.configured_peers.clone(),
+                unreachable_peers: n.unreachable_peers.clone(),
+                ownership_bad_repos: n.ownership_bad_repos.clone(),
                 http: n.http.clone(),
                 rum: n.rum.clone(),
                 ssh_ok: n.ssh_ok,
@@ -418,11 +328,25 @@ async fn snapshot(State(app): State<App>) -> Json<Snapshot> {
                 install_present: n.install_present,
                 recommendation: rec,
                 visible_actions: vis,
-                spot_cloudspace: meta.and_then(|m| m.spot_cloudspace.clone()),
+                role: meta.and_then(|m| m.role.clone()),
+                fleet_dns,
                 deploy_target: meta.and_then(|m| m.deploy_target.clone()),
             }
         })
         .collect();
+    let credit = crate::credit::load_default().and_then(|f| crate::credit::snapshot_now(&f));
+    let mut warnings = crate::probe::fleet_operator_warnings(&g.nodes, &g.fleet);
+    if let Some(c) = credit.as_ref() {
+        if c.scale_down_due {
+            warnings.insert(
+                0,
+                format!(
+                    "Credit scale-down due (~{:.0}d left on full fleet). Shrink peer list before destroying meshes. See ops/CREDIT_BURN.md",
+                    c.days_to_scale_down_target.max(0.0)
+                ),
+            );
+        }
+    }
     Json(Snapshot {
         gitlab_url: app.gitlab_url.clone(),
         topology_source: g.topology_source.clone(),
@@ -431,10 +355,11 @@ async fn snapshot(State(app): State<App>) -> Json<Snapshot> {
         nodes,
         ingress: g.ingress.clone(),
         live_peers: g.live_peers.clone(),
-        spot: g.spot.clone(),
         catalog_repos: crate::probe::expected_catalog_repos(&g.nodes, &g.fleet.git_repos),
         job: app.jobs.snapshot().await,
         last_error: g.last_error.clone(),
+        credit,
+        warnings,
     })
 }
 
@@ -464,12 +389,12 @@ async fn fleet_dns_drop(State(app): State<App>) -> impl IntoResponse {
             "no fleetIngress in topology".into(),
         );
     };
-    let keep = healthy_node_ips(&g.nodes);
+    let keep = healthy_fleet_ingress_ips(&g.nodes, &g.fleet);
     drop(g);
     if keep.is_empty() {
         return (
             StatusCode::CONFLICT,
-            "all nodes unhealthy; refusing to empty fleet A set".into(),
+            "no healthy publisher fleetDns nodes; refusing to empty fleet A set".into(),
         );
     }
     match Vercel::new(
@@ -503,14 +428,24 @@ async fn point_dns(State(app): State<App>, Json(body): Json<FqdnIp>) -> impl Int
     }
 }
 
-async fn reclaim(State(app): State<App>, Json(body): Json<FqdnIp>) -> impl IntoResponse {
+async fn repair_job(State(app): State<App>, Json(body): Json<FqdnIp>) -> impl IntoResponse {
+    // Repair = Linode seed redeploy (`update` job).
     if !Inventory::collect(&app.cfg).admin_ready {
         return (StatusCode::BAD_REQUEST, "needs ssh + identity".to_string());
     }
-    let fleet = app.inner.lock().await.fleet.clone();
+    let fleet = match app.inner.lock().await.fleet.filtered(Some(body.fqdn.as_str())) {
+        Ok(f) => f,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("{e:#}")),
+    };
+    let cfg = app.cfg.clone();
+    let target = body.fqdn.clone();
     match app
         .jobs
-        .start_reclaim(app.cfg.clone(), fleet, body.fqdn, body.ip)
+        .start_blocking("update", &target, {
+            let cfg = cfg.clone();
+            let fleet = fleet.clone();
+            move || crate::fleet_cmd::update(&cfg, &fleet, true, true, false)
+        })
         .await
     {
         Ok(id) => (StatusCode::ACCEPTED, format!("job {id} started")),
@@ -548,9 +483,6 @@ async fn job(State(app): State<App>, Json(body): Json<JobReq>) -> impl IntoRespo
     }
     if matches!(kind, "fleet-dns" | "fleet-dns-drop") && !inv.vercel_token {
         return (StatusCode::BAD_REQUEST, "needs Vercel token".to_string());
-    }
-    if let Err(msg) = brain_job_gate(kind, body.fqdn.as_deref()).await {
-        return (StatusCode::FORBIDDEN, msg);
     }
     let (fleet_all, source) = {
         let g = app.inner.lock().await;
@@ -717,6 +649,26 @@ async fn job(State(app): State<App>, Json(body): Json<JobReq>) -> impl IntoRespo
                 })
                 .await
         }
+        "fix-repo-ownership" => {
+            let app2 = app.clone();
+            app.jobs
+                .start_async("fix-repo-ownership", &target, {
+                    let cfg = cfg.clone();
+                    let fleet = fleet.clone();
+                    move || async move {
+                        let result = tokio::task::spawn_blocking({
+                            let cfg = cfg.clone();
+                            let fleet = fleet.clone();
+                            move || crate::fleet_cmd::fix_repo_ownership(&cfg, &fleet, false)
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(anyhow::anyhow!("job join: {e}")));
+                        refresh_inner(&app2).await;
+                        result
+                    }
+                })
+                .await
+        }
         "fleet-dns" => {
             let drop = body.drop_unhealthy.unwrap_or(false);
             let dry = body.dry_run.unwrap_or(true);
@@ -729,13 +681,6 @@ async fn job(State(app): State<App>, Json(body): Json<JobReq>) -> impl IntoRespo
                     }
                 })
                 .await
-        }
-        "reclaim" => {
-            let fqdn = body.fqdn.clone().unwrap_or_default();
-            if fqdn.is_empty() {
-                return (StatusCode::BAD_REQUEST, "fqdn required".into());
-            }
-            app.jobs.start_reclaim(cfg, fleet_all, fqdn, body.ip).await
         }
         other => return (StatusCode::BAD_REQUEST, format!("unknown job kind {other}")),
     };
@@ -754,7 +699,7 @@ async fn known_hosts(State(app): State<App>, Json(body): Json<FqdnIp>) -> impl I
         if body.fqdn.trim().is_empty() {
             (
                 "fleet".to_string(),
-                fleet_known_hosts_targets(&g.nodes, &g.fleet, &g.spot),
+                fleet_known_hosts_targets(&g.nodes, &g.fleet),
             )
         } else {
             let mut ips = Vec::new();
@@ -764,13 +709,6 @@ async fn known_hosts(State(app): State<App>, Json(body): Json<FqdnIp>) -> impl I
             ips.extend(body.ips.into_iter().filter(|s| !s.trim().is_empty()));
             if let Some(n) = g.nodes.iter().find(|n| n.fqdn == body.fqdn) {
                 ips.extend(n.dns.iter().cloned());
-            }
-            if let Some(meta) = g.fleet.node(&body.fqdn) {
-                if let Some(cs) = &meta.spot_cloudspace {
-                    if let Some(a) = g.spot.iter().find(|a| a.cloudspace == *cs) {
-                        ips.push(a.ip.clone());
-                    }
-                }
             }
             (body.fqdn.clone(), vec![(body.fqdn.clone(), ips)])
         }
@@ -802,22 +740,11 @@ async fn known_hosts(State(app): State<App>, Json(body): Json<FqdnIp>) -> impl I
 
 fn fleet_known_hosts_targets(
     nodes: &[crate::probe::NodeProbe],
-    fleet: &crate::topology::FleetFile,
-    spot: &[crate::spot::SpotAssignment],
+    _fleet: &crate::topology::FleetFile,
 ) -> Vec<(String, Vec<String>)> {
     nodes
         .iter()
-        .map(|n| {
-            let mut ips = n.dns.clone();
-            if let Some(meta) = fleet.node(&n.fqdn) {
-                if let Some(cs) = &meta.spot_cloudspace {
-                    if let Some(a) = spot.iter().find(|a| a.cloudspace == *cs) {
-                        ips.push(a.ip.clone());
-                    }
-                }
-            }
-            (n.fqdn.clone(), ips)
-        })
+        .map(|n| (n.fqdn.clone(), n.dns.clone()))
         .collect()
 }
 

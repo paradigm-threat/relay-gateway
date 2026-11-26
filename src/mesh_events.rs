@@ -1,8 +1,9 @@
 //! HTTP fan-out for mesh-visible operational events (e.g. pull / anchor validation failures).
-//! Receivers: `POST /hooks/mesh-event`. Future: IRC-style rooms can subscribe using the same payload shape
-//! (`channel` field, from **`RELAY_MESH_EVENT_CHANNEL`**).
+//! Receivers: `POST /hooks/mesh-event`. Optional IRC ops bus via **`RELAY_IRC_EVENTS=1`** and
+//! **`RELAY_MESH_EVENT_CHANNEL`** (local irc-agent → Ergo PRIVMSG).
 //!
 //! **Masters** fan out to peers; **edges** do not publish mesh HTTP events (**`crate::mesh_role`**).
+//! IRC emit runs on every node when enabled (agent is per-node).
 
 use std::time::Duration;
 
@@ -196,6 +197,18 @@ pub fn spawn_publish_validation_failure(ctx: PullValidationPublishCtx, event_typ
     let urls = mesh_event_target_urls(payload.node_fqdn.as_deref());
     let slack_url = notify::slack_webhook_url();
     let publish_mesh_http = mesh_role::should_publish_mesh_http_events();
+    let publish_irc = crate::irc_bus::irc_events_enabled();
+
+    if publish_irc {
+        crate::irc_bus::spawn_emit_mesh_event(
+            &payload.event_type,
+            &payload.source,
+            &payload.repo,
+            &payload.branch,
+            &payload.error,
+            payload.node_fqdn.as_deref(),
+        );
+    }
 
     if !publish_mesh_http {
         debug!("mesh event: skip HTTP fan-out (this node is an edge — masters only)");
@@ -203,13 +216,18 @@ pub fn spawn_publish_validation_failure(ctx: PullValidationPublishCtx, event_typ
         debug!("mesh event: no target URLs (RELAY_MESH_EVENT_URLS or RELAY_MASTER_PEER_LIST)");
     }
 
-    if !publish_mesh_http && slack_url.is_none() {
-        debug!("mesh event: no mesh HTTP fan-out and no RELAY_NOTIFY_SLACK_WEBHOOK_URL — nothing to publish");
+    if !publish_mesh_http && slack_url.is_none() && !publish_irc {
+        debug!("mesh event: no mesh HTTP fan-out, no Slack, no IRC — nothing to publish");
         return;
     }
 
-    if publish_mesh_http && urls.is_empty() && slack_url.is_none() {
-        debug!("mesh event: master node but no targets and no Slack — nothing to publish");
+    if publish_mesh_http && urls.is_empty() && slack_url.is_none() && !publish_irc {
+        debug!("mesh event: master node but no targets, no Slack, no IRC — nothing to publish");
+        return;
+    }
+
+    if !publish_mesh_http && slack_url.is_none() {
+        // IRC already spawned above; nothing left for the async HTTP/Slack task.
         return;
     }
 

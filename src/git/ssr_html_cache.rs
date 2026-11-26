@@ -151,8 +151,18 @@ pub fn get_shell_or_any(repo_path: &Path, branch: &str, client_hook: &str) -> Op
 }
 
 /// Store a rendered SSR HTML document (FIFO eviction when full).
+/// Refuses to cache when [`crate::git::ssr_html_quality::check_ssr_document`] fails.
 pub fn put(repo_path: &Path, branch: &str, initial_path: &str, client_hook: &str, html: String) {
     if !cache_enabled() {
+        return;
+    }
+    if let Err(e) = crate::git::ssr_html_quality::check_ssr_document(&html, initial_path) {
+        tracing::warn!(
+            target: "relay_ssr",
+            path = %initial_path,
+            reason = %e.reason,
+            "SSR HTML failed quality gate; not caching"
+        );
         return;
     }
     let Some(key) = make_key(repo_path, branch, initial_path, client_hook) else {
@@ -225,20 +235,32 @@ mod tests {
         let dir = tempdir().unwrap();
         let oid = init_repo_with_branch(dir.path(), "main");
         assert!(!oid.is_empty());
+        let doc = r#"<!DOCTYPE html><html><body data-relay-ssr="1" data-relay-ssr-path="/">
+<script type="application/json" id="relay-embed">{"initialPath":"/"}</script>
+<main id="relay-root">ok</main></body></html>"#;
         put(
             dir.path(),
             "main",
             "/",
             "hooks/client/get.jsx",
-            "<html/>".into(),
+            doc.into(),
         );
         let hit = get(dir.path(), "main", "/", "hooks/client/get.jsx");
-        assert_eq!(hit.as_deref(), Some("<html/>"));
+        assert_eq!(hit.as_deref(), Some(doc));
         let miss = get(dir.path(), "main", "/other.md", "hooks/client/get.jsx");
         assert!(miss.is_none());
         assert_eq!(
             get_shell_or_any(dir.path(), "main", "hooks/client/get.jsx").as_deref(),
-            Some("<html/>")
+            Some(doc)
         );
+        // Quality gate refuses to cache error UI.
+        put(
+            dir.path(),
+            "main",
+            "/bad",
+            "hooks/client/get.jsx",
+            "<html><body class=\"relay-error-boundary\">Runtime error</body></html>".into(),
+        );
+        assert!(get(dir.path(), "main", "/bad", "hooks/client/get.jsx").is_none());
     }
 }

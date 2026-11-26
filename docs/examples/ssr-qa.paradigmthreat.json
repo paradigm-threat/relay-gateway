@@ -1,0 +1,33 @@
+{
+  "schema": "relay.ssr-qa.v1",
+  "forbid_always": [
+    "relay-error-boundary",
+    "data-error-boundary",
+    "Runtime error",
+    "Property 'origin' not found",
+    "pt-live-chat-slot"
+  ],
+  "routes": [
+    {
+      "class": "home",
+      "require": [
+        "data-pt-article",
+        "Welcome to Paradigm Threat",
+        "data-pt-toc",
+        "Paradigm Threat"
+      ],
+      "forbid": ["pt-live-chat-slot"]
+    },
+    {
+      "class": "article",
+      "require": ["data-pt-article"],
+      "forbid": ["pt-live-chat-slot"]
+    },
+    {
+      "class": "chat",
+      "require": ["pt-chatroom-live"],
+      "forbid": []
+    }
+  ],
+  "notes": "Copy to paradigm-threat-files `.relay/ssr-qa.json` when enabling profile-required markers on pre-receive. Default gate is hard-fail only until this file is present in the tip."
+}

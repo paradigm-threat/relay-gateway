@@ -61,8 +61,21 @@ fn prefer_local_fleet() -> bool {
 }
 
 pub async fn load_topology(cfg: &OpsConfig, gitlab_url: &str) -> Result<(FleetFile, String)> {
-    // Unpublished local topology (e.g. lon1 → iad1 before GitLab push).
-    if prefer_local_fleet() {
+    // Prefer the local checkout ops/fleet.json whenever present so cutover / unpublished
+    // Linode topology wins over a stale GitLab copy (Spot iad1/ord1/hkg1). Set
+    // RELAY_OPS_PREFER_LOCAL_FLEET=0 to force GitLab-first.
+    let force_gitlab = matches!(
+        std::env::var("RELAY_OPS_PREFER_LOCAL_FLEET")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "no"
+    );
+    if !force_gitlab {
+        if let Some(local) = local_checkout_fleet_json(cfg) {
+            return Ok(local);
+        }
+    } else if prefer_local_fleet() {
         if let Some(local) = local_checkout_fleet_json(cfg) {
             return Ok(local);
         }

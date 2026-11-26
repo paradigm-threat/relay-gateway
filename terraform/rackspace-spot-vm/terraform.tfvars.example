@@ -1,8 +1,0 @@
-# Per-target tfvars (copy *.tfvars.example → *.tfvars; gitignored):
-#   iad1.tfvars  — spot-iad1 (gp.vs1.medium-iad / ch.vs1.medium-iad; Ashburn)
-#   ord1.tfvars  — spot-ord1 (gp.vs2.medium-sjc; San Jose)
-#   hkg1.tfvars  — spot-hkg1 (gp.vs1.medium-hkg)
-#
-# rackspace_spot_token = "REPLACE"   # or export RXTSPOT_TOKEN
-#
-# If VM already exists (Spot UI / MCP): set public_ip_override and use --install-only

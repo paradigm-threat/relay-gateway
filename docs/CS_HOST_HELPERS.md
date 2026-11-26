@@ -8,7 +8,7 @@ Registered in `relay-runtime/src/relay_modules.rs` (SSR + WASM). Spec table: `re
 
 | Module | Role |
 |--------|------|
-| `@relay/util` | `sortBy`, `take`, `prop`, `omitUndefined`, `slugify`, `uniqueId`, `includes`, `splitSentences`, `takeSentenceChunk` |
+| `@relay/util` | `sortBy`, `take`, `prop`, `omitUndefined`, `slugify`, `underscoresToSpaces`, `searchTopicSegment`, `uniqueId`, `includes`, `splitSentences`, `takeSentenceChunk` |
 | `@relay/path` | path join/normalize, `siteHref`, asset URL rewrite, gallery `#img=` / DOM id / portrait index lookup, `normalizeHttpHref` / `lookupHttpHref` (dead-URL maps) |
 | `@relay/date` | ChangeLog / feed date formats |
 | `@relay/catalog` | TOC extract/nest, dir tree + expand-to-current, **dir hub listing** (`dirTreeNode` / `dirIndexListing` / `autoIndexDirFromPath`), Feeling Lucky pick |
@@ -40,6 +40,7 @@ When tip code grows loops that look like libraries, extract here and add a **lay
 | Stronger markdown preprocess (math / KaTeX prep) | See `RELAY_MARKDOWN_MATH_KATEX.md` — keep CS out of tokenization |
 | Share snippet / OG description builders | Same string rules on SSR + CSR; avoid tip duplication |
 | Keyword / Option B token helpers | Align with `check-keywords` without CS regex |
+| **Search topic path encode/decode** | **Shipped** — `@relay/util.searchTopicSegment` / `underscoresToSpaces` (`/search/{topic}`, folder titles) |
 | **Gallery hash / `#img=` / DOM id** | **Shipped** — `@relay/path` `readHashImgSrc` / `galleryImgHash` / `safeImgDomId` / `galleryDisplaySrc` / `portraitSiblingIfPresent(map)` |
 | **TTS sentence chunking** | **Shipped** — `@relay/util.splitSentences` / `takeSentenceChunk` |
 | **TOC ATX extract** | **Shipped** — tip is thin wrap over `@relay/catalog.extractMarkdownHeadings` |
@@ -62,4 +63,4 @@ When tip code grows loops that look like libraries, extract here and add a **lay
 - Policy: [`RELAY_POLICY_AND_PERFORMANCE.md`](./RELAY_POLICY_AND_PERFORMANCE.md)
 - Server hooks: [`SERVER_HOOKS.md`](./SERVER_HOOKS.md)
 
-*Last updated: 2026-09-12*
+*Last updated: 2026-10-09*

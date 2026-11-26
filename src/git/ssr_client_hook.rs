@@ -398,6 +398,29 @@ fn panic_payload_message(payload: &Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
+fn late_ssr_map() -> &'static std::sync::Mutex<
+    std::collections::HashMap<String, ClientHookSsrResult>,
+> {
+    static LATE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, ClientHookSsrResult>>,
+    > = std::sync::OnceLock::new();
+    LATE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn take_late_ssr(key: &str) -> Option<ClientHookSsrResult> {
+    late_ssr_map().lock().ok()?.remove(key)
+}
+
+fn store_late_ssr(key: &str, value: ClientHookSsrResult) {
+    let Ok(mut map) = late_ssr_map().lock() else {
+        return;
+    };
+    if map.len() >= 32 {
+        map.clear();
+    }
+    map.insert(key.to_string(), value);
+}
+
 /// Try to SSR the client GET hook. Returns `None` on any failure (caller falls back to empty shell).
 /// Panics inside the renderer are caught so HTTP handlers can return 500 instead of dropping the connection.
 ///
@@ -419,13 +442,23 @@ pub fn try_ssr_client_hook(req: &ClientHookSsrRequest<'_>) -> Option<ClientHookS
         asset_base_url: req.asset_base_url.to_string(),
         initial_path: req.initial_path.to_string(),
     };
+    if let Some(hit) = take_late_ssr(&key) {
+        tracing::info!(
+            target: "relay_ssr",
+            path = %req.initial_path,
+            "SSR body kept after the waiter left; caller can fill the HTML cache"
+        );
+        return Some(hit);
+    }
     static REG: std::sync::OnceLock<
         std::sync::Arc<crate::git::ssr_limits::CoalesceRegistry<ClientHookSsrResult>>,
     > = std::sync::OnceLock::new();
     let reg = REG
         .get_or_init(|| std::sync::Arc::new(crate::git::ssr_limits::CoalesceRegistry::new()))
         .clone();
-    crate::git::ssr_limits::run_ssr_coalesced(reg, key, move || {
+    let key_store = key.clone();
+    let key_clear = key.clone();
+    let out = crate::git::ssr_limits::run_ssr_coalesced(reg, key, move || {
         let req = ClientHookSsrRequest {
             repo_path: &owned.repo_path,
             branch: &owned.branch,
@@ -433,7 +466,7 @@ pub fn try_ssr_client_hook(req: &ClientHookSsrRequest<'_>) -> Option<ClientHookS
             asset_base_url: &owned.asset_base_url,
             initial_path: &owned.initial_path,
         };
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let produced = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             try_ssr_client_hook_inner(&req)
         })) {
             Ok(v) => v,
@@ -448,8 +481,19 @@ pub fn try_ssr_client_hook(req: &ClientHookSsrRequest<'_>) -> Option<ClientHookS
                 );
                 None
             }
+        };
+        if let Some(ref body) = produced {
+            // The HTTP waiter may already have the cheap shell. Keep the body
+            // so the next request can write ssr_html_cache.
+            store_late_ssr(&key_store, body.clone());
         }
-    })
+        produced
+    });
+    if out.is_some() {
+        // This waiter will wrap the body and write ssr_html_cache.
+        let _ = take_late_ssr(&key_clear);
+    }
+    out
 }
 
 struct OwnedSsrRequest {
@@ -526,9 +570,14 @@ fn try_ssr_client_hook_inner(req: &ClientHookSsrRequest<'_>) -> Option<ClientHoo
     });
     relay_runtime::clear_cs_global_this_extras();
     let run = run.ok()?;
+    // A finished body is kept even if the waiter already has the cheap shell.
+    // Cancel still aborts the hook loop and the module-load check above.
     if relay_runtime::ssr_is_cancelled() {
-        tracing::warn!(target: "relay_ssr", path = %req.initial_path, "client hook SSR cancelled");
-        return None;
+        tracing::info!(
+            target: "relay_ssr",
+            path = %req.initial_path,
+            "client hook finished after cancel; keeping the body for the HTML cache"
+        );
     }
     let ms_hook = t_hook.elapsed().as_millis() as u64;
 
@@ -542,6 +591,19 @@ fn try_ssr_client_hook_inner(req: &ClientHookSsrRequest<'_>) -> Option<ClientHoo
     let ms_total = t0.elapsed().as_millis() as u64;
     if body_html.trim().is_empty() {
         tracing::debug!(target: "relay_ssr", "SSR produced empty HTML; falling back");
+        return None;
+    }
+    // Same hard gate as bake / pre-receive (before any LRU put of the composed doc).
+    if let Err(e) = crate::git::ssr_html_quality::check_ssr_body_fragment(
+        &body_html,
+        req.initial_path,
+    ) {
+        tracing::warn!(
+            target: "relay_ssr",
+            path = %req.initial_path,
+            reason = %e.reason,
+            "SSR body failed quality gate; falling back"
+        );
         return None;
     }
     tracing::info!(

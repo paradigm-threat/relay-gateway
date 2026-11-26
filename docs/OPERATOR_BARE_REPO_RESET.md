@@ -4,6 +4,22 @@
 
 **Related:** [DEPLOY_LINODE.md](./DEPLOY_LINODE.md) (DNS, stale bare dirs, ensure-bare), [RELAY_FLEET_CONSOLE.md](./RELAY_FLEET_CONSOLE.md) (**`relay-fleet.sh reclone-repo`** / fleet status), [RELAY_TRUST_AND_BOOTSTRAP.md](./RELAY_TRUST_AND_BOOTSTRAP.md) (catalog updates), [RELAY_MASTER_DEPLOY.md](./RELAY_MASTER_DEPLOY.md) (after relay-master history reset), [DEPLOY_WEB_AND_CI.md](./DEPLOY_WEB_AND_CI.md) (pushes use **`git://`** on **`RELAY_GIT_PORT`**, default **9418**).
 
+## Ownership: bare repos must be `relay:relay`
+
+Gateway, `relay-git-daemon`, and `relay-git-proxy` run as **`User=relay`**. If any `/opt/relay/data/*.git` tree is owned by **`ubuntu`** (or has stray non-`relay` files), index warm fails with Git **dubious ownership** (HTTP 409) and peers may not fetch. **Do not** add `git config --global safe.directory` — that only silences the check; the service still needs to write as `relay`.
+
+```bash
+# From laptop (Admin inventory):
+./scripts/relay-fleet.sh --only=NODE.relaygateway.net fix-repo-ownership
+# Or UI: Fix ownership / brain scenario repo_ownership_drift (auto with RELAY_BRAIN_EXECUTE=1)
+
+# On the node:
+sudo RELAY_REPO_PATH=/opt/relay/data /opt/relay/… # or from checkout:
+RELAY_REPO_PATH=/opt/relay/data ./scripts/relay-assert-data-ownership.sh --fix
+```
+
+Never point app checkouts (e.g. QuizGate `/var/quizgate/users`) `origin` at the filesystem path of a Relay bare; publish only over **`git://127.0.0.1:9418/<repo>.git`**. Never `chown -R ubuntu:ubuntu /opt/relay/data/…`.
+
 ## Why `sync-relay-catalog.sh` does not “reclone” by itself
 
 [`relay-master/scripts/sync-relay-catalog.sh`](../../relay-master/scripts/sync-relay-catalog.sh) runs **`git clone --bare`** only when **`$RELAY_REPO_PATH/<name>.git`** is **missing**. If the directory exists, it **fetch**es only. To force a fresh mirror from the forge URL in the catalog, **remove the bare directory first**, then run the sync script again.

@@ -36,12 +36,30 @@ pub struct NodeProbe {
     pub index_ok: bool,
     #[serde(default)]
     pub index_stale_repos: Vec<IndexStaleRepo>,
+    /// Repos with background `index_pending` from `/api/status`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub index_pending_repos: Vec<String>,
+    /// Last SearchStore warm errors from status (`repo: error`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub index_errors: Vec<String>,
+    /// `master_peers_configured` from this node's `/api/status` (ghost peers matter for publish).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configured_peers: Vec<String>,
+    /// Configured peers that `/api/status` marked unreachable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreachable_peers: Vec<String>,
     /// Origin HTTP traffic aggregates from `/api/status` `http` (schema ≥ 5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http: Option<HttpTrafficProbe>,
     /// Optional 24h RUM p75 from `GET /api/rum` when enabled on the node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rum: Option<RumProbe>,
+    /// Kubo reachable (`ipfs_ok` on `/api/status`). `None` = status missing field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipfs_ok: Option<bool>,
+    /// Per-repo thin IPFS seed lag from status `repos[].ipfs`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ipfs_repos: Vec<RepoIpfsProbe>,
     /// Admin SSH probe (Observer leaves this unset).
     #[serde(default)]
     pub ssh_ok: Option<bool>,
@@ -51,6 +69,9 @@ pub struct NodeProbe {
     /// `Some(false)` = SSH worked and `/opt/relay` is missing (empty VM).
     #[serde(default)]
     pub install_present: Option<bool>,
+    /// Bare repos under data root not owned by `relay` (SSH admin probe).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ownership_bad_repos: Vec<String>,
     /// Parked apex TLS via this node's IP (`--resolve` SNI). `None` = not probed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub park_tls_ok: Option<bool>,
@@ -153,7 +174,38 @@ pub struct StatusRepo {
     #[serde(default)]
     pub index_fresh: Option<bool>,
     #[serde(default)]
+    pub index_pending: Option<bool>,
+    #[serde(default)]
+    pub index_last_error: Option<String>,
+    #[serde(default)]
     pub index_doc_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipfs: Option<RepoIpfsProbe>,
+}
+
+/// Thin IPFS seed summary for one catalog repo (`repos[].ipfs` on `/api/status`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct RepoIpfsProbe {
+    #[serde(default)]
+    pub repo: String,
+    #[serde(default)]
+    pub thin: bool,
+    #[serde(default)]
+    pub cid_count: usize,
+    #[serde(default)]
+    pub cached_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StatusPeerProbe {
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub fqdn: String,
+    #[serde(default)]
+    pub reachable: bool,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -161,9 +213,15 @@ pub struct StatusProbe {
     pub ok: bool,
     pub schema_version: u32,
     pub repos_ok: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipfs_ok: Option<bool>,
     pub repos: Vec<StatusRepo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http: Option<HttpTrafficProbe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub master_peers_configured: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peers: Vec<StatusPeerProbe>,
 }
 
 /// Subset of gateway `/api/status` `http` object (schema ≥ 5).
@@ -257,6 +315,22 @@ pub struct RumProbe {
     pub p75_ttfc_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p75_lcp_ms: Option<f64>,
+    /// Theater / client typed events (24h), when present in `/api/rum` summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theater24h: Option<TheaterRumSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TheaterRumSummary {
+    #[serde(default)]
+    pub major: u64,
+    #[serde(default)]
+    pub minor: u64,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub by_code: std::collections::BTreeMap<String, u64>,
+    /// Nested `major` / `minor` → code → count (from `/api/rum` `bySeverityCode`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub by_severity_code: std::collections::BTreeMap<String, std::collections::BTreeMap<String, u64>>,
 }
 
 /// SearchStore indexed head lags git tip for this repo on the node.
@@ -367,11 +441,18 @@ fn unreachable_probe(
         sync_ok: true,
         index_ok: true,
         index_stale_repos: Vec::new(),
+        index_pending_repos: Vec::new(),
+        index_errors: Vec::new(),
+        configured_peers: Vec::new(),
+        unreachable_peers: Vec::new(),
         http: None,
         rum: None,
+        ipfs_ok: None,
+        ipfs_repos: Vec::new(),
         ssh_ok: None,
         host_key_changed: false,
         install_present: None,
+        ownership_bad_repos: Vec::new(),
         park_tls_ok: None,
         park_tls_domain: None,
     }
@@ -420,8 +501,25 @@ async fn probe_node(
         .as_ref()
         .map(|st| index_stale_from_status(st))
         .unwrap_or((Vec::new(), true));
+    let (index_pending_repos, index_errors) = https_status
+        .as_ref()
+        .map(index_pending_from_status)
+        .unwrap_or_default();
+    let configured_peers = https_status
+        .as_ref()
+        .map(|s| s.master_peers_configured.clone())
+        .unwrap_or_default();
+    let unreachable_peers = https_status
+        .as_ref()
+        .map(unreachable_peers_from_status)
+        .unwrap_or_default();
     let (park_tls_ok, park_tls_domain) =
         park_tls_via_node_ip(park_domain, dns.first().map(|s| s.as_str())).await;
+    let ipfs_ok = https_status.as_ref().and_then(|s| s.ipfs_ok);
+    let ipfs_repos = https_status
+        .as_ref()
+        .map(ipfs_repos_from_status)
+        .unwrap_or_default();
     NodeProbe {
         fqdn,
         dns,
@@ -438,11 +536,18 @@ async fn probe_node(
         sync_ok: true,
         index_ok,
         index_stale_repos,
+        index_pending_repos,
+        index_errors,
+        configured_peers,
+        unreachable_peers,
         http: https_status.as_ref().and_then(|s| s.http.clone()),
         rum,
+        ipfs_ok,
+        ipfs_repos,
         ssh_ok: None,
         host_key_changed: false,
         install_present: None,
+        ownership_bad_repos: Vec::new(),
         park_tls_ok,
         park_tls_domain,
     }
@@ -564,6 +669,10 @@ pub(crate) fn index_stale_from_status(st: &StatusProbe) -> (Vec<IndexStaleRepo>,
         if !r.on_disk || r.index_fresh != Some(false) {
             continue;
         }
+        // Warming in flight is not "stale after failure" — UI shows pending separately.
+        if r.index_pending == Some(true) {
+            continue;
+        }
         let tip = r
             .publish_sha
             .clone()
@@ -586,6 +695,89 @@ pub(crate) fn index_stale_from_status(st: &StatusProbe) -> (Vec<IndexStaleRepo>,
     stale.sort_by(|a, b| a.repo.cmp(&b.repo));
     let ok = stale.is_empty();
     (stale, ok)
+}
+
+pub(crate) fn index_pending_from_status(st: &StatusProbe) -> (Vec<String>, Vec<String>) {
+    let mut pending = Vec::new();
+    let mut errors = Vec::new();
+    for r in &st.repos {
+        if !r.on_disk {
+            continue;
+        }
+        if r.index_pending == Some(true) {
+            pending.push(r.name.clone());
+        }
+        if let Some(err) = r.index_last_error.as_ref().filter(|e| !e.is_empty()) {
+            errors.push(format!("{}: {err}", r.name));
+        }
+    }
+    pending.sort();
+    errors.sort();
+    (pending, errors)
+}
+
+pub(crate) fn unreachable_peers_from_status(st: &StatusProbe) -> Vec<String> {
+    let mut out = Vec::new();
+    for p in &st.peers {
+        if p.reachable {
+            continue;
+        }
+        let host = if !p.host.is_empty() {
+            p.host.clone()
+        } else {
+            p.fqdn.clone()
+        };
+        if !host.is_empty() {
+            out.push(host);
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Operator warnings for credit scale-down / dead mesh peers left in publisher peer lists.
+pub fn fleet_operator_warnings(nodes: &[NodeProbe], fleet: &FleetFile) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let down_mesh: Vec<&str> = fleet
+        .nodes
+        .iter()
+        .filter(|n| n.role.as_deref().is_some_and(|r| r.eq_ignore_ascii_case("mesh")))
+        .filter(|n| {
+            nodes
+                .iter()
+                .find(|p| p.fqdn == n.fqdn)
+                .is_none_or(|p| !p.healthy)
+        })
+        .map(|n| n.fqdn.as_str())
+        .collect();
+    if !down_mesh.is_empty() {
+        warnings.push(format!(
+            "Mesh node(s) down: {}. Before destroy, shrink RELAY_MASTER_PEER_LIST on publisher or publishes fail mesh-wait.",
+            down_mesh.join(", ")
+        ));
+    }
+    for n in nodes.iter().filter(|n| n.healthy && !n.unreachable_peers.is_empty()) {
+        warnings.push(format!(
+            "{} still peers unreachable hosts {:?} — remove them from RELAY_MASTER_PEER_LIST before scale-down.",
+            n.fqdn, n.unreachable_peers
+        ));
+    }
+    for n in nodes.iter().filter(|n| n.healthy && !n.index_errors.is_empty()) {
+        warnings.push(format!(
+            "{} SearchStore warm errors: {}",
+            n.fqdn,
+            n.index_errors.join("; ")
+        ));
+    }
+    for n in nodes.iter().filter(|n| n.healthy && !n.index_pending_repos.is_empty()) {
+        warnings.push(format!(
+            "{} index warming: {}",
+            n.fqdn,
+            n.index_pending_repos.join(", ")
+        ));
+    }
+    warnings
 }
 
 async fn ls_remote_tips(
@@ -737,6 +929,40 @@ pub(crate) fn parse_rum_probe(body: &serde_json::Value) -> RumProbe {
                 .or_else(|| v.as_i64().map(|n| n as f64))
         })
     };
+    let theater24h = body.get("theater24h").and_then(|t| {
+        let major = t.get("major").and_then(|v| v.as_u64()).unwrap_or(0);
+        let minor = t.get("minor").and_then(|v| v.as_u64()).unwrap_or(0);
+        let mut by_code = std::collections::BTreeMap::new();
+        if let Some(obj) = t.get("byCode").and_then(|v| v.as_object()) {
+            for (k, v) in obj {
+                if let Some(n) = v.as_u64() {
+                    by_code.insert(k.clone(), n);
+                }
+            }
+        }
+        let mut by_severity_code = std::collections::BTreeMap::new();
+        if let Some(sev) = t.get("bySeverityCode").and_then(|v| v.as_object()) {
+            for (sev_key, codes) in sev {
+                let mut inner = std::collections::BTreeMap::new();
+                if let Some(obj) = codes.as_object() {
+                    for (k, v) in obj {
+                        if let Some(n) = v.as_u64() {
+                            inner.insert(k.clone(), n);
+                        }
+                    }
+                }
+                if !inner.is_empty() {
+                    by_severity_code.insert(sev_key.clone(), inner);
+                }
+            }
+        }
+        Some(TheaterRumSummary {
+            major,
+            minor,
+            by_code,
+            by_severity_code,
+        })
+    });
     RumProbe {
         enabled: body
             .get("enabled")
@@ -746,6 +972,7 @@ pub(crate) fn parse_rum_probe(body: &serde_json::Value) -> RumProbe {
         events: body.get("events").and_then(|v| v.as_u64()).unwrap_or(0),
         p75_ttfc_ms: num("ttfc_ms"),
         p75_lcp_ms: num("lcp_ms"),
+        theater24h,
     }
 }
 
@@ -755,19 +982,65 @@ pub(crate) fn parse_status_probe(ok: bool, body: &serde_json::Value) -> StatusPr
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
     let repos_ok = body.get("repos_ok").and_then(|v| v.as_bool());
-    let repos = body
+    let ipfs_ok = body.get("ipfs_ok").and_then(|v| v.as_bool());
+    let mut repos = body
         .get("repos")
         .and_then(|v| serde_json::from_value::<Vec<StatusRepo>>(v.clone()).ok())
         .unwrap_or_default();
+    for r in &mut repos {
+        if let Some(ref mut ip) = r.ipfs {
+            if ip.repo.is_empty() {
+                ip.repo = r.name.clone();
+            }
+        }
+    }
+    let master_peers_configured = json_string_vec(body, "master_peers_configured");
+    let peers = body
+        .get("peers")
+        .and_then(|v| serde_json::from_value::<Vec<StatusPeerProbe>>(v.clone()).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut p| {
+            if p.host.is_empty() && !p.fqdn.is_empty() {
+                p.host = p.fqdn.clone();
+            }
+            if p.fqdn.is_empty() && !p.host.is_empty() {
+                p.fqdn = p.host.clone();
+            }
+            p
+        })
+        .collect();
     StatusProbe {
         ok,
         schema_version,
         repos_ok,
+        ipfs_ok,
         repos,
         http: body
             .get("http")
             .and_then(|v| serde_json::from_value::<HttpTrafficProbe>(v.clone()).ok()),
+        master_peers_configured,
+        peers,
     }
+}
+
+fn ipfs_repos_from_status(st: &StatusProbe) -> Vec<RepoIpfsProbe> {
+    st.repos
+        .iter()
+        .filter_map(|r| {
+            r.ipfs.as_ref().map(|ip| RepoIpfsProbe {
+                repo: if ip.repo.is_empty() {
+                    r.name.clone()
+                } else {
+                    ip.repo.clone()
+                },
+                thin: ip.thin,
+                cid_count: ip.cid_count,
+                cached_count: ip.cached_count,
+            })
+        })
+        .filter(|ip| ip.cid_count > 0 || ip.thin)
+        .collect()
 }
 
 fn json_string_vec(body: &serde_json::Value, key: &str) -> Vec<String> {
@@ -1303,6 +1576,32 @@ pub fn healthy_node_ips(nodes: &[NodeProbe]) -> Vec<String> {
     ips
 }
 
+/// Like [`healthy_node_ips`], but only nodes with `fleetDns` / non-mesh role in
+/// topology (publisher fat ingress). Mesh-only nodes must not enter
+/// `fleet.relaygateway.net` multi-A.
+pub fn healthy_fleet_ingress_ips(nodes: &[NodeProbe], fleet: &crate::topology::FleetFile) -> Vec<String> {
+    let allow: std::collections::HashSet<String> = fleet
+        .nodes
+        .iter()
+        .filter(|n| n.participates_in_fleet_dns())
+        .map(|n| n.fqdn.to_ascii_lowercase())
+        .collect();
+    let mut ips = Vec::new();
+    for n in nodes {
+        if !allow.contains(&n.fqdn.to_ascii_lowercase()) {
+            continue;
+        }
+        if n.healthy || n.tcp443 {
+            for ip in &n.dns {
+                if !ips.contains(ip) {
+                    ips.push(ip.clone());
+                }
+            }
+        }
+    }
+    ips
+}
+
 pub fn dead_ingress_ips(ingress: &IngressProbe, keep: &[String]) -> Vec<String> {
     ingress
         .dns
@@ -1374,11 +1673,18 @@ mod tests {
             sync_ok: true,
             index_ok: true,
             index_stale_repos: vec![],
+            index_pending_repos: vec![],
+            index_errors: vec![],
+            configured_peers: vec![],
+            unreachable_peers: vec![],
             http: None,
             rum: None,
+            ipfs_ok: Some(true),
+            ipfs_repos: vec![],
             ssh_ok: None,
             host_key_changed: false,
             install_present: None,
+            ownership_bad_repos: vec![],
             park_tls_ok: Some(true),
             park_tls_domain: Some("paradigmthreat.net".into()),
         }
@@ -1560,6 +1866,79 @@ mod tests {
     }
 
     #[test]
+    fn healthy_fleet_ingress_ips_skips_mesh() {
+        let fleet = FleetFile {
+            schema: "relay.ops.fleet.v1".into(),
+            fleet_ingress: None,
+            git_port: Some(9418),
+            nodes: vec![
+                FleetNode {
+                    fqdn: "pub1.relaygateway.net".into(),
+                    ssh_user: None,
+                    deploy_target: None,
+                    fleet_dns: true,
+                    role: Some("publisher".into()),
+                },
+                FleetNode {
+                    fqdn: "mesh1.relaygateway.net".into(),
+                    ssh_user: None,
+                    deploy_target: None,
+                    fleet_dns: false,
+                    role: Some("mesh".into()),
+                },
+            ],
+            git_repos: vec![],
+            health: Default::default(),
+            catalog_path: None,
+            data_root: None,
+            mail: None,
+        };
+        let mut pub1 = up_node("pub1.relaygateway.net", &[], &[], vec![], vec![]);
+        pub1.dns = vec!["172.234.148.70".into()];
+        let mut mesh1 = up_node("mesh1.relaygateway.net", &[], &[], vec![], vec![]);
+        mesh1.dns = vec!["172.237.134.22".into()];
+        let ips = healthy_fleet_ingress_ips(&[pub1.clone(), mesh1.clone()], &fleet);
+        assert_eq!(ips, vec!["172.234.148.70".to_string()]);
+        assert_eq!(healthy_node_ips(&[pub1, mesh1]).len(), 2);
+    }
+
+    #[test]
+    fn fleet_warnings_flag_unreachable_peers() {
+        let fleet = FleetFile {
+            schema: "relay.ops.fleet.v1".into(),
+            fleet_ingress: None,
+            git_port: Some(9418),
+            nodes: vec![
+                FleetNode {
+                    fqdn: "pub1.relaygateway.net".into(),
+                    ssh_user: None,
+                    deploy_target: None,
+                    fleet_dns: true,
+                    role: Some("publisher".into()),
+                },
+                FleetNode {
+                    fqdn: "mesh1.relaygateway.net".into(),
+                    ssh_user: None,
+                    deploy_target: None,
+                    fleet_dns: false,
+                    role: Some("mesh".into()),
+                },
+            ],
+            git_repos: vec![],
+            health: Default::default(),
+            catalog_path: None,
+            data_root: None,
+            mail: None,
+        };
+        let mut pub1 = up_node("pub1.relaygateway.net", &[], &[], vec![], vec![]);
+        pub1.unreachable_peers = vec!["mesh1.relaygateway.net".into()];
+        let mesh1 = unreachable_probe("mesh1.relaygateway.net".into(), vec![], false, false, false);
+        let w = fleet_operator_warnings(&[pub1, mesh1], &fleet);
+        assert!(w.iter().any(|s| s.contains("Mesh node")));
+        assert!(w.iter().any(|s| s.contains("unreachable")));
+    }
+
+    #[test]
     fn index_stale_from_status_v4_detects_lag() {
         let body = serde_json::json!({
             "schema_version": 4,
@@ -1639,12 +2018,54 @@ mod tests {
             "ok": true,
             "enabled": true,
             "events": 12,
-            "p75": { "ttfc_ms": 180.0, "lcp_ms": 900.0 }
+            "p75": { "ttfc_ms": 180.0, "lcp_ms": 900.0 },
+            "theater24h": {
+                "major": 5,
+                "minor": 20,
+                "byCode": { "wasm_hard_fail": 3, "js_error": 20 },
+                "bySeverityCode": {
+                    "major": { "wasm_hard_fail": 3 },
+                    "minor": { "js_error": 20 }
+                }
+            }
         }));
         assert!(rum.enabled);
         assert_eq!(rum.events, 12);
         assert_eq!(rum.p75_ttfc_ms, Some(180.0));
         assert_eq!(rum.p75_lcp_ms, Some(900.0));
+        let t = rum.theater24h.expect("theater");
+        assert_eq!(t.major, 5);
+        assert_eq!(t.by_code.get("wasm_hard_fail"), Some(&3));
+        assert_eq!(
+            t.by_severity_code
+                .get("major")
+                .and_then(|m| m.get("wasm_hard_fail")),
+            Some(&3)
+        );
+    }
+
+    #[test]
+    fn parse_status_ipfs_repos() {
+        let st = parse_status_probe(
+            true,
+            &serde_json::json!({
+                "schema_version": 5,
+                "ipfs_ok": true,
+                "repos": [{
+                    "name": "fan-edits",
+                    "on_disk": true,
+                    "in_catalog": true,
+                    "ok": true,
+                    "ipfs": { "thin": true, "cid_count": 10, "cached_count": 7 }
+                }]
+            }),
+        );
+        assert_eq!(st.ipfs_ok, Some(true));
+        let ips = ipfs_repos_from_status(&st);
+        assert_eq!(ips.len(), 1);
+        assert_eq!(ips[0].repo, "fan-edits");
+        assert_eq!(ips[0].cid_count, 10);
+        assert_eq!(ips[0].cached_count, 7);
     }
 
     #[test]
@@ -1659,7 +2080,7 @@ mod tests {
                 vec![site.clone()],
             ),
             up_node(
-                "sjc1.example",
+                "ord1.example",
                 &["paradigm-threat-files"],
                 &["paradigm-threat-files"],
                 vec![tip("paradigm-threat-files", "main", "oldsha00")],
@@ -1763,7 +2184,7 @@ mod tests {
                 vec![site.clone()],
             ),
             up_node(
-                "sjc1.example",
+                "ord1.example",
                 &["paradigm-threat-files"],
                 &["paradigm-threat-files"],
                 vec![tip("paradigm-threat-files", "main", "forge000")],

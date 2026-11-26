@@ -2,6 +2,7 @@ mod browse;
 mod brain;
 mod brain_client;
 mod config;
+mod credit;
 mod fleet_cmd;
 mod gitlab;
 mod inventory;
@@ -13,7 +14,6 @@ mod probe;
 mod recommend;
 mod scenarios;
 mod serve;
-mod spot;
 mod ssh;
 mod topology;
 #[cfg(unix)]
@@ -106,6 +106,7 @@ enum Commands {
     /// Remote install.sh reconfigure-features (non-interactive).
     #[command(name = "features-set")]
     FeaturesSet {
+        /// Piper TTS (`/voices`, `/tts`). Default **1** (on for all fleet nodes). Pass `0` to disable.
         #[arg(long)]
         piper: Option<String>,
         #[arg(long)]
@@ -136,6 +137,9 @@ enum Commands {
     /// Point each catalog bare repo symbolic HEAD at its .gitmodules branch.
     #[command(name = "fix-bare-head")]
     FixBareHead,
+    /// Chown `/opt/relay/data/*.git` back to relay:relay (fixes dubious-ownership warm failures).
+    #[command(name = "fix-repo-ownership")]
+    FixRepoOwnership,
     /// Install deploy pubkey via root+sshpass (SSHPASS or RELAY_ROOT_PASSWORD).
     #[command(name = "bootstrap-ssh")]
     BootstrapSsh,
@@ -171,28 +175,19 @@ enum Commands {
         #[arg(long)]
         ip: String,
     },
-    /// Spot install-only reclaim via local checkout (relay-master-deploy.sh).
-    Reclaim {
-        #[arg(long)]
-        fqdn: String,
-        #[arg(long)]
-        ip: Option<String>,
-        #[arg(long)]
-        yes: bool,
-    },
     /// ssh-keygen -R on ~/.ssh/known_hosts for fqdn and optional IPs (no sudo).
     #[command(name = "known-hosts-reset")]
     KnownHostsReset {
         #[arg(long)]
         fqdn: String,
-        /// Repeatable. DNS A / Spot IPv4 for the same node.
+        /// Repeatable. DNS A / node IPv4 for the same host.
         #[arg(long)]
         ip: Vec<String>,
     },
     /// Install login daemon (systemd --user or Windows Startup).
     #[command(name = "install-service")]
     InstallService,
-    /// Local fleet brain (status / feed / requests / serve).
+    /// Brain subcommands (disabled stub — prints disabled).
     Brain {
         #[command(subcommand)]
         cmd: BrainCmd,
@@ -353,6 +348,14 @@ async fn main() -> Result<()> {
             print!("{}", fleet_cmd::fix_bare_head(&cfg, &fleet, interactive)?);
             Ok(())
         }
+        Commands::FixRepoOwnership => {
+            let (fleet, _) = load_fleet(&cfg, only).await?;
+            print!(
+                "{}",
+                fleet_cmd::fix_repo_ownership(&cfg, &fleet, interactive)?
+            );
+            Ok(())
+        }
         Commands::BootstrapSsh => {
             let (fleet, _) = load_fleet(&cfg, only).await?;
             print!("{}", fleet_cmd::bootstrap_ssh(&cfg, &fleet)?);
@@ -411,7 +414,6 @@ async fn main() -> Result<()> {
             println!("{}", v.point_a(&fqdn, &ip).await?);
             Ok(())
         }
-        Commands::Reclaim { fqdn, ip, yes } => cmd_reclaim(&cfg, fqdn, ip, yes).await,
         Commands::KnownHostsReset { fqdn, ip } => {
             println!("{}", jobs::reset_known_hosts(&fqdn, &ip)?);
             Ok(())
@@ -500,10 +502,6 @@ async fn cmd_status(cfg: &OpsConfig, only: Option<&str>) -> Result<()> {
     let (fleet, source) = load_fleet(cfg, only).await?;
     let inv = Inventory::collect(cfg);
     let (nodes, ingress, live) = probe_fleet(&fleet, Some(&url)).await;
-    let mut spot = Vec::new();
-    if let Some(tok) = cfg.spot_token.as_deref() {
-        spot = spot::list_assignments(tok).await.unwrap_or_default();
-    }
     let out = serde_json::json!({
         "gitlab_url": url,
         "topology_source": source,
@@ -511,7 +509,6 @@ async fn cmd_status(cfg: &OpsConfig, only: Option<&str>) -> Result<()> {
         "nodes": nodes,
         "ingress": ingress,
         "live_peers": live,
-        "spot": spot,
         "fleet_nodes": fleet.nodes.iter().map(|n| &n.fqdn).collect::<Vec<_>>(),
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
@@ -533,7 +530,6 @@ async fn cmd_serve(cfg: &OpsConfig, bind: Option<String>) -> Result<()> {
             nodes: Vec::new(),
             ingress: None,
             live_peers: Vec::new(),
-            spot: Vec::new(),
             last_error: None,
         })),
         jobs: jobs::Jobs::default(),
@@ -541,31 +537,6 @@ async fn cmd_serve(cfg: &OpsConfig, bind: Option<String>) -> Result<()> {
         tray_tx,
     };
     serve::serve(app, &bind).await
-}
-
-async fn cmd_reclaim(cfg: &OpsConfig, fqdn: String, ip: Option<String>, yes: bool) -> Result<()> {
-    if !Inventory::collect(cfg).admin_ready {
-        anyhow::bail!("needs ssh + identity (Admin inventory)");
-    }
-    if !yes {
-        anyhow::bail!("re-run with --yes to start reclaim of {fqdn}");
-    }
-    let (fleet, _) = load_fleet(cfg, None).await?;
-    let jobs = jobs::Jobs::default();
-    jobs.start_reclaim(cfg.clone(), fleet, fqdn, ip).await?;
-    loop {
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-        if let Some(j) = jobs.snapshot().await {
-            if !j.running {
-                println!("{}", j.log);
-                if j.ok == Some(false) {
-                    anyhow::bail!("reclaim failed");
-                }
-                break;
-            }
-        }
-    }
-    Ok(())
 }
 
 fn install_service(cfg: &OpsConfig) -> Result<()> {
@@ -604,21 +575,12 @@ fn install_service(cfg: &OpsConfig) -> Result<()> {
                 fs::set_permissions(&dest, fs::Permissions::from_mode(0o755))?;
             }
         }
-        // Sibling relay-brain binary (same cargo target dir) → ~/.local/bin + user unit
-        let brain_src = exe.with_file_name("relay-brain");
+        // Brain was removed in the Linode fleet redesign — stop any leftover unit/binary.
         let brain_dest = bin.join("relay-brain");
-        if brain_src.is_file() {
-            let _ = std::process::Command::new("systemctl")
-                .args(["--user", "stop", "relay-brain.service"])
-                .status();
-            fs::copy(&brain_src, &brain_dest)
-                .with_context(|| format!("copy to {}", brain_dest.display()))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&brain_dest, fs::Permissions::from_mode(0o755))?;
-            }
-        }
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "disable", "--now", "relay-brain.service"])
+            .status();
+        let _ = fs::remove_file(&brain_dest);
         let icon_dir = home.join(".local/share/icons/hicolor/128x128/apps");
         fs::create_dir_all(&icon_dir)?;
         let icon = icon_dir.join("relay-ops.png");
@@ -661,28 +623,9 @@ fn install_service(cfg: &OpsConfig) -> Result<()> {
         );
         fs::write(&unit, body)?;
 
-        if brain_dest.is_file() {
-            let mut brain_workdir = String::new();
-            let mut brain_env = String::from("Environment=RUST_LOG=info\nEnvironment=RELAY_BRAIN_EXECUTE=1\n");
-            brain_env.push_str(&format!("Environment=RELAY_OPS_GITLAB_URL={gitlab}\n"));
-            if let Some(root) = cfg.checkout_path() {
-                brain_workdir = format!("WorkingDirectory={}\n", root.display());
-                brain_env.push_str(&format!(
-                    "Environment=RELAY_OPS_CHECKOUT={}\nEnvironment=RELAY_OPS_PREFER_LOCAL_FLEET=1\nEnvironment=RELAY_SCENARIOS_DIR={}/ops/scenarios\n",
-                    root.display(),
-                    root.display()
-                ));
-            }
+        {
             let brain_unit = unit_dir.join("relay-brain.service");
-            let brain_body = format!(
-                "[Unit]\nDescription=Relay fleet brain (local probe + scenarios + private feed)\nAfter=network-online.target\nPartOf=default.target\n\n[Service]\n{brain_workdir}{brain_env}ExecStart={}\nRestart=always\nRestartSec=5\nKillMode=process\n\n[Install]\nWantedBy=default.target\n",
-                brain_dest.display()
-            );
-            fs::write(&brain_unit, brain_body)?;
-            let _ = std::process::Command::new("systemctl")
-                .args(["--user", "enable", "--now", "relay-brain.service"])
-                .status();
-            println!("installed {} + unit {}", brain_dest.display(), brain_unit.display());
+            let _ = fs::remove_file(&brain_unit);
         }
 
         let auto_dir = home.join(".config/autostart");
@@ -754,7 +697,6 @@ mod tests {
             "bootstrap-ssh",
             "fleet-dns",
             "reinstall",
-            "reclaim",
             "serve",
             "inventory",
             "point-dns",

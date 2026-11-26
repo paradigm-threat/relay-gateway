@@ -6,5 +6,19 @@
   "relay_root_commit": "0000000000000000000000000000000000000000",
   "publish_branch": "main",
   "publish_origin": "iad1.relaygateway.net",
-  "signing_keys_source": "repo"
+  "signing_keys_source": "repo",
+  "domains": [
+    "paradigmthreat.net",
+    "www.paradigmthreat.net"
+  ],
+  "clientHook": "hooks/client/get.jsx",
+  "ssrCache": {
+    "enabled": true,
+    "repo": "relay-ssr-cache",
+    "prefix": "sites/paradigmthreat.net/",
+    "shellPath": "sites/paradigmthreat.net/_shell.html",
+    "hookAssetsRepo": "relay-web-assets",
+    "hookAssetsBranch": "release",
+    "requirePreReceiveQa": true
+  }
 }

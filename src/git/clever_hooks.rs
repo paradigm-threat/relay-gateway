@@ -145,6 +145,63 @@ export default function run(ctx, next) {
     }
 
     #[test]
+    fn next_keeps_raw_md_and_does_not_answer_a_page_404() {
+        let dir = tempdir().unwrap();
+        let repo_path = dir.path().join("essay.git");
+        let repo = Repository::init_bare(&repo_path).unwrap();
+        let sig = Signature::now("t", "t@t").unwrap();
+        let oid = repo.blob(b"# essay\n").unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert("world-war-3-anyway.md", oid, 0o100644).unwrap();
+        let tid = tb.write().unwrap();
+        let tree = repo.find_tree(tid).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "c", &tree, &[])
+            .unwrap();
+        let src = "export default function run(ctx, next) { return next(); }";
+        // The file fallback does not invent a page. The HTTP shell does that.
+        let hit = run_clever_hook(
+            src,
+            &serde_json::json!({ "relPath": "world-war-3-anyway" }),
+            repo_path.clone(),
+            "main".into(),
+            true,
+        )
+        .unwrap();
+        let st = &hit["status"];
+        assert!(
+            st.as_u64() == Some(404) || st.as_f64() == Some(404.0),
+            "status={st:?}"
+        );
+        assert!(hit["headers"].get("Location").is_none());
+        let raw = run_clever_hook(
+            src,
+            &serde_json::json!({
+                "relPath": "world-war-3-anyway.md",
+                "contentType": "text/markdown",
+            }),
+            repo_path.clone(),
+            "main".into(),
+            true,
+        )
+        .unwrap();
+        assert!(raw.get("status").is_none() || raw["status"].as_f64() == Some(200.0));
+        assert_eq!(raw["bodyUtf8"], "# essay\n");
+        let miss = run_clever_hook(
+            src,
+            &serde_json::json!({ "relPath": "no-such-blob.bin" }),
+            repo_path,
+            "main".into(),
+            true,
+        )
+        .unwrap();
+        let miss_st = &miss["status"];
+        assert!(
+            miss_st.as_u64() == Some(404) || miss_st.as_f64() == Some(404.0),
+            "status={miss_st:?}"
+        );
+    }
+
+    #[test]
     fn relay_global_is_null_without_import_usage() {
         let j = run_clever_hook(
             "export default function run(c) { return { relay: Relay }; }",

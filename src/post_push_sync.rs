@@ -349,7 +349,7 @@ mod tests {
                 error: None,
             },
             PeerTipRow {
-                host: "sjc1.example".into(),
+                host: "ord1.example".into(),
                 sha: Some("abc".into()),
                 match_publisher: true,
                 error: None,

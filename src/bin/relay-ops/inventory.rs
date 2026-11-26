@@ -11,7 +11,6 @@ pub struct Inventory {
     pub identity_path: Option<String>,
     pub admin_ready: bool,
     pub vercel_token: bool,
-    pub spot_token: bool,
     pub slack_webhook: bool,
     pub gitlab_token: bool,
     pub op_cli: bool,
@@ -42,11 +41,6 @@ impl Inventory {
             admin_ready,
             vercel_token: cfg
                 .vercel_token
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .is_some(),
-            spot_token: cfg
-                .spot_token
                 .as_deref()
                 .filter(|s| !s.is_empty())
                 .is_some(),

@@ -123,6 +123,58 @@ fn main() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
             }
+            // Park SSR QA: reject tips that fail CleverScript SSR / HTML quality.
+            if let Err(e) = relay_server::git::ssr_pre_receive::enforce_ssr_pre_receive_qa(
+                &ctx.repo_path,
+                &ctx.branch,
+                &ctx.old_commit,
+                &ctx.new_commit,
+            ) {
+                error!("SSR pre-receive QA: {}", e);
+                eprintln!("[relay-hook-handler] SSR pre-receive QA:\n{}", e);
+                let repo_slug = relay_server::notify::normalize_repo_slug(
+                    ctx.repo_path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown.git"),
+                );
+                relay_server::notify::notify_pre_receive_rejection(
+                    &repo_slug,
+                    &ctx.branch,
+                    &ctx.refname,
+                    &ctx.old_commit,
+                    &ctx.new_commit,
+                    &e,
+                );
+                std::process::exit(1);
+            }
+            // Fail-closed SearchStore warm for catalog publish_branch before tip ACK.
+            if is_catalog_publish_branch(&ctx) && !new_commit.chars().all(|c| c == '0') {
+                if let Err(e) =
+                    relay_server::git::ensure_indexed_with_retries(&ctx, 3)
+                {
+                    error!("SearchStore index (publish_branch) failed: {}", e);
+                    eprintln!(
+                        "[relay-hook-handler] SearchStore index failed for publish_branch {}:\n{}",
+                        ctx.branch, e
+                    );
+                    let repo_slug = relay_server::notify::normalize_repo_slug(
+                        ctx.repo_path
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown.git"),
+                    );
+                    relay_server::notify::notify_pre_receive_rejection(
+                        &repo_slug,
+                        &ctx.branch,
+                        &ctx.refname,
+                        &ctx.old_commit,
+                        &ctx.new_commit,
+                        &format!("SearchStore index failed: {e}"),
+                    );
+                    std::process::exit(1);
+                }
+            }
         }
 
         if !execute_repo_hook(&ctx, hook_name)? {
@@ -152,9 +204,10 @@ fn main() -> anyhow::Result<()> {
                 sid.as_deref(),
                 node.as_deref(),
             );
-            // Index inline so QUERY never JITs. Slack / autoPush stay async.
-            if let Err(e) = relay_server::git::ensure_indexed(&ctx) {
-                warn!(error = %e, "post-receive index failed");
+            // Index inline so QUERY never JITs (idempotent if pre-receive already warmed).
+            if let Err(e) = relay_server::git::ensure_indexed_with_retries(&ctx, 3) {
+                error!(error = %e, "post-receive index failed after retries");
+                eprintln!("[relay-hook-handler] post-receive index failed: {e}");
             }
             // Thin IPFS: pin tip CIDs into local Kubo without blocking the git ACK.
             {
@@ -162,6 +215,12 @@ fn main() -> anyhow::Result<()> {
                 let branch = ctx.branch.clone();
                 relay_server::git::ipfs::spawn_pin_repo_tip(bare, branch);
             }
+            // Park SSR cache: enqueue CleverScript bake after tip passed pre-receive QA.
+            relay_server::git::ssr_pre_receive::spawn_enqueue_ssr_bake(
+                ctx.repo_path.clone(),
+                ctx.branch.clone(),
+                ctx.new_commit.clone(),
+            );
             // autoPush can hang on a dead peer — run with per-origin timeout in a thread.
             {
                 let ctx_ap = ctx.clone();
@@ -273,6 +332,17 @@ fn handle_update_hook(git_dir: &Path, args: &[String]) {
             &new_commit[..7.min(new_commit.len())],
             wait.peers.len()
         );
+        // Publish-origin update advances the tip here so receive-pack's final
+        // update fails and post-receive never runs. Enqueue SSR bake now —
+        // must be synchronous: this process exits as soon as we return, which
+        // would kill a spawned thread before the job file is written.
+        if let Err(e) = relay_server::git::ssr_pre_receive::enqueue_ssr_bake_job(
+            git_dir,
+            &branch,
+            new_commit,
+        ) {
+            eprintln!("[relay-hook-handler] SSR bake enqueue failed: {e}");
+        }
         return;
     }
 
@@ -405,6 +475,28 @@ fn handle_auto_push(ctx: &HookContext) -> anyhow::Result<()> {
         anyhow::bail!("one or more auto-push targets failed (see logs / Slack per origin)");
     }
     Ok(())
+}
+
+/// True when this bare's catalog record lists `ctx.branch` as `publish_branch`.
+fn is_catalog_publish_branch(ctx: &HookContext) -> bool {
+    let slug = ctx
+        .repo_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .trim_end_matches(".git");
+    if slug.is_empty() {
+        return false;
+    }
+    let Some(path) = relay_server::catalog_policy::catalog_path_from_env() else {
+        return false;
+    };
+    let Some(index) = relay_server::catalog_policy::try_load_catalog_index(&path) else {
+        return false;
+    };
+    relay_server::catalog_policy::catalog_record_for_slug(&index, slug)
+        .map(|r| r.publish_branch == ctx.branch)
+        .unwrap_or(false)
 }
 
 fn extract_changed_files(

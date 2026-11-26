@@ -51,7 +51,7 @@ MAIL_USER_DEFAULT="${RELAY_MAIL_USER:-relaymail}"
 MAIL_HOSTNAME_DEFAULT="${RELAY_MAIL_HOSTNAME:-}"
 
 # Semicolon-separated FQDNs; used when RELAY_MASTER_PEER_LIST is unset (non-interactive) or when the operator accepts the interactive default (Enter).
-DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-iad1.relaygateway.net;ord1.relaygateway.net;hkg1.relaygateway.net}"
+DEFAULT_RELAY_MASTER_PEER_LIST="${DEFAULT_RELAY_MASTER_PEER_LIST:-pub1.relaygateway.net;mesh1.relaygateway.net;mesh2.relaygateway.net}"
 DEFAULT_RELAY_MASTER_CATALOG_PATH="${DEFAULT_RELAY_MASTER_CATALOG_PATH:-/opt/relay/src/relay-master}"
 DEFAULT_RELAY_MASTER_CATALOG_GIT_URL="${DEFAULT_RELAY_MASTER_CATALOG_GIT_URL:-https://gitlab.com/clevertree/relay-master.git}"
 
@@ -737,6 +737,18 @@ install_binaries() {
     cp -f "$SCRIPT_DIR/relay-reconcile.sh" "$INSTALL/bin/relay-reconcile.sh"
   fi
   [[ -f "$INSTALL/bin/relay-reconcile.sh" ]] && chmod +x "$INSTALL/bin/relay-reconcile.sh"
+  for _ssr_script in relay-ssr-bake.py relay-ssr-bake-queue.sh init-relay-ssr-cache.sh linode-cutover-checklist.sh; do
+    if [[ -f "$src/$_ssr_script" ]]; then
+      _copy_bin_if_needed "$src/$_ssr_script" "$INSTALL/bin/$_ssr_script"
+    elif [[ -f "$SCRIPT_DIR/$_ssr_script" ]]; then
+      cp -f "$SCRIPT_DIR/$_ssr_script" "$INSTALL/bin/$_ssr_script"
+    fi
+    [[ -f "$INSTALL/bin/$_ssr_script" ]] && chmod +x "$INSTALL/bin/$_ssr_script"
+  done
+  if [[ -f "$src/relay-ssr-bake" ]]; then
+    _copy_bin_if_needed "$src/relay-ssr-bake" "$INSTALL/bin/relay-ssr-bake"
+  fi
+  [[ -f "$INSTALL/bin/relay-ssr-bake" ]] && chmod +x "$INSTALL/bin/relay-ssr-bake"
   if [[ -f "$src/relay-ipfs-pin-catalog" ]]; then
     _copy_bin_if_needed "$src/relay-ipfs-pin-catalog" "$INSTALL/bin/relay-ipfs-pin-catalog"
   elif [[ -f "$SCRIPT_DIR/relay-ipfs-pin-catalog" ]]; then
@@ -934,10 +946,37 @@ upsert_ipfs_relay_env() {
   lock_relay_env_permissions
 }
 
-# Default on for install/update/repair unless RELAY_INSTALL_IPFS=0.
+# Stop/disable Kubo if a prior install left it running. Default is off until mesh
+# expansion needs seed pins again (RELAY_INSTALL_IPFS=1).
+disable_ipfs_kubo_runtime() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop relay-ipfs-pin-catalog.timer relay-ipfs-pin-catalog.service relay-ipfs.service 2>/dev/null || true
+    systemctl disable relay-ipfs-pin-catalog.timer relay-ipfs.service 2>/dev/null || true
+  fi
+  if [[ -f "$FEATURES_JSON" ]] && command -v jq >/dev/null 2>&1; then
+    local tmp
+    tmp="$(mktemp)"
+    jq '.features.ipfs_kubo.enabled = false | .features.ipfs_kubo.expected = false' \
+      "$FEATURES_JSON" >"$tmp" && mv "$tmp" "$FEATURES_JSON"
+    chown relay:relay "$FEATURES_JSON" 2>/dev/null || true
+  fi
+  local f="$INSTALL/relay.env"
+  if [[ -d "$INSTALL" ]]; then
+    touch "$f" 2>/dev/null || true
+    upsert_relay_env_var "$f" RELAY_INSTALL_IPFS "0"
+    lock_relay_env_permissions 2>/dev/null || true
+  fi
+}
+
+# Default off for install/update/repair. Set RELAY_INSTALL_IPFS=1 to install Kubo.
 ensure_ipfs_kubo() {
-  case "${RELAY_INSTALL_IPFS:-1}" in
-    0|false|FALSE|no|NO) log "Skipping Kubo (RELAY_INSTALL_IPFS=0)"; return 0 ;;
+  case "${RELAY_INSTALL_IPFS:-0}" in
+    1|true|TRUE|yes|YES) ;;
+    *)
+      log "Skipping Kubo (RELAY_INSTALL_IPFS=0; set to 1 when expanding IPFS seed)"
+      disable_ipfs_kubo_runtime
+      return 0
+      ;;
   esac
   install_kubo_binary
   configure_kubo_repo
@@ -973,8 +1012,8 @@ write_systemd_core() {
   cat >/etc/systemd/system/relay-gateway.service <<EOF
 [Unit]
 Description=Relay HTTP gateway
-After=network.target relay-git-daemon.service relay-git-proxy.service relay-ipfs.service
-Wants=relay-git-daemon.service relay-git-proxy.service relay-ipfs.service
+After=network.target relay-git-daemon.service relay-git-proxy.service
+Wants=relay-git-daemon.service relay-git-proxy.service
 
 [Service]
 Type=simple
@@ -987,7 +1026,7 @@ Environment=RELAY_STATIC_DIR=$INSTALL/www
 Environment=RELAY_HTTP_PORT=$HTTP_PORT
 Environment=RELAY_BIND=0.0.0.0:$HTTP_PORT
 Environment=RELAY_FEATURES_STATE_PATH=$FEATURES_JSON
-Environment=RUST_LOG=info
+Environment=RUST_LOG=warn
 EnvironmentFile=-$INSTALL/relay.env
 # Soft/hard memory caps scale with the VM (Spot medium ~4Gi vs large ~16Gi).
 # 80% was too high: SSR wedges at ~10Gi RSS on Large (Recv-Q 129) before MemoryMax.
@@ -1040,7 +1079,7 @@ WorkingDirectory=$INSTALL
 Environment=RELAY_REPO_PATH=$INSTALL/data
 Environment=RELAY_GIT_DAEMON_PORT=$GIT_BACKEND_PORT
 Environment=RELAY_GIT_BACKEND=127.0.0.1:$GIT_BACKEND_PORT
-Environment=RUST_LOG=info
+Environment=RUST_LOG=warn
 EnvironmentFile=-$INSTALL/relay.env
 ExecStart=$INSTALL/bin/relay-git-proxy
 Restart=always
@@ -1563,7 +1602,7 @@ append_relay_env_catalog_defaults() {
 }
 
 # Commit-pinned embed/WASM CDN (`docs/RELAY_WEB_ASSETS.md`). Write-if-missing so
-# reclaimed nodes get the same catalog as iad1/hkg1 without clobbering overrides.
+# reclaimed nodes get the same catalog as pub1/mesh peers without clobbering overrides.
 append_relay_env_web_assets_defaults() {
   local f="$INSTALL/relay.env"
   touch "$f"
@@ -1924,9 +1963,8 @@ maybe_ufw() {
   local mail_u
   mail_u="$(jq -r '.features.inbound_mail.enabled // false' "$FEATURES_JSON" 2>/dev/null || echo false)"
   [[ "$mail_u" == "true" ]] && ufw allow 25/tcp 2>/dev/null || true
-  case "${RELAY_INSTALL_IPFS:-1}" in
-    0|false|FALSE|no|NO) ;;
-    *)
+  case "${RELAY_INSTALL_IPFS:-0}" in
+    1|true|TRUE|yes|YES)
       ufw allow "${IPFS_SWARM_PORT}/tcp" 2>/dev/null || true
       ufw allow "${IPFS_SWARM_PORT}/udp" 2>/dev/null || true
       ;;
@@ -1958,8 +1996,8 @@ case "${1:-install}" in
     echo "  Deploy SSH policy (optional): RELAY_VALIDATE_DEPLOY_SSH_KEY=1, RELAY_DEPLOY_SSH_USER (default ari), RELAY_DEPLOY_SSH_KEY_FINGERPRINT (substring from ssh-keygen -lf -E sha256) — docs/SECRETS_POLICY.md"
     echo "  Startup catalog sync (optional): RELAY_STARTUP_CATALOG_SYNC=0 to skip ExecStartPre (default 1 when RELAY_MASTER_CATALOG_PATH has relay-catalog.json + scripts/sync-relay-catalog.sh); Slack: RELAY_NOTIFY_SLACK_WEBHOOK_URL"
     echo "  Reconcile (optional): RELAY_RECONCILE_ENABLED=1, RELAY_RECONCILE_ENABLE_TIMER=1 (systemd timer); deploy/relay-gateway.json in relay-master — docs/RELAY_RECONCILE_PLAN.md"
-    echo "  Kubo/IPFS (default on): RELAY_INSTALL_IPFS=0 to skip; RELAY_KUBO_VERSION (default v0.32.1). API 127.0.0.1:5001, gateway 127.0.0.1:8081, swarm 4001/tcp+udp. Status: GET /api/status on the node FQDN."
-    echo "  update    — refresh relay-gateway binaries and systemd unit from this directory; rescan feature inventory; install Kubo if missing"
+    echo "  Kubo/IPFS (default off): RELAY_INSTALL_IPFS=1 to install; RELAY_KUBO_VERSION (default v0.32.1). API 127.0.0.1:5001, gateway 127.0.0.1:8081, swarm 4001/tcp+udp. Status: GET /api/status on the node FQDN."
+    echo "  update    — refresh relay-gateway binaries and systemd unit from this directory; rescan feature inventory (Kubo only if RELAY_INSTALL_IPFS=1)"
     echo "  repair    — fix perms, reinstall features from state/features.json (bootstraps minimal state if missing)"
     echo "  reconfigure-features — change Piper/npm/translation/LibreTranslate/inbound-mail (only supported way to add/remove optional features)"
     echo "  refresh-features — rescan Piper models + Argos packs into features.json (after adding voices or translation packages)"

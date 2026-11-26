@@ -1,9 +1,0 @@
-# Copy to iad1.tfvars (gitignored) for spot-iad1 deploys.
-
-relay_node         = "iad1"
-region             = "us-east-iad-1"
-cloudspace_name    = "relay-network-iad"
-server_class       = "gp.vs1.medium-iad"
-bid_price          = 0.01
-vm_pool_name       = ""
-public_ip_override = ""

@@ -12,7 +12,7 @@ Short **repo prefixes** avoid collisions; sites may join any channel.
 | `ct` | clevertree-site | `#ct` | `#ct-page-*` | — | `#logs-ct` |
 | `pt` | paradigm-threat-files | `#pt` | `#pt-page-*` | `#pt-doc-*` | `#logs-pt` |
 
-**Fleet-wide (not per-repo):** `#relay`, `#relay-stats`, `#logs` (node journal aggregate).
+**Fleet-wide (not per-repo):** `#relay` (mesh tip / agent notices), `#relay-stats` (light usage heartbeats), `#logs` (**warn/error journal only** — not INFO dumps). Durable Ergo history is chat channels (`#flashback`, `#movie-*`, `#pt-*`, …); ops channels are ephemeral relative to chat. Web traffic/debug stats live on `/api/status` `http` + `/api/rum`, not IRC.
 
 Placeholder attrs:
 
