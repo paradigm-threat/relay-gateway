@@ -233,7 +233,11 @@ pub fn try_compose_ssr_cache(
     let body_path = body_rel_under_prefix(prefix, request_path);
     match read_cache_utf8(state, &cache_repo, &branch, &body_path) {
         Some(body) => {
-            let html = compose_html(&shell, &body);
+            // Normalize park-native host scripts on every hit so baked shells do not
+            // keep retired hosts (LobbyAudio / Affirmation) after gateway upgrades.
+            let html = crate::git::embed_html::inject_park_native_host_scripts(
+                &compose_html(&shell, &body),
+            );
             Some(html_response(
                 StatusCode::OK,
                 html,
