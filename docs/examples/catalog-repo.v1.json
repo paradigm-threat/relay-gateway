@@ -5,7 +5,7 @@
   "forge_url": "https://gitlab.com/example/paradigm-threat-files.git",
   "relay_root_commit": "0000000000000000000000000000000000000000",
   "publish_branch": "main",
-  "publish_origin": "iad1.relaygateway.net",
+  "publish_origin": "pub1.relaygateway.net",
   "signing_keys_source": "repo",
   "domains": [
     "paradigmthreat.net",
