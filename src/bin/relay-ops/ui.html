@@ -43,6 +43,10 @@
   .nav-badge { display:inline-block; min-width:1.25em; margin-left:6px; padding:0 6px; border-radius:999px; background:#6b3a12; color:var(--warn); font-size:11px; font-weight:650; }
   .nav-badge.empty { display:none; }
   .filter-chip.on { border-color:var(--accent); background:#1b3a55; }
+  .autosync { margin-top:8px; padding:8px 10px; border-radius:8px; border:1px solid #6b3a12; background:#2a1c0e; display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .autosync.stopped { border-color:#a44; background:#2a1518; }
+  .autosync .countdown { font-variant-numeric: tabular-nums; font-weight:650; color:var(--warn); }
+  #autoSyncLog { max-height:140px; }
 </style>
 </head>
 <body>
@@ -66,6 +70,10 @@
   <div id="panelFleet" class="panel on">
     <div id="banner" class="card muted">Loading…</div>
     <div id="nodes"></div>
+    <div class="card">
+      <div class="muted">Auto-sync log</div>
+      <pre id="autoSyncLog">—</pre>
+    </div>
     <div class="card">
       <div class="muted">Job log</div>
       <pre id="job">—</pre>
@@ -111,6 +119,14 @@ const $ = (id) => document.getElementById(id);
 let snap = null;
 let activePanel = 'fleet';
 
+/** Auto-sync: 30s countdown → sync job; cancelable; max 3 fails then stop (anti-loop). */
+const AUTO_SYNC_SECS = 30;
+const AUTO_SYNC_MAX_FAILS = 3;
+/** @type {Record<string, {deadline:number|null, fails:number, givenUp:boolean, cancelled:boolean, inFlight:boolean, lastJobId:number|null, awaitingResult:boolean, pendingProbe:boolean, deferProbeEval:boolean}>} */
+const autoSyncState = Object.create(null);
+const autoSyncLogLines = [];
+let autoSyncProbing = false;
+
 async function api(path, opts) {
   const r = await fetch(path, opts);
   const t = await r.text();
@@ -147,6 +163,267 @@ function setInboxBadge(n) {
   el.title = count ? (count + ' unread') : '';
 }
 
+function autoSyncLog(msg) {
+  const ts = new Date().toISOString().slice(11, 19);
+  autoSyncLogLines.unshift(`[${ts}] ${msg}`);
+  if (autoSyncLogLines.length > 40) autoSyncLogLines.length = 40;
+  const el = $('autoSyncLog');
+  if (el) el.textContent = autoSyncLogLines.join('\n') || '—';
+}
+
+function autoSyncEnsure(fqdn) {
+  if (!autoSyncState[fqdn]) {
+    autoSyncState[fqdn] = {
+      deadline: null,
+      fails: 0,
+      givenUp: false,
+      cancelled: false,
+      inFlight: false,
+      lastJobId: null,
+      awaitingResult: false,
+      pendingProbe: false,
+      deferProbeEval: false,
+    };
+  }
+  return autoSyncState[fqdn];
+}
+
+function publisherPeer(forFqdn) {
+  const pub = (snap?.nodes || []).find(x => (x.role || '').toLowerCase() === 'publisher');
+  if (pub && pub.fqdn !== forFqdn) return pub.fqdn;
+  return null;
+}
+
+function jobListFromSnap() {
+  return (snap?.jobs && snap.jobs.length) ? snap.jobs : (snap?.job ? [snap.job] : []);
+}
+
+function runningFor(fqdn) {
+  return jobListFromSnap().some(j => j.running && j.target === fqdn);
+}
+
+function autoSyncSecsLeft(st) {
+  if (!st.deadline) return null;
+  return Math.max(0, Math.ceil((st.deadline - Date.now()) / 1000));
+}
+
+function autoSyncBannerHtml(fqdn) {
+  const st = autoSyncEnsure(fqdn);
+  const idBase = 'as_' + fqdn.replace(/[^a-z0-9]/gi, '_');
+  if (st.givenUp) {
+    return `<div class="autosync stopped" id="${idBase}">
+      <span class="err">Auto-sync stopped after ${AUTO_SYNC_MAX_FAILS} failed attempts</span>
+      <button type="button" data-as="reset" data-fqdn="${esc(fqdn)}">Reset auto-sync</button>
+      <button type="button" data-as="now" data-fqdn="${esc(fqdn)}">Sync now</button>
+    </div>`;
+  }
+  if (st.cancelled) {
+    return `<div class="autosync" id="${idBase}">
+      <span class="muted">Auto-sync cancelled</span>
+      <button type="button" data-as="resume" data-fqdn="${esc(fqdn)}">Resume (30s)</button>
+      <button type="button" data-as="now" data-fqdn="${esc(fqdn)}">Sync now</button>
+    </div>`;
+  }
+  if (st.inFlight || st.awaitingResult) {
+    return `<div class="autosync" id="${idBase}">
+      <span class="countdown">Synchronizing…</span>
+      <span class="muted">attempt ${st.fails + 1}/${AUTO_SYNC_MAX_FAILS}</span>
+    </div>`;
+  }
+  const left = autoSyncSecsLeft(st);
+  if (left !== null) {
+    return `<div class="autosync" id="${idBase}">
+      <span class="countdown">Synchronizing in ${left}s</span>
+      <button type="button" data-as="cancel" data-fqdn="${esc(fqdn)}">Cancel</button>
+      <button type="button" data-as="now" data-fqdn="${esc(fqdn)}">Sync now</button>
+      <span class="muted">fails ${st.fails}/${AUTO_SYNC_MAX_FAILS}</span>
+    </div>`;
+  }
+  return '';
+}
+
+function bindAutoSyncButtons(root) {
+  root.querySelectorAll('[data-as]').forEach(el => {
+    el.onclick = () => {
+      const fqdn = el.dataset.fqdn;
+      const act = el.dataset.as;
+      const st = autoSyncEnsure(fqdn);
+      if (act === 'cancel') {
+        st.deadline = null;
+        st.cancelled = true;
+        autoSyncLog(`${fqdn}: countdown cancelled`);
+        render();
+      } else if (act === 'resume') {
+        st.cancelled = false;
+        st.givenUp = false;
+        st.deadline = Date.now() + AUTO_SYNC_SECS * 1000;
+        autoSyncLog(`${fqdn}: countdown resumed (${AUTO_SYNC_SECS}s)`);
+        render();
+      } else if (act === 'reset') {
+        st.fails = 0;
+        st.givenUp = false;
+        st.cancelled = false;
+        st.deadline = Date.now() + AUTO_SYNC_SECS * 1000;
+        autoSyncLog(`${fqdn}: auto-sync reset; countdown ${AUTO_SYNC_SECS}s`);
+        render();
+      } else if (act === 'now') {
+        st.cancelled = false;
+        st.deadline = null;
+        void autoSyncFire(fqdn);
+      }
+    };
+  });
+}
+
+async function autoSyncFire(fqdn) {
+  const st = autoSyncEnsure(fqdn);
+  if (st.inFlight || st.givenUp) return;
+  if (runningFor(fqdn)) {
+    autoSyncLog(`${fqdn}: skip fire — job already running`);
+    return;
+  }
+  st.inFlight = true;
+  st.deadline = null;
+  st.awaitingResult = true;
+  render();
+  const peer = publisherPeer(fqdn);
+  autoSyncLog(`${fqdn}: starting sync` + (peer ? ` (peer ${peer})` : ''));
+  try {
+    const body = { kind: 'sync', fqdn };
+    if (peer) body.peer = peer;
+    const text = await api('/api/job', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    // "job N started"
+    const m = String(text).match(/job\s+(\d+)/i);
+    st.lastJobId = m ? Number(m[1]) : null;
+    autoSyncLog(`${fqdn}: job ${st.lastJobId ?? '?'} accepted`);
+  } catch (e) {
+    st.inFlight = false;
+    st.awaitingResult = false;
+    st.fails += 1;
+    autoSyncLog(`${fqdn}: sync start FAILED (${e.message || e}) [${st.fails}/${AUTO_SYNC_MAX_FAILS}]`);
+    if (st.fails >= AUTO_SYNC_MAX_FAILS) {
+      st.givenUp = true;
+      autoSyncLog(`${fqdn}: giving up after ${st.fails} failures`);
+    } else {
+      st.deadline = Date.now() + AUTO_SYNC_SECS * 1000;
+      autoSyncLog(`${fqdn}: retry countdown ${AUTO_SYNC_SECS}s`);
+    }
+  }
+  await load();
+}
+
+/** After snapshot: clear healthy nodes; start countdowns; observe finished jobs. */
+function autoSyncReconcile() {
+  if (!snap) return;
+  const admin = !!(snap.inventory || {}).admin_ready;
+  const jobs = jobListFromSnap();
+
+  for (const n of snap.nodes || []) {
+    const st = autoSyncEnsure(n.fqdn);
+    const va = n.visible_actions || {};
+
+    // Observe job completion for an in-flight auto-sync.
+    if (st.awaitingResult && st.lastJobId != null) {
+      const j = jobs.find(x => x.id === st.lastJobId);
+      if (j && !j.running) {
+        st.inFlight = false;
+        st.awaitingResult = false;
+        if (j.ok === false) {
+          st.fails += 1;
+          autoSyncLog(`${n.fqdn}: job #${j.id} FAILED [${st.fails}/${AUTO_SYNC_MAX_FAILS}]`);
+          if (st.fails >= AUTO_SYNC_MAX_FAILS) {
+            st.givenUp = true;
+            st.deadline = null;
+            autoSyncLog(`${n.fqdn}: giving up after ${st.fails} failures`);
+          } else if (!st.cancelled) {
+            st.deadline = Date.now() + AUTO_SYNC_SECS * 1000;
+            autoSyncLog(`${n.fqdn}: retry countdown ${AUTO_SYNC_SECS}s`);
+          }
+        } else if (j.ok === true) {
+          st.pendingProbe = true;
+          st.deferProbeEval = true; // evaluate after next refresh load, not this pass
+          autoSyncLog(`${n.fqdn}: job #${j.id} OK — refreshing tip probe`);
+        }
+      }
+    } else if (st.awaitingResult && st.inFlight && !runningFor(n.fqdn)) {
+      // Job id unknown but no longer running — re-probe path.
+      st.inFlight = false;
+      st.awaitingResult = false;
+      st.pendingProbe = true;
+      st.deferProbeEval = true;
+    }
+
+    if (n.healthy && n.sync_ok) {
+      if (st.fails || st.givenUp) autoSyncLog(`${n.fqdn}: back in sync — clearing auto-sync state`);
+      st.fails = 0;
+      st.givenUp = false;
+      st.cancelled = false;
+      st.deadline = null;
+      st.inFlight = false;
+      st.awaitingResult = false;
+      st.pendingProbe = false;
+      st.deferProbeEval = false;
+      st.lastJobId = null;
+      continue;
+    }
+
+    // After a successful job + tip refresh, still drifting → failed attempt (anti-loop).
+    if (st.pendingProbe && !st.deferProbeEval && !st.inFlight && !st.awaitingResult
+        && n.healthy && !n.sync_ok && va.sync && !st.givenUp && !st.cancelled) {
+      st.pendingProbe = false;
+      st.lastJobId = null;
+      st.fails += 1;
+      autoSyncLog(`${n.fqdn}: still out of sync after sync job [${st.fails}/${AUTO_SYNC_MAX_FAILS}]`);
+      if (st.fails >= AUTO_SYNC_MAX_FAILS) {
+        st.givenUp = true;
+        st.deadline = null;
+        autoSyncLog(`${n.fqdn}: giving up after ${st.fails} failures`);
+      } else {
+        st.deadline = Date.now() + AUTO_SYNC_SECS * 1000;
+        autoSyncLog(`${n.fqdn}: retry countdown ${AUTO_SYNC_SECS}s`);
+      }
+    }
+
+    const needs = admin && n.healthy && !n.sync_ok && va.sync
+      && !st.givenUp && !st.cancelled && !st.inFlight && !st.awaitingResult && !st.pendingProbe
+      && !runningFor(n.fqdn);
+    if (needs && st.deadline == null) {
+      st.deadline = Date.now() + AUTO_SYNC_SECS * 1000;
+      autoSyncLog(`${n.fqdn}: out of sync — synchronizing in ${AUTO_SYNC_SECS}s (cancel to stop)`);
+    }
+  }
+}
+
+function autoSyncTick() {
+  let fired = false;
+  let needRender = false;
+  for (const [fqdn, st] of Object.entries(autoSyncState)) {
+    if (st.deadline == null || st.cancelled || st.givenUp || st.inFlight) continue;
+    const left = autoSyncSecsLeft(st);
+    needRender = true;
+    if (left === 0) {
+      st.deadline = null;
+      fired = true;
+      void autoSyncFire(fqdn);
+    }
+  }
+  if (needRender && !fired && activePanel === 'fleet') {
+    // Update countdown labels without full card rebuild when possible.
+    for (const [fqdn, st] of Object.entries(autoSyncState)) {
+      const left = autoSyncSecsLeft(st);
+      if (left === null) continue;
+      const idBase = 'as_' + fqdn.replace(/[^a-z0-9]/gi, '_');
+      const el = document.getElementById(idBase);
+      const cd = el && el.querySelector('.countdown');
+      if (cd) cd.textContent = `Synchronizing in ${left}s`;
+    }
+  }
+}
+
 function render() {
   if (!snap) return;
   const inv = snap.inventory || {};
@@ -181,17 +458,15 @@ function render() {
     ${warns.length ? `<ul class="warn-list">${warns.map(w => `<li>${w}</li>`).join('')}</ul>` : ''}
     ${snap.last_error ? `<div class="err">${snap.last_error}</div>` : ''}`;
 
-  const jobList = (snap.jobs && snap.jobs.length) ? snap.jobs : (snap.job ? [snap.job] : []);
-  const runningFor = (fqdn) => jobList.some(j => j.running && j.target === fqdn);
+  const jobs = jobListFromSnap();
 
   $('nodes').innerHTML = (snap.nodes||[]).map(n => {
     const va = n.visible_actions || {};
     const role = n.role || '';
     const busy = runningFor(n.fqdn);
+    const peer = publisherPeer(n.fqdn);
     const acts = [];
     if (va.sync) {
-      const pub = (snap.nodes||[]).find(x => (x.role||'').toLowerCase()==='publisher');
-      const peer = (pub && pub.fqdn !== n.fqdn) ? pub.fqdn : null;
       acts.push(btn(busy ? 'Syncing…' : 'Synchronize', () => job('sync', n.fqdn, peer), busy));
     }
     if (va['index-warm']) acts.push(btn('Warm indexes', () => job('index-warm', n.fqdn), busy));
@@ -203,6 +478,7 @@ function render() {
     const idxErr = (n.index_errors||[]).join('; ');
     const peers = (n.configured_peers||[]).join(', ');
     const badPeers = (n.unreachable_peers||[]).join(', ');
+    const asHtml = (va.sync && !n.sync_ok && n.healthy) ? autoSyncBannerHtml(n.fqdn) : '';
     return `<div class="card">
       <div class="row">
         <strong>${n.fqdn}</strong>
@@ -218,14 +494,20 @@ function render() {
       ${pendingRepos ? `<div class="muted">index pending: ${pendingRepos}</div>` : ''}
       ${idxErr ? `<div class="err">index error: ${idxErr}</div>` : ''}
       ${rec ? `<div style="margin-top:6px">${rec}</div>` : ''}
+      ${asHtml}
       <div class="actions">${acts.join('') || '<span class="muted">No actions</span>'}</div>
     </div>`;
   }).join('');
 
-  if (!jobList.length) {
+  bindAutoSyncButtons($('nodes'));
+
+  const logEl = $('autoSyncLog');
+  if (logEl) logEl.textContent = autoSyncLogLines.join('\n') || '—';
+
+  if (!jobs.length) {
     $('job').textContent = '—';
   } else {
-    $('job').textContent = jobList.map(j => {
+    $('job').textContent = jobs.map(j => {
       const st = j.running ? 'RUNNING' : (j.ok ? 'OK' : 'FAIL');
       const body = (j.log || '').trim();
       return `#${j.id} ${j.kind} ${j.target} ${st}${body ? '\n' + body : ''}`;
@@ -245,8 +527,25 @@ function btn(label, fn, disabled) {
 }
 
 async function load() {
+  // If any auto-sync is waiting on a fresh tip probe, refresh first (once),
+  // then arm probe evaluation for this reconcile pass.
+  const wantsProbe = Object.values(autoSyncState).some(s => s.pendingProbe && s.deferProbeEval);
+  if (wantsProbe && !autoSyncProbing) {
+    autoSyncProbing = true;
+    try { await api('/api/refresh', { method: 'POST' }); }
+    catch (_) { /* snapshot may still be stale; failure counted below */ }
+    for (const s of Object.values(autoSyncState)) {
+      if (s.pendingProbe) s.deferProbeEval = false;
+    }
+    autoSyncProbing = false;
+  }
   snap = await api('/api/snapshot');
+  autoSyncReconcile();
   render();
+  // Job just finished OK → schedule an immediate follow-up load for tip probe.
+  if (Object.values(autoSyncState).some(s => s.pendingProbe && s.deferProbeEval)) {
+    setTimeout(() => { void load(); }, 1500);
+  }
 }
 
 async function job(kind, fqdn, peer) {
@@ -470,6 +769,7 @@ load();
 mailBadgeOnly();
 setInterval(load, 8000);
 setInterval(mailBadgeOnly, 60000);
+setInterval(autoSyncTick, 1000);
 </script>
 </body>
 </html>
