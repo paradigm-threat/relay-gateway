@@ -100,15 +100,19 @@ function render() {
     ${warns.length ? `<ul class="warn-list">${warns.map(w => `<li>${w}</li>`).join('')}</ul>` : ''}
     ${snap.last_error ? `<div class="err">${snap.last_error}</div>` : ''}`;
 
+  const jobList = (snap.jobs && snap.jobs.length) ? snap.jobs : (snap.job ? [snap.job] : []);
+  const runningFor = (fqdn) => jobList.some(j => j.running && j.target === fqdn);
+
   $('nodes').innerHTML = (snap.nodes||[]).map(n => {
     const va = n.visible_actions || {};
     const role = n.role || '';
+    const busy = runningFor(n.fqdn);
     const acts = [];
-    if (va.sync) acts.push(btn('Synchronize', () => job('sync', n.fqdn)));
-    if (va['index-warm']) acts.push(btn('Warm indexes', () => job('index-warm', n.fqdn)));
-    if (va['point-dns'] && n.dns?.[0]) acts.push(btn('Point DNS', () => pointDns(n.fqdn, n.dns[0])));
-    if (va.repair) acts.push(btn('Repair/update', () => job('update', n.fqdn)));
-    if (va['fix-repo-ownership']) acts.push(btn('Fix ownership', () => job('fix-repo-ownership', n.fqdn)));
+    if (va.sync) acts.push(btn(busy ? 'Syncing…' : 'Synchronize', () => job('sync', n.fqdn), busy));
+    if (va['index-warm']) acts.push(btn('Warm indexes', () => job('index-warm', n.fqdn), busy));
+    if (va['point-dns'] && n.dns?.[0]) acts.push(btn('Point DNS', () => pointDns(n.fqdn, n.dns[0]), busy));
+    if (va.repair) acts.push(btn('Repair/update', () => job('update', n.fqdn), busy));
+    if (va['fix-repo-ownership']) acts.push(btn('Fix ownership', () => job('fix-repo-ownership', n.fqdn), busy));
     const rec = n.recommendation?.message || '';
     const pendingRepos = (n.index_pending_repos||[]).join(', ');
     const idxErr = (n.index_errors||[]).join('; ');
@@ -122,6 +126,7 @@ function render() {
         ${pill(n.sync_ok, n.sync_ok?'sync':'out of sync')}
         ${pill(n.index_ok, n.index_ok?'index':'index stale')}
         ${pendingRepos ? pill(false, 'warming', 'warn') : ''}
+        ${busy ? pill(false, 'job running', 'warn') : ''}
       </div>
       <div class="muted">DNS ${(n.dns||[]).join(', ')||'—'} · 443 ${n.tcp443?'open':'closed'} · git ${n.tcp_git?'open':'closed'}</div>
       ${peers ? `<div class="muted">peers ${peers}${badPeers ? ` · unreachable ${badPeers}` : ''}</div>` : ''}
@@ -132,14 +137,26 @@ function render() {
     </div>`;
   }).join('');
 
-  const j = snap.job;
-  $('job').textContent = j ? `#${j.id} ${j.kind} ${j.target} ${j.running?'RUNNING':(j.ok?'OK':'FAIL')}\n${j.log||''}` : '—';
+  if (!jobList.length) {
+    $('job').textContent = '—';
+  } else {
+    $('job').textContent = jobList.map(j => {
+      const st = j.running ? 'RUNNING' : (j.ok ? 'OK' : 'FAIL');
+      const body = (j.log || '').trim();
+      return `#${j.id} ${j.kind} ${j.target} ${st}${body ? '\n' + body : ''}`;
+    }).join('\n\n');
+  }
 }
 
-function btn(label, fn) {
+function btn(label, fn, disabled) {
   const id = 'b'+Math.random().toString(36).slice(2);
-  queueMicrotask(() => { const el=$(id); if (el) el.onclick = fn; });
-  return `<button id="${id}">${label}</button>`;
+  queueMicrotask(() => {
+    const el = $(id);
+    if (!el) return;
+    if (disabled) { el.disabled = true; return; }
+    el.onclick = fn;
+  });
+  return `<button id="${id}"${disabled ? ' disabled' : ''}>${label}</button>`;
 }
 
 async function load() {

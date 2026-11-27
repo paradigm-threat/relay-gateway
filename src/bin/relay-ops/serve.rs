@@ -44,7 +44,11 @@ struct Snapshot {
     ingress: Option<IngressProbe>,
     live_peers: Vec<String>,
     catalog_repos: Vec<String>,
+    /// Most recent job (compat). Prefer `jobs` when present.
     job: Option<crate::jobs::JobState>,
+    /// All recent jobs, newest first — per-target sync can run concurrently.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    jobs: Vec<crate::jobs::JobState>,
     last_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     credit: Option<crate::credit::CreditSnapshot>,
@@ -357,6 +361,7 @@ async fn snapshot(State(app): State<App>) -> Json<Snapshot> {
         live_peers: g.live_peers.clone(),
         catalog_repos: crate::probe::expected_catalog_repos(&g.nodes, &g.fleet.git_repos),
         job: app.jobs.snapshot().await,
+        jobs: app.jobs.snapshot_all().await,
         last_error: g.last_error.clone(),
         credit,
         warnings,
