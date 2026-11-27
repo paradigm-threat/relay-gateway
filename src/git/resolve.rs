@@ -247,6 +247,12 @@ fn embed_query_flag(q: &HashMap<String, String>) -> bool {
         .unwrap_or(false)
 }
 
+/// When to compose `ssrCache` / park HTML shell.
+/// Browsers send `Accept: text/html`; Markdown clients (`*/*`, `text/markdown`) must get blobs.
+fn wants_ssr_html_shell(headers: &HeaderMap, q: &HashMap<String, String>) -> bool {
+    accept_prefers_html(headers) || embed_query_flag(q)
+}
+
 /// Media type for explicit git tree listings (`X-Relay-Tree: 1`).
 pub const RELAY_TREE_MEDIA_TYPE: &str = "application/vnd.relay.tree+json";
 
@@ -592,10 +598,63 @@ fn response_content_type_is_html(resp: &axum::response::Response) -> bool {
         .unwrap_or(false)
 }
 
+/// Serve tip root markdown (`page.md` / `index.md` / `README.md`) as a blob response.
+fn try_root_markdown_blob_response(
+    state: &AppState,
+    branch: &str,
+    repo_name: &str,
+) -> Option<axum::response::Response> {
+    let repo = open_repo_for_state(state, repo_name)?;
+    let refname = format!("refs/heads/{branch}");
+    let reference = repo.find_reference(&refname).ok()?;
+    let commit = reference.peel_to_commit().ok()?;
+    let tree = commit.tree().ok()?;
+    for candidate in ["page.md", "index.md", "README.md", "readme.md"] {
+        let Ok(entry) = tree.get_path(std::path::Path::new(candidate)) else {
+            continue;
+        };
+        if entry.kind() != Some(ObjectType::Blob) {
+            continue;
+        }
+        let Ok(blob) = repo.find_blob(entry.id()) else {
+            continue;
+        };
+        let bytes = blob.content().to_vec();
+        return Some(
+            (
+                StatusCode::OK,
+                [
+                    ("Content-Type", "text/markdown; charset=utf-8".to_string()),
+                    (HEADER_BRANCH, branch.to_string()),
+                    (HEADER_REPO, repo_name.to_string()),
+                    ("Vary", "Accept".to_string()),
+                ],
+                bytes,
+            )
+                .into_response(),
+        );
+    }
+    Some(
+        (
+            StatusCode::NOT_FOUND,
+            [
+                ("Content-Type", "text/plain; charset=utf-8".to_string()),
+                (HEADER_BRANCH, branch.to_string()),
+                (HEADER_REPO, repo_name.to_string()),
+                ("Vary", "Accept".to_string()),
+            ],
+            "Not Found\n".to_string(),
+        )
+            .into_response(),
+    )
+}
+
 /// Repo-host `/`: prefer pre-rendered `ssrCache` fragments; otherwise live `server.hooks.get`
 /// (legacy). When `ssrCache.enabled`, never call live SSR — compose or CSR miss only.
 /// Without SSR / without a get hook that returns HTML, still serve the **standard shell**
 /// so the catalog client hook can CSR-mount (no live full-app SSR on Nanodes).
+///
+/// Non-HTML Accept (Markdown clients): serve root `.md` blob, never the SSR document.
 pub fn try_site_shell_for_root(
     state: &AppState,
     headers: &HeaderMap,
@@ -603,7 +662,11 @@ pub fn try_site_shell_for_root(
     repo_name: &str,
     query: Option<&HashMap<String, String>>,
 ) -> Option<axum::response::Response> {
+    let qmap: HashMap<String, String> = query.cloned().unwrap_or_default();
     if crate::git::ssr_static_cache::catalog_ssr_cache_enabled(repo_name) {
+        if !wants_ssr_html_shell(headers, &qmap) {
+            return try_root_markdown_blob_response(state, branch, repo_name);
+        }
         return Some(
             crate::git::ssr_static_cache::try_compose_ssr_cache(
                 state, repo_name, "/", headers,
@@ -618,7 +681,6 @@ pub fn try_site_shell_for_root(
     let reference = repo.find_reference(&refname).ok()?;
     let commit = reference.peel_to_commit().ok()?;
     let commit_id = commit.id().to_string();
-    let qmap: HashMap<String, String> = query.cloned().unwrap_or_default();
     let has_get_hook = read_relay_config(&repo, &commit_id)
         .and_then(|cfg| index_policy::clever_get_hook_path(&cfg))
         .is_some();
@@ -695,14 +757,11 @@ pub fn git_resolve_and_respond(
         return GitResolveResult::NotFound(rel.to_string());
     }
 
-    // Pre-rendered SSR cache: compose shell+body for HTML park traffic; never live SSR.
+    // Pre-rendered SSR cache: compose shell+body only for HTML intent; never live SSR.
+    // Do not force HTML for `.md` / extensionless paths — Markdown clients need raw blobs.
     if crate::git::ssr_static_cache::catalog_ssr_cache_enabled(repo_name) {
         let qmap_early: HashMap<String, String> = query.cloned().unwrap_or_default();
-        let wants_html_shell = accept_prefers_html(headers)
-            || embed_query_flag(&qmap_early)
-            || crate::git::clever_script_host::extensionless_markdown_rel(rel).is_some()
-            || rel.ends_with(".md");
-        if wants_html_shell && !is_asset_like_path(rel) {
+        if wants_ssr_html_shell(headers, &qmap_early) && !is_asset_like_path(rel) {
             if let Some(resp) = crate::git::ssr_static_cache::try_compose_ssr_cache(
                 state, repo_name, rel, headers,
             ) {
@@ -1889,6 +1948,202 @@ client:
         )
         .unwrap();
         assert!(text.starts_with("# Hello"));
+    }
+
+    #[test]
+    fn wants_ssr_html_shell_only_html_or_embed() {
+        let mut html = HeaderMap::new();
+        html.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
+        let empty = HeaderMap::new();
+        let mut md = HeaderMap::new();
+        md.insert(header::ACCEPT, HeaderValue::from_static("text/markdown"));
+        let mut star = HeaderMap::new();
+        star.insert(header::ACCEPT, HeaderValue::from_static("*/*"));
+        let q_empty = HashMap::new();
+        let mut q_embed = HashMap::new();
+        q_embed.insert("embed".into(), "1".into());
+        assert!(wants_ssr_html_shell(&html, &q_empty));
+        assert!(wants_ssr_html_shell(&empty, &q_embed));
+        assert!(!wants_ssr_html_shell(&empty, &q_empty));
+        assert!(!wants_ssr_html_shell(&md, &q_empty));
+        assert!(!wants_ssr_html_shell(&star, &q_empty));
+    }
+
+    /// Catalog `ssrCache` must not force HTML for `.md` when Accept is not HTML.
+    #[tokio::test]
+    #[serial]
+    async fn ssr_cache_md_respects_accept_negotiation() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        // Content repo with page.md + article.md
+        let content = root.join("park.git");
+        {
+            let repo = Repository::init_bare(&content).unwrap();
+            let sig = Signature::now("t", "t@t").unwrap();
+            let mut tb = repo.treebuilder(None).unwrap();
+            let page = repo.blob(b"# Home page\n").unwrap();
+            let article = repo.blob(b"# Article body\n").unwrap();
+            tb.insert("page.md", page, 0o100644).unwrap();
+            tb.insert("article.md", article, 0o100644).unwrap();
+            let tree_id = tb.write().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
+        }
+        // Cache bare with shell + bodies
+        let cache = root.join("relay-ssr-cache.git");
+        {
+            let repo = Repository::init_bare(&cache).unwrap();
+            let sig = Signature::now("t", "t@t").unwrap();
+            let shell = repo
+                .blob(b"<!DOCTYPE html><html><body><!--RELAY_SSR_BODY--></body></html>\n")
+                .unwrap();
+            let index_body = repo.blob(b"<main>home-ssr</main>\n").unwrap();
+            let article_body = repo.blob(b"<main>article-ssr</main>\n").unwrap();
+            let mut tb = repo.treebuilder(None).unwrap();
+            let mut sites = repo.treebuilder(None).unwrap();
+            let mut site = repo.treebuilder(None).unwrap();
+            site.insert("_shell.html", shell, 0o100644).unwrap();
+            site.insert("index.body.html", index_body, 0o100644).unwrap();
+            site.insert("article.body.html", article_body, 0o100644)
+                .unwrap();
+            let site_id = site.write().unwrap();
+            sites.insert("example.com", site_id, 0o040000).unwrap();
+            let sites_id = sites.write().unwrap();
+            tb.insert("sites", sites_id, 0o040000).unwrap();
+            let tree_id = tb.write().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            repo.commit(Some("refs/heads/main"), &sig, &sig, "cache", &tree, &[])
+                .unwrap();
+        }
+        // Catalog enabling ssrCache for `park`
+        let cat = tempdir().unwrap();
+        let repos = cat.path().join("catalog/repos");
+        std::fs::create_dir_all(&repos).unwrap();
+        std::fs::write(
+            repos.join("park.json"),
+            r#"{
+              "repo": "park",
+              "tier": "hosted",
+              "relay_root_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "publish_branch": "main",
+              "ssrCache": {
+                "enabled": true,
+                "repo": "relay-ssr-cache",
+                "prefix": "sites/example.com/",
+                "shellPath": "sites/example.com/_shell.html"
+              }
+            }"#,
+        )
+        .unwrap();
+        let prev = std::env::var("RELAY_MASTER_CATALOG_PATH").ok();
+        unsafe {
+            std::env::set_var("RELAY_MASTER_CATALOG_PATH", cat.path());
+        }
+        let state = bare_fleet_state(root);
+
+        // Markdown Accept → raw blob (not SSR HTML)
+        let mut md_headers = HeaderMap::new();
+        md_headers.insert(header::ACCEPT, HeaderValue::from_static("text/markdown"));
+        let r = git_resolve_and_respond(&state, &md_headers, "main", "park", "article.md", None);
+        let GitResolveResult::Respond(resp) = r else {
+            panic!("expected Respond for markdown Accept");
+        };
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let ct = parts
+            .headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            ct.contains("markdown") || ct.contains("text/plain"),
+            "expected markdown, got {ct}"
+        );
+        let text = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(text.starts_with("# Article body"), "{text}");
+        assert!(!text.contains("<!DOCTYPE"), "{text}");
+        assert!(!text.contains("article-ssr"), "{text}");
+
+        // */* (old Next.js fetch) → raw blob
+        let mut star = HeaderMap::new();
+        star.insert(header::ACCEPT, HeaderValue::from_static("*/*"));
+        let r = git_resolve_and_respond(&state, &star, "main", "park", "article.md", None);
+        let GitResolveResult::Respond(resp) = r else {
+            panic!("expected Respond for */*");
+        };
+        let (_parts, body) = resp.into_response().into_parts();
+        let text = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(text.starts_with("# Article body"), "{text}");
+
+        // HTML Accept → SSR compose
+        let mut html_h = HeaderMap::new();
+        html_h.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
+        let r = git_resolve_and_respond(&state, &html_h, "main", "park", "article.md", None);
+        let GitResolveResult::Respond(resp) = r else {
+            panic!("expected Respond for HTML Accept");
+        };
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let ct = parts
+            .headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.contains("text/html"), "{ct}");
+        let html = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(html.contains("article-ssr"), "{html}");
+        assert!(html.contains("<!DOCTYPE") || html.contains("<html"), "{html}");
+
+        // Root `/` non-HTML → page.md blob
+        let resp = try_site_shell_for_root(&state, &md_headers, "main", "park", None)
+            .expect("root markdown");
+        let (_parts, body) = resp.into_response().into_parts();
+        let text = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(text.starts_with("# Home page"), "{text}");
+
+        // Root `/` HTML → SSR
+        let resp = try_site_shell_for_root(&state, &html_h, "main", "park", None).expect("root SSR");
+        let (_parts, body) = resp.into_response().into_parts();
+        let html = String::from_utf8(
+            axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(html.contains("home-ssr"), "{html}");
+
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("RELAY_MASTER_CATALOG_PATH", v),
+                None => std::env::remove_var("RELAY_MASTER_CATALOG_PATH"),
+            }
+        }
     }
 
     #[tokio::test]
