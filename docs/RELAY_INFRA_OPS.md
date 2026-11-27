@@ -20,8 +20,12 @@
 
 - Rackspace Spot **Kubernetes** (including `myproblem-intake`) — deleted 2026-11-26
 - Rackspace Spot **VMs** (`iad1` / `ord1` / `hkg1` / `dfw1`) and `terraform/rackspace-spot-vm/`
-- Legacy Linode names `atlanta1` / `atlanta2` / `atlanta3` / `jp-osa`
+- Legacy Linode names `atlanta1` / `atlanta2` / `atlanta3` / `jp-osa` — **jp-osa** Vercel A/AAAA removed 2026-11-27
+- Local Spot leftovers wiped 2026-11-27: `~/.spot_config`, Spot kubeconfigs / discovery cache, Cursor `rackspace-spot` MCP
+- Spot API tokens return **401** (platform wind-down; hard stop **2026-12-08 17:00 CT**)
 - Archived Spot K8s notes: [`docs/archive/rackspace-spot-k8s/`](archive/rackspace-spot-k8s/)
+
+**Note:** `iad1` / `ord1` / `hkg1` hostnames may still **resolve** via the Vercel zone catch-all `ALIAS *` → Vercel parking IPs. That is **not** Spot. Do not recreate Spot A records. Optional later: tighten the catch-all if you want those names to fail DNS.
 
 ## First-time master (Linode)
 

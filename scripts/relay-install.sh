@@ -10,7 +10,7 @@
 #   RELAY_MAIL_USER=relaymail RELAY_MAIL_HOSTNAME=mail.example.com
 #   DNS MX is a separate operator step — see docs/MAIL_INBOUND.md / docs/INSTALL_FEATURES.md
 # Vercel DNS (first step of install unless skipped):
-#   RELAY_PUBLIC_FQDN=atlanta1.relaygateway.net VERCEL_API_TOKEN=... sudo -E ./install.sh install
+#   RELAY_PUBLIC_FQDN=pub1.relaygateway.net VERCEL_API_TOKEN=... sudo -E ./install.sh install
 #   Optional: VERCEL_TEAM_ID, RELAY_VERCEL_DOMAIN (zone), RELAY_SKIP_VERCEL_DNS=1
 #
 # Master mesh peers: RELAY_MASTER_PEER_LIST defaults to DEFAULT_RELAY_MASTER_PEER_LIST (override per node).

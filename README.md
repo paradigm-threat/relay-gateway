@@ -68,7 +68,7 @@ Install-time **optional capabilities** (Piper TTS, offline Argos translation, np
 
 **`GET /api/status`** (also **HEAD**/**POST**) on the **node FQDN** (or loopback) returns this node’s version, mesh role, feature summary, **IPFS seed** (`self.ipfs`, `ipfs_ok`, per-repo CID/cache counts), a **per-repo table** (catalog vs on-disk, `publish_branch` SHA — from **local** git, not `git ls-remote`), and reachability of each **`RELAY_MASTER_PEER_LIST`** host (probes **`POST https://{host}/api/config`** by default). JSON by default; **`Accept: text/html`** or **`?format=html`** for a dashboard; **`?strict=1`** returns **503** when any **git-mesh peer** is down (IPFS-down does **not** 503). Missing catalog bares set **`repos_ok: false`** but do not affect **`strict`**. Override probe URL with **`RELAY_STATUS_PEER_URL_TEMPLATE`** (use **`{host}`**). On **parked domains** and **`{repo}.{node}`** Hosts, `/api/status` is a **site file / GET hook**, not the operator dashboard.
 
-**Examples:** `curl -sS 'https://iad1.relaygateway.net/api/status?format=html'` · JSON: **`curl -sS -X POST 'https://iad1.relaygateway.net/api/config'`**. Full table: **[`docs/DEPLOY_LINODE.md`](docs/DEPLOY_LINODE.md)** (operator URL table).
+**Examples:** `curl -sS 'https://pub1.relaygateway.net/api/status?format=html'` · JSON: **`curl -sS -X POST 'https://pub1.relaygateway.net/api/config'`**. Full table: **[`docs/DEPLOY_LINODE.md`](docs/DEPLOY_LINODE.md)** (operator URL table).
 
 ## Operations (deployed masters)
 
@@ -156,7 +156,7 @@ Operators can validate the **same** branch rules locally or in CI with **`relay-
 - `RELAY_HTTP_PORT`: HTTP port (default: 80)
 - `RELAY_HTTPS_PORT`: HTTPS port (default: 443)
 - `RELAY_BIND`: Override bind address (format: `host:port`)
-- **`RELAY_MASTER_PEER_LIST`**: Semicolon-separated peer FQDNs for **`POST /api/config`**, mesh bootstrap, and **`POST /hooks/peer`** allowlisting. **`install.sh`** defaults this to **`iad1.relaygateway.net;ord1.relaygateway.net;hkg1.relaygateway.net`** (designated **master** mesh nodes) unless you set **`RELAY_MASTER_PEER_LIST`** or **`DEFAULT_RELAY_MASTER_PEER_LIST`**. If empty after install, **`POST /hooks/peer`** allows any **`peer`** hostname once the shared secret matches.
+- **`RELAY_MASTER_PEER_LIST`**: Semicolon-separated peer FQDNs for **`POST /api/config`**, mesh bootstrap, and **`POST /hooks/peer`** allowlisting. **`install.sh`** defaults this to **`pub1.relaygateway.net;mesh1.relaygateway.net;mesh2.relaygateway.net`** unless you set **`RELAY_MASTER_PEER_LIST`** or **`DEFAULT_RELAY_MASTER_PEER_LIST`**. If empty after install, **`POST /hooks/peer`** allows any **`peer`** hostname once the shared secret matches.
 - **`RELAY_NODE_ROLE`**: Optional **`master`** or **`edge`**. If unset, **master** when **`RELAY_MASTER_PEER_LIST`** is empty (dev), else **master** when **`RELAY_PUBLIC_HOSTNAME`** is listed, otherwise **edge**.
 - **`RELAY_MASTER_MESH_SECRET`**: Same value on all **masters**; omit on **edges**. When set on a master, that node accepts **only** this secret for **`POST /hooks/mesh-event`** ingest and for **`POST /hooks/peer`** (inter-master inject). Outbound mesh POSTs to hosts in **`RELAY_MASTER_PEER_LIST`** use this header when set.
 - **`RELAY_PEER_SECRET`**: **Edge** **`POST /hooks/peer`**; also fallback mesh-event secret when **`RELAY_MESH_EVENT_SECRET`** unset. On **masters** without **`RELAY_MASTER_MESH_SECRET`**, peer hook still uses this (legacy).
@@ -303,7 +303,7 @@ docker run -p 80:80 -p 443:443 \
   relay-gateway
 ```
 
-The server will be accessible at `https://iad1.relaygateway.net` with automatic HTTP to HTTPS redirection.
+The server will be accessible at `https://pub1.relaygateway.net` (or your node FQDN) with automatic HTTP to HTTPS redirection.
 
 ## Developing and deploying a UI for repositories
 
