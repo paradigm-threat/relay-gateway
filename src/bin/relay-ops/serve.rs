@@ -555,7 +555,15 @@ async fn job(State(app): State<App>, Json(body): Json<JobReq>) -> impl IntoRespo
                 .await
         }
         "sync" => {
-            let peer = body.peer.clone();
+            // Default peer-fetch source to the fleet publisher when the UI omits `peer`.
+            // (Empty argv cannot cross OpenSSH reliably — see SYNC_REMOTE sentinel.)
+            let peer = body
+                .peer
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty() && *p != "-")
+                .map(|s| s.to_string())
+                .or_else(|| fleet_all.publisher_fqdn().map(|s| s.to_string()));
             app.jobs
                 .start_blocking("sync", &target, {
                     let cfg = cfg.clone();

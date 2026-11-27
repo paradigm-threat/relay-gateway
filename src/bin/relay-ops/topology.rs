@@ -151,6 +151,16 @@ impl FleetFile {
         }
     }
 
+    /// FQDN of the first node with `role: publisher`, if any.
+    pub fn publisher_fqdn(&self) -> Option<&str> {
+        self.nodes.iter().find_map(|n| {
+            n.role
+                .as_deref()
+                .filter(|r| r.eq_ignore_ascii_case("publisher"))
+                .map(|_| n.fqdn.as_str())
+        })
+    }
+
     pub fn filtered(&self, only: Option<&str>) -> anyhow::Result<Self> {
         let Some(only) = only.filter(|s| !s.is_empty()) else {
             return Ok(self.clone());

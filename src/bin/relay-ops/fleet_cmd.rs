@@ -338,10 +338,15 @@ pub fn drift(cfg: &OpsConfig, fleet: &FleetFile, interactive: bool) -> Result<St
 
 /// Run catalog sync + optional peer fetch on each filtered host. Fetch only; never wipe or force-push.
 /// When a peer is set, also `ensure-bare` + fetch any catalog (`authorized_repos`) slugs missing locally.
+///
+/// Peer uses sentinel `-` (not empty string): OpenSSH joins remote argv into a shell string, so an
+/// empty `$1` is dropped and `PORT` shifts into `PEER` (`git://9418:/opt/relay/data/...` hangs).
 const SYNC_REMOTE: &str = r#"set -euo pipefail
 INSTALL=/opt/relay
 SCRIPT="$INSTALL/bin/relay-startup-catalog-sync.sh"
-PEER="${1:-}"
+# Sentinel '-' means no peer (empty args cannot cross ssh argv reliably).
+PEER="${1:--}"
+[[ "$PEER" == "-" ]] && PEER=""
 PORT="${2:-9418}"
 DATA="${3:-/opt/relay/data}"
 if [[ ! -x "$SCRIPT" ]]; then
@@ -413,9 +418,14 @@ pub fn sync_node(
     for n in &fleet.nodes {
         let peer = peer
             .map(str::trim)
-            .filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case(&n.fqdn));
+            .filter(|p| !p.is_empty() && *p != "-" && !p.eq_ignore_ascii_case(&n.fqdn));
+        // Always pass a non-empty sentinel so ssh cannot drop $1 and shift PORT into PEER.
+        let peer_arg = peer.unwrap_or("-");
         log.push_str(&format!("sync begin {}\n", n.fqdn));
-        let out = ssh.run_bash_s(&n.fqdn, SYNC_REMOTE, &[peer.unwrap_or(""), &port, data])?;
+        if peer_arg != "-" {
+            log.push_str(&format!("  peer-fetch source {peer_arg}\n"));
+        }
+        let out = ssh.run_bash_s(&n.fqdn, SYNC_REMOTE, &[peer_arg, &port, data])?;
         log.push_str(&output_text(&out));
         if !out.status.success() {
             anyhow::bail!("{log}sync failed on {}", n.fqdn);

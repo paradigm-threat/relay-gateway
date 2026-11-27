@@ -108,7 +108,11 @@ function render() {
     const role = n.role || '';
     const busy = runningFor(n.fqdn);
     const acts = [];
-    if (va.sync) acts.push(btn(busy ? 'Syncing…' : 'Synchronize', () => job('sync', n.fqdn), busy));
+    if (va.sync) {
+      const pub = (snap.nodes||[]).find(x => (x.role||'').toLowerCase()==='publisher');
+      const peer = (pub && pub.fqdn !== n.fqdn) ? pub.fqdn : null;
+      acts.push(btn(busy ? 'Syncing…' : 'Synchronize', () => job('sync', n.fqdn, peer), busy));
+    }
     if (va['index-warm']) acts.push(btn('Warm indexes', () => job('index-warm', n.fqdn), busy));
     if (va['point-dns'] && n.dns?.[0]) acts.push(btn('Point DNS', () => pointDns(n.fqdn, n.dns[0]), busy));
     if (va.repair) acts.push(btn('Repair/update', () => job('update', n.fqdn), busy));
@@ -164,9 +168,11 @@ async function load() {
   render();
 }
 
-async function job(kind, fqdn) {
+async function job(kind, fqdn, peer) {
   try {
-    await api('/api/job', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ kind, fqdn }) });
+    const body = { kind, fqdn };
+    if (peer) body.peer = peer;
+    await api('/api/job', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
     await load();
   } catch (e) { alert(e.message); }
 }
