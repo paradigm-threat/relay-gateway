@@ -52,10 +52,7 @@
 <body>
 <header>
   <h1>Relay Fleet</h1>
-  <span id="mode" class="pill">…</span>
-  <span id="credit" class="pill">…</span>
-  <span id="topo" class="muted"></span>
-  <div class="row" style="margin-left:12px">
+  <div class="row">
     <button type="button" class="on" id="navFleet">Fleet</button>
     <button type="button" id="navInbox">Inbox<span id="inboxBadge" class="nav-badge empty">0</span></button>
   </div>
@@ -426,23 +423,6 @@ function autoSyncTick() {
 
 function render() {
   if (!snap) return;
-  const inv = snap.inventory || {};
-  $('mode').textContent = inv.admin_ready ? 'Admin' : 'Observer';
-  $('mode').className = 'pill ' + (inv.admin_ready ? 'ok' : '');
-  $('topo').textContent = (snap.topology_source || '') + ' · ' + (snap.gitlab_url || '');
-  const c = snap.credit;
-  if (c) {
-    const d = c.days_to_scale_down_target;
-    const label = c.scale_down_due
-      ? `Credit scale-down due · ${d.toFixed(1)}d`
-      : `${c.promo} · ${d.toFixed(1)}d to scale-down · $${c.credit_usd}`;
-    $('credit').textContent = label;
-    $('credit').className = 'pill ' + (c.scale_down_due ? 'warn' : '');
-    $('credit').title = c.notes || '';
-  } else {
-    $('credit').textContent = 'no credit calendar';
-    $('credit').className = 'pill';
-  }
   const down = (snap.nodes||[]).filter(n => !n.healthy).length;
   const syncBad = (snap.nodes||[]).filter(n => n.healthy && !n.sync_ok).length;
   const idxBad = (snap.nodes||[]).filter(n => n.healthy && !n.index_ok).length;
