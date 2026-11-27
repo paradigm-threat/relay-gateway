@@ -5,7 +5,7 @@ use base64::Engine;
 use git2::ObjectType;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::catalog_policy::{self, CatalogRepoRecord};
 use crate::git::clever_hooks::run_clever_hook;
@@ -90,7 +90,12 @@ fn try_server_get_hook(
     })) {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
-            error!(?e, "GET CleverScript hook failed");
+            let msg = format!("{e:#}");
+            if msg.contains("ssrClientHookFromGetContext disabled") {
+                debug!(%msg, "GET CleverScript hook skipped (ssrCache)");
+            } else {
+                error!(?e, "GET CleverScript hook failed");
+            }
             return Some(get_hook_execution_error_response(branch, repo_name, &e));
         }
         Err(payload) => {

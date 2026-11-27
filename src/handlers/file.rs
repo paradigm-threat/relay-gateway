@@ -287,7 +287,12 @@ async fn run_get_clever_or_404(
     }) {
         Ok(v) => v,
         Err(e) => {
-            error!(?e, "GET CleverScript hook failed");
+            let msg = format!("{e:#}");
+            if msg.contains("ssrClientHookFromGetContext disabled") {
+                tracing::debug!(%msg, "GET CleverScript hook skipped (ssrCache)");
+            } else {
+                error!(?e, "GET CleverScript hook failed");
+            }
             return git::get_hook_http::get_hook_execution_error_response(branch, repo_name, &e);
         }
     };

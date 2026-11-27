@@ -954,14 +954,19 @@ fn ssr_exports(repo_root: PathBuf, branch: String) -> CsValue {
                 .trim_start_matches('/')
         );
         // Parked repos with catalog `ssrCache.enabled` must not realtime-SSR the client hook.
-        // Serve path composes fragments from `relay-ssr-cache`; this helper is a hard refuse.
+        // Serve path composes fragments from `relay-ssr-cache`. Return null (not Err) so
+        // `get.cs` can fall through with `if (ssr !== null)` without ERROR log spam.
         let repo_for_cache = cs_obj_str(ctx, "repo").unwrap_or("");
         if !repo_for_cache.is_empty()
             && crate::git::ssr_static_cache::catalog_ssr_cache_enabled(repo_for_cache)
         {
-            return Err(format!(
-                "ssrClientHookFromGetContext disabled for repo '{repo_for_cache}' (catalog ssrCache.enabled); use pre-rendered fragments"
-            ));
+            tracing::debug!(
+                target: "relay_ssr",
+                repo = %repo_for_cache,
+                path = %request_path,
+                "ssrClientHookFromGetContext skipped (ssrCache.enabled); use pre-rendered fragments"
+            );
+            return Ok(CsValue::Null);
         }
         // Render path is the URL path only. Do not substitute `/` or another cached page.
         let render_path = crate::git::ssr_policy::normalize_request_path(&request_path);
