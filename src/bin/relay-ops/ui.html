@@ -11,10 +11,12 @@
   body { margin:0; font:14px/1.45 system-ui,sans-serif; background:var(--bg); color:var(--fg); }
   header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; padding:16px 20px; border-bottom:1px solid var(--line); }
   h1 { font-size:1.1rem; margin:0; font-weight:600; letter-spacing:.02em; }
+  h2 { font-size:0.95rem; margin:0 0 8px; font-weight:600; }
   .muted { color:var(--muted); }
   button, .btn { background:#243044; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 10px; cursor:pointer; }
   button:hover { border-color:var(--accent); }
   button:disabled { opacity:.45; cursor:default; }
+  button.on { border-color:var(--accent); background:#1b3a55; }
   main { padding:16px 20px 48px; display:grid; gap:12px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
   .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
@@ -24,9 +26,19 @@
   .pill.warn { color:var(--warn); border-color:#a80; }
   .actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
   pre { white-space:pre-wrap; background:#0b1016; border:1px solid var(--line); padding:10px; border-radius:8px; max-height:240px; overflow:auto; font-size:12px; }
+  pre.mail-body { max-height:480px; }
   .err { color:var(--bad); }
   .warn-list { margin:8px 0 0; padding-left:18px; color:var(--warn); }
   .warn-list li { margin:4px 0; }
+  .panel { display:none; }
+  .panel.on { display:grid; gap:12px; }
+  .mail-cols { display:grid; gap:12px; grid-template-columns: minmax(220px, 1fr) minmax(280px, 2fr); }
+  @media (max-width: 800px) { .mail-cols { grid-template-columns: 1fr; } }
+  .list { max-height:420px; overflow:auto; font-size:13px; }
+  .list div { padding:6px 8px; border-radius:6px; cursor:pointer; border:1px solid transparent; }
+  .list div:hover, .list div.on { background:#0b1016; border-color:var(--line); }
+  .banner { background:#3d2a12; border:1px solid #6b3a12; border-radius:8px; padding:8px 10px; margin-top:8px; color:var(--warn); }
+  code { font-size:12px; }
 </style>
 </head>
 <body>
@@ -35,6 +47,10 @@
   <span id="mode" class="pill">…</span>
   <span id="credit" class="pill">…</span>
   <span id="topo" class="muted"></span>
+  <div class="row" style="margin-left:12px">
+    <button type="button" class="on" id="navFleet">Fleet</button>
+    <button type="button" id="navInbox">Inbox</button>
+  </div>
   <div class="row" style="margin-left:auto">
     <button id="refresh">Refresh</button>
     <button id="warmAll">Warm indexes</button>
@@ -43,11 +59,43 @@
   </div>
 </header>
 <main>
-  <div id="banner" class="card muted">Loading…</div>
-  <div id="nodes"></div>
-  <div class="card">
-    <div class="muted">Job log</div>
-    <pre id="job">—</pre>
+  <div id="panelFleet" class="panel on">
+    <div id="banner" class="card muted">Loading…</div>
+    <div id="nodes"></div>
+    <div class="card">
+      <div class="muted">Job log</div>
+      <pre id="job">—</pre>
+    </div>
+  </div>
+
+  <div id="panelInbox" class="panel">
+    <div class="card">
+      <div class="row">
+        <h2 style="margin:0">Inbox</h2>
+        <span id="mailMeta" class="muted">Inbound Maildir (single MX host)</span>
+      </div>
+      <p class="muted" style="margin:6px 0 10px;font-size:13px">
+        Receive-only OpenSMTPD catch-all on one fleet host. Opening a message moves it
+        <code>new/</code> → <code>cur/</code> on the server. Point DNS MX at that host only —
+        do not multi-MX the mesh.
+      </p>
+      <div class="actions" style="margin-top:0">
+        <button type="button" id="btnMailRefresh">Refresh</button>
+        <button type="button" id="btnMailRead" disabled title="Already applied on open; use if list is stale">Mark read</button>
+      </div>
+      <div id="mailErr" class="banner" style="display:none"></div>
+      <div class="mail-cols" style="margin-top:12px">
+        <div>
+          <h2>Messages</h2>
+          <div id="mailList" class="list"></div>
+        </div>
+        <div>
+          <h2 id="mailSubject">Select a message</h2>
+          <div id="mailHdr" class="muted" style="font-size:13px;margin-bottom:8px"></div>
+          <pre id="mailBody" class="mail-body">—</pre>
+        </div>
+      </div>
+    </div>
   </div>
 </main>
 <script>
@@ -64,6 +112,20 @@ async function api(path, opts) {
 function pill(ok, label, kind) {
   const cls = kind || (ok ? 'ok' : 'bad');
   return `<span class="pill ${cls}">${label}</span>`;
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  })[c]);
+}
+
+function showPanel(name) {
+  $('panelFleet').classList.toggle('on', name === 'fleet');
+  $('panelInbox').classList.toggle('on', name === 'inbox');
+  $('navFleet').classList.toggle('on', name === 'fleet');
+  $('navInbox').classList.toggle('on', name === 'inbox');
+  if (name === 'inbox') mailRefresh();
 }
 
 function render() {
@@ -183,6 +245,104 @@ async function pointDns(fqdn, ip) {
     await load();
   } catch (e) { alert(e.message); }
 }
+
+const mailState = { messages: [], selected: null };
+
+function mailShowErr(msg) {
+  const el = $('mailErr');
+  if (!msg) { el.style.display = 'none'; el.textContent = ''; return; }
+  el.style.display = 'block';
+  el.textContent = msg;
+}
+
+async function mailRefresh() {
+  mailShowErr('');
+  $('mailList').innerHTML = '<div class="muted">Loading…</div>';
+  try {
+    const j = await api('/api/mail/list');
+    mailState.messages = j.messages || [];
+    $('mailMeta').textContent =
+      'MX host: ' + (j.host || j.mx || '?') +
+      (j.maildir ? ' · ' + j.maildir : '') +
+      ' · ' + mailState.messages.length + ' msg';
+    mailRenderList();
+    if (mailState.selected) {
+      const still = mailState.messages.find(m => m.id === mailState.selected);
+      if (still) mailOpen(still.id);
+      else { mailState.selected = null; $('btnMailRead').disabled = true; }
+    }
+  } catch (e) {
+    $('mailList').innerHTML = '';
+    mailShowErr(String(e.message || e));
+  }
+}
+
+function mailRenderList() {
+  const box = $('mailList');
+  if (!mailState.messages.length) {
+    box.innerHTML = '<div class="muted">Empty</div>';
+    return;
+  }
+  box.innerHTML = mailState.messages.map(m => {
+    const on = mailState.selected === m.id ? ' on' : '';
+    const badge = m.unread ? '<span class="pill warn">new</span> ' : '';
+    return `<div class="${on.trim()}" data-id="${esc(m.id)}">` +
+      `${badge}<strong>${esc(m.subject || '(no subject)')}</strong><br/>` +
+      `<span class="muted">${esc(m.from)} → ${esc(m.to)}</span></div>`;
+  }).join('');
+  box.querySelectorAll('[data-id]').forEach(el => {
+    el.onclick = () => mailOpen(el.dataset.id);
+  });
+}
+
+function mailApplyReadLocal(id) {
+  const m = mailState.messages.find(x => x.id === id);
+  if (m) {
+    m.unread = false;
+    m.folder = 'cur';
+  }
+  mailRenderList();
+  $('btnMailRead').disabled = true;
+}
+
+async function mailOpen(id) {
+  mailState.selected = id;
+  mailRenderList();
+  const wasUnread = !!(mailState.messages.find(m => m.id === id) || {}).unread;
+  $('btnMailRead').disabled = !wasUnread;
+  $('mailBody').textContent = 'Loading…';
+  mailShowErr('');
+  try {
+    // GET /api/mail/message marks unread (new/) as read on the MX host.
+    const j = await api('/api/mail/message?id=' + encodeURIComponent(id));
+    $('mailSubject').textContent = j.subject || '(no subject)';
+    $('mailHdr').textContent =
+      (j.from || '') + ' → ' + (j.to || '') + (j.date ? ' · ' + j.date : '');
+    $('mailBody').textContent = j.body || '(empty body)';
+    mailApplyReadLocal(id);
+  } catch (e) {
+    $('mailBody').textContent = String(e.message || e);
+  }
+}
+
+async function mailMarkRead() {
+  if (!mailState.selected) return;
+  try {
+    await api('/api/mail/mark-read', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: mailState.selected }),
+    });
+    mailApplyReadLocal(mailState.selected);
+  } catch (e) {
+    mailShowErr(String(e.message || e));
+  }
+}
+
+$('navFleet').onclick = () => showPanel('fleet');
+$('navInbox').onclick = () => showPanel('inbox');
+$('btnMailRefresh').onclick = () => mailRefresh();
+$('btnMailRead').onclick = () => mailMarkRead();
 
 $('refresh').onclick = async () => { await api('/api/refresh', { method:'POST' }); await load(); };
 $('warmAll').onclick = () => job('index-warm', null);
