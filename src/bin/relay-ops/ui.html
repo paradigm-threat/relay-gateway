@@ -26,19 +26,23 @@
   .pill.warn { color:var(--warn); border-color:#a80; }
   .actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
   pre { white-space:pre-wrap; background:#0b1016; border:1px solid var(--line); padding:10px; border-radius:8px; max-height:240px; overflow:auto; font-size:12px; }
-  pre.mail-body { max-height:480px; }
+  pre.mail-body { max-height:min(60vh, 520px); }
   .err { color:var(--bad); }
   .warn-list { margin:8px 0 0; padding-left:18px; color:var(--warn); }
   .warn-list li { margin:4px 0; }
   .panel { display:none; }
   .panel.on { display:grid; gap:12px; }
-  .mail-cols { display:grid; gap:12px; grid-template-columns: minmax(220px, 1fr) minmax(280px, 2fr); }
+  .mail-cols { display:grid; gap:12px; grid-template-columns: minmax(240px, 1fr) minmax(280px, 2fr); }
   @media (max-width: 800px) { .mail-cols { grid-template-columns: 1fr; } }
-  .list { max-height:420px; overflow:auto; font-size:13px; }
-  .list div { padding:6px 8px; border-radius:6px; cursor:pointer; border:1px solid transparent; }
-  .list div:hover, .list div.on { background:#0b1016; border-color:var(--line); }
+  .list { max-height:min(65vh, 520px); overflow:auto; font-size:13px; }
+  .list .mail-item { padding:8px 10px; border-radius:6px; cursor:pointer; border:1px solid transparent; margin-bottom:4px; }
+  .list .mail-item:hover, .list .mail-item.on { background:#0b1016; border-color:var(--line); }
+  .list .mail-item.unread strong { color:var(--fg); }
   .banner { background:#3d2a12; border:1px solid #6b3a12; border-radius:8px; padding:8px 10px; margin-top:8px; color:var(--warn); }
   code { font-size:12px; }
+  .nav-badge { display:inline-block; min-width:1.25em; margin-left:6px; padding:0 6px; border-radius:999px; background:#6b3a12; color:var(--warn); font-size:11px; font-weight:650; }
+  .nav-badge.empty { display:none; }
+  .filter-chip.on { border-color:var(--accent); background:#1b3a55; }
 </style>
 </head>
 <body>
@@ -49,7 +53,7 @@
   <span id="topo" class="muted"></span>
   <div class="row" style="margin-left:12px">
     <button type="button" class="on" id="navFleet">Fleet</button>
-    <button type="button" id="navInbox">Inbox</button>
+    <button type="button" id="navInbox">Inbox<span id="inboxBadge" class="nav-badge empty">0</span></button>
   </div>
   <div class="row" style="margin-left:auto">
     <button id="refresh">Refresh</button>
@@ -75,18 +79,22 @@
         <span id="mailMeta" class="muted">Inbound Maildir (single MX host)</span>
       </div>
       <p class="muted" style="margin:6px 0 10px;font-size:13px">
-        Receive-only OpenSMTPD catch-all on one fleet host. Opening a message moves it
-        <code>new/</code> → <code>cur/</code> on the server. Point DNS MX at that host only —
-        do not multi-MX the mesh.
+        Receive-only OpenSMTPD catch-all on <strong>pub1</strong>. Opening a message moves it
+        <code>new/</code> → <code>cur/</code>. Filter by unread status or recipient domain (“box”).
       </p>
       <div class="actions" style="margin-top:0">
         <button type="button" id="btnMailRefresh">Refresh</button>
         <button type="button" id="btnMailRead" disabled title="Already applied on open; use if list is stale">Mark read</button>
+        <span class="muted" style="margin-left:4px">Status</span>
+        <button type="button" class="filter-chip on" data-filter="all" id="filtAll">All</button>
+        <button type="button" class="filter-chip" data-filter="unread" id="filtUnread">Unread</button>
+        <button type="button" class="filter-chip" data-filter="read" id="filtRead">Read</button>
       </div>
+      <div class="actions" id="mailBoxes" style="margin-top:8px"></div>
       <div id="mailErr" class="banner" style="display:none"></div>
       <div class="mail-cols" style="margin-top:12px">
         <div>
-          <h2>Messages</h2>
+          <h2>Messages <span id="mailCount" class="muted"></span></h2>
           <div id="mailList" class="list"></div>
         </div>
         <div>
@@ -101,6 +109,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let snap = null;
+let activePanel = 'fleet';
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -121,11 +130,21 @@ function esc(s) {
 }
 
 function showPanel(name) {
+  activePanel = name;
   $('panelFleet').classList.toggle('on', name === 'fleet');
   $('panelInbox').classList.toggle('on', name === 'inbox');
   $('navFleet').classList.toggle('on', name === 'fleet');
   $('navInbox').classList.toggle('on', name === 'inbox');
   if (name === 'inbox') mailRefresh();
+}
+
+function setInboxBadge(n) {
+  const el = $('inboxBadge');
+  if (!el) return;
+  const count = Number(n) || 0;
+  el.textContent = String(count);
+  el.classList.toggle('empty', count <= 0);
+  el.title = count ? (count + ' unread') : '';
 }
 
 function render() {
@@ -246,7 +265,20 @@ async function pointDns(fqdn, ip) {
   } catch (e) { alert(e.message); }
 }
 
-const mailState = { messages: [], selected: null };
+const mailState = {
+  messages: [],
+  selected: null,
+  filter: 'all',   // all | unread | read
+  box: 'all',      // all | domain
+  host: '',
+  maildir: '',
+};
+
+function recipientDomain(to) {
+  const s = String(to || '');
+  const m = s.match(/@([A-Za-z0-9.-]+\.[A-Za-z]{2,})/);
+  return m ? m[1].toLowerCase() : '(other)';
+}
 
 function mailShowErr(msg) {
   const el = $('mailErr');
@@ -255,21 +287,75 @@ function mailShowErr(msg) {
   el.textContent = msg;
 }
 
+function mailFiltered() {
+  return mailState.messages.filter(m => {
+    if (mailState.filter === 'unread' && !m.unread) return false;
+    if (mailState.filter === 'read' && m.unread) return false;
+    if (mailState.box !== 'all' && recipientDomain(m.to) !== mailState.box) return false;
+    return true;
+  });
+}
+
+function mailRenderBoxes() {
+  const counts = new Map();
+  for (const m of mailState.messages) {
+    const d = recipientDomain(m.to);
+    const cur = counts.get(d) || { total: 0, unread: 0 };
+    cur.total += 1;
+    if (m.unread) cur.unread += 1;
+    counts.set(d, cur);
+  }
+  const domains = [...counts.keys()].sort();
+  const chips = [
+    { id: 'all', label: 'All boxes', total: mailState.messages.length,
+      unread: mailState.messages.filter(m => m.unread).length },
+    ...domains.map(d => ({ id: d, label: d, ...counts.get(d) })),
+  ];
+  $('mailBoxes').innerHTML = chips.map(c => {
+    const on = mailState.box === c.id ? ' on filter-chip' : ' filter-chip';
+    const badge = c.unread ? ` <span class="pill warn">${c.unread}</span>` : '';
+    return `<button type="button" class="${on.trim()}" data-box="${esc(c.id)}">${esc(c.label)}${badge}</button>`;
+  }).join('');
+  $('mailBoxes').querySelectorAll('[data-box]').forEach(el => {
+    el.onclick = () => {
+      mailState.box = el.dataset.box;
+      mailRenderBoxes();
+      mailRenderList();
+    };
+  });
+}
+
+function mailUpdateFilterChips() {
+  for (const id of ['filtAll', 'filtUnread', 'filtRead']) {
+    const el = $(id);
+    if (!el) continue;
+    el.classList.toggle('on', el.dataset.filter === mailState.filter);
+  }
+}
+
 async function mailRefresh() {
   mailShowErr('');
   $('mailList').innerHTML = '<div class="muted">Loading…</div>';
   try {
     const j = await api('/api/mail/list');
     mailState.messages = j.messages || [];
+    mailState.host = j.host || j.mx || '';
+    mailState.maildir = j.maildir || '';
+    const unread = mailState.messages.filter(m => m.unread).length;
+    setInboxBadge(unread);
     $('mailMeta').textContent =
-      'MX host: ' + (j.host || j.mx || '?') +
-      (j.maildir ? ' · ' + j.maildir : '') +
-      ' · ' + mailState.messages.length + ' msg';
+      'MX: ' + (mailState.host || '?') +
+      (mailState.maildir ? ' · ' + mailState.maildir : '') +
+      ' · ' + mailState.messages.length + ' msg · ' + unread + ' unread';
+    mailUpdateFilterChips();
+    mailRenderBoxes();
     mailRenderList();
-    if (mailState.selected) {
-      const still = mailState.messages.find(m => m.id === mailState.selected);
-      if (still) mailOpen(still.id);
-      else { mailState.selected = null; $('btnMailRead').disabled = true; }
+    if (mailState.selected && !mailState.messages.some(m => m.id === mailState.selected)) {
+      mailState.selected = null;
+      $('btnMailRead').disabled = true;
+      $('mailSubject').textContent = 'Select a message';
+      $('mailHdr').textContent = '';
+      $('mailBody').textContent = '—';
     }
   } catch (e) {
     $('mailList').innerHTML = '';
@@ -277,18 +363,35 @@ async function mailRefresh() {
   }
 }
 
+/** Lightweight badge poll (SSH to MX) — not every fleet snapshot tick. */
+async function mailBadgeOnly() {
+  if (activePanel === 'inbox') return; // full refresh owns the list there
+  try {
+    const j = await api('/api/mail/list');
+    const unread = (j.messages || []).filter(m => m.unread).length;
+    setInboxBadge(unread);
+  } catch (_) { /* keep last badge */ }
+}
+
 function mailRenderList() {
   const box = $('mailList');
-  if (!mailState.messages.length) {
-    box.innerHTML = '<div class="muted">Empty</div>';
+  const items = mailFiltered();
+  $('mailCount').textContent = items.length !== mailState.messages.length
+    ? `(${items.length} of ${mailState.messages.length})`
+    : `(${items.length})`;
+  if (!items.length) {
+    box.innerHTML = '<div class="muted">No messages in this filter</div>';
     return;
   }
-  box.innerHTML = mailState.messages.map(m => {
+  box.innerHTML = items.map(m => {
     const on = mailState.selected === m.id ? ' on' : '';
+    const unreadCls = m.unread ? ' unread' : '';
     const badge = m.unread ? '<span class="pill warn">new</span> ' : '';
-    return `<div class="${on.trim()}" data-id="${esc(m.id)}">` +
+    const dom = recipientDomain(m.to);
+    return `<div class="mail-item${on}${unreadCls}" data-id="${esc(m.id)}">` +
       `${badge}<strong>${esc(m.subject || '(no subject)')}</strong><br/>` +
-      `<span class="muted">${esc(m.from)} → ${esc(m.to)}</span></div>`;
+      `<span class="muted">${esc(m.from)} → ${esc(m.to)}</span><br/>` +
+      `<span class="muted">${esc(dom)} · ${esc(m.folder || '')}${m.date ? ' · ' + esc(m.date) : ''}</span></div>`;
   }).join('');
   box.querySelectorAll('[data-id]').forEach(el => {
     el.onclick = () => mailOpen(el.dataset.id);
@@ -301,6 +404,8 @@ function mailApplyReadLocal(id) {
     m.unread = false;
     m.folder = 'cur';
   }
+  setInboxBadge(mailState.messages.filter(x => x.unread).length);
+  mailRenderBoxes();
   mailRenderList();
   $('btnMailRead').disabled = true;
 }
@@ -343,6 +448,13 @@ $('navFleet').onclick = () => showPanel('fleet');
 $('navInbox').onclick = () => showPanel('inbox');
 $('btnMailRefresh').onclick = () => mailRefresh();
 $('btnMailRead').onclick = () => mailMarkRead();
+for (const id of ['filtAll', 'filtUnread', 'filtRead']) {
+  $(id).onclick = () => {
+    mailState.filter = $(id).dataset.filter;
+    mailUpdateFilterChips();
+    mailRenderList();
+  };
+}
 
 $('refresh').onclick = async () => { await api('/api/refresh', { method:'POST' }); await load(); };
 $('warmAll').onclick = () => job('index-warm', null);
@@ -355,7 +467,9 @@ $('knownHosts').onclick = async () => {
 };
 
 load();
+mailBadgeOnly();
 setInterval(load, 8000);
+setInterval(mailBadgeOnly, 60000);
 </script>
 </body>
 </html>
