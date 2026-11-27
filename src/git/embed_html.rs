@@ -721,7 +721,7 @@ pub fn inject_park_native_host_scripts_with_assets(
     const PLACEHOLDER: &str = "data-relay-park-native";
     const CSR_FALLBACK: &str = "data-relay-ssr-fallback";
     // Bump when always-injected host list changes (cache-bust + skip re-inject).
-    const CURRENT: &str = "park-host-common.js?v=51";
+    const CURRENT: &str = "park-host-common.js?v=52";
     if !html.contains(PLACEHOLDER)
         && !html.contains(CSR_FALLBACK)
         && !html.contains("data-fb-pop-image")
@@ -781,12 +781,13 @@ pub fn inject_park_native_host_scripts_with_assets(
     // v=49: ct-chat-embed custom element host when present.
     // v=50: ct-songwalker-embed custom element + inline frame sizing.
     // v=51: drop header LobbyAudio + CSR Affirmation; inject ClevertreeChat + MovieSi hosts.
+    // v=52: PT park-native boots <pt-bottom-overlay> + fullscreen ClevertreeChat (SSR-static).
     let _assets_prefix = assets_prefix;
     let chat_common = "/hooks/client/native/ChatCommon.host.js?v=32".to_string();
     let chat_live = "/hooks/client/native/LiveChat.host.js?v=32".to_string();
     let chat_app = "/hooks/client/native/ChatApp.host.js?v=32".to_string();
     let mut snip = String::from(
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=51\"></script>\
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=52\"></script>\
 <script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=34\"></script>\
 <script data-fb-park-native=\"1\" src=\"/hooks/client/native/Hits.host.js?v=34\"></script>\
 <script data-fb-park-native=\"1\" src=\"/hooks/client/lobby/LobbyPlaylist.js?v=46\"></script>",
@@ -1144,7 +1145,7 @@ mod tests {
         );
         let out = inject_park_native_host_scripts(sample);
         assert!(out.contains("TreeGrow.host.js?v=9"), "{out}");
-        assert!(out.contains("park-host-common.js?v=51"), "{out}");
+        assert!(out.contains("park-host-common.js?v=52"), "{out}");
         assert!(!out.contains("LobbyAudio.host.js"), "{out}");
         assert!(!out.contains("ChatEmbed.host.js"), "{out}");
         assert!(!out.contains("SongWalkerEmbed.host.js"), "{out}");
@@ -1158,7 +1159,7 @@ mod tests {
         );
         let out = inject_park_native_host_scripts(sample);
         assert!(out.contains("ChatEmbed.host.js?v=2"), "{out}");
-        assert!(out.contains("park-host-common.js?v=51"), "{out}");
+        assert!(out.contains("park-host-common.js?v=52"), "{out}");
         assert!(!out.contains("TreeGrow.host.js"), "{out}");
         assert!(!out.contains("SongWalkerEmbed.host.js"), "{out}");
     }
@@ -1171,7 +1172,7 @@ mod tests {
         );
         let out = inject_park_native_host_scripts(sample);
         assert!(out.contains("SongWalkerEmbed.host.js?v=2"), "{out}");
-        assert!(out.contains("park-host-common.js?v=51"), "{out}");
+        assert!(out.contains("park-host-common.js?v=52"), "{out}");
         assert!(!out.contains("ChatEmbed.host.js"), "{out}");
     }
 
