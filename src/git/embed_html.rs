@@ -721,7 +721,7 @@ pub fn inject_park_native_host_scripts_with_assets(
     const PLACEHOLDER: &str = "data-relay-park-native";
     const CSR_FALLBACK: &str = "data-relay-ssr-fallback";
     // Bump when always-injected host list changes (cache-bust + skip re-inject).
-    const CURRENT: &str = "park-host-common.js?v=50";
+    const CURRENT: &str = "park-host-common.js?v=51";
     if !html.contains(PLACEHOLDER)
         && !html.contains(CSR_FALLBACK)
         && !html.contains("data-fb-pop-image")
@@ -753,9 +753,9 @@ pub fn inject_park_native_host_scripts_with_assets(
     }
     // TheaterPlayer host omitted — ExternalPlay / VLC only (avoids tab crashes from HTML5/WASM).
     // Inject only hosts for placeholders present; CSR timeout shells get a recovery set (no Board).
+    // Header LobbyAudio + Affirmation gate retired — music/play live in Clevertree SI.
     let csr_fallback = cleaned.contains(CSR_FALLBACK);
-    let want_affirmation =
-        csr_fallback || cleaned.contains("data-relay-park-native=\"fb-affirmation\"");
+    let want_affirmation = cleaned.contains("data-relay-park-native=\"fb-affirmation\"");
     let want_external =
         csr_fallback || cleaned.contains("data-relay-park-native=\"fb-external-play\"");
     let want_now_showing =
@@ -768,6 +768,9 @@ pub fn inject_park_native_host_scripts_with_assets(
         || (csr_fallback
             && (cleaned.contains("\"initialPath\":\"/chat\"")
                 || cleaned.contains("\"initialPath\":\"/chat/")));
+    let want_clevertree_chat = cleaned.contains("data-relay-park-native=\"fb-clevertree-chat\"")
+        || cleaned.contains("data-fb-open-chat=\"1\"");
+    let want_movie_si = cleaned.contains("data-relay-park-native=\"fb-movie-si\"");
     let want_pop_image = cleaned.contains("data-fb-pop-image");
     let want_tree_grow = cleaned.contains("data-relay-park-native=\"ct-tree-grow\"");
     let want_chat_embed = cleaned.contains("data-relay-park-native=\"ct-chat-embed\"");
@@ -777,16 +780,16 @@ pub fn inject_park_native_host_scripts_with_assets(
     // v=47 / Hits v=33 / Lobby v=45: cache-bust empty clevertree stubs; TreeGrow host when present.
     // v=49: ct-chat-embed custom element host when present.
     // v=50: ct-songwalker-embed custom element + inline frame sizing.
+    // v=51: drop header LobbyAudio + CSR Affirmation; inject ClevertreeChat + MovieSi hosts.
     let _assets_prefix = assets_prefix;
     let chat_common = "/hooks/client/native/ChatCommon.host.js?v=32".to_string();
     let chat_live = "/hooks/client/native/LiveChat.host.js?v=32".to_string();
     let chat_app = "/hooks/client/native/ChatApp.host.js?v=32".to_string();
     let mut snip = String::from(
-        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=50\"></script>\
+        "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/park-host-common.js?v=51\"></script>\
 <script data-fb-park-native=\"1\" src=\"/hooks/client/native/telemetry.js?v=34\"></script>\
 <script data-fb-park-native=\"1\" src=\"/hooks/client/native/Hits.host.js?v=34\"></script>\
-<script data-fb-park-native=\"1\" src=\"/hooks/client/lobby/LobbyPlaylist.js?v=46\"></script>\
-<script data-fb-park-native=\"1\" src=\"/hooks/client/native/LobbyAudio.host.js?v=46\"></script>",
+<script data-fb-park-native=\"1\" src=\"/hooks/client/lobby/LobbyPlaylist.js?v=46\"></script>",
     );
     if want_pop_image {
         snip.push_str(
@@ -826,6 +829,16 @@ pub fn inject_park_native_host_scripts_with_assets(
     if want_board {
         snip.push_str(
             "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/Board.host.js?v=32\"></script>",
+        );
+    }
+    if want_clevertree_chat {
+        snip.push_str(
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/ClevertreeChatButton.host.js?v=1\"></script>",
+        );
+    }
+    if want_movie_si {
+        snip.push_str(
+            "<script data-fb-park-native=\"1\" src=\"/hooks/client/native/FlashbackMovieSi.host.js?v=1\"></script>",
         );
     }
     if want_live_chat || want_chat_app {
@@ -1089,9 +1102,15 @@ mod tests {
             "theater host must not be injected: {out}"
         );
         assert!(out.contains("ExternalPlay.host.js?v=32"), "{out}");
-        assert!(out.contains("Affirmation.host.js?v=38"), "{out}");
+        assert!(
+            !out.contains("Affirmation.host.js"),
+            "Affirmation only when fb-affirmation placeholder present: {out}"
+        );
         assert!(out.contains("NowShowing.host.js?v=39"), "{out}");
-        assert!(out.contains("LobbyAudio.host.js?v=46"), "{out}");
+        assert!(
+            !out.contains("LobbyAudio.host.js"),
+            "header LobbyAudio retired: {out}"
+        );
         assert!(out.contains("LobbyPlaylist.js?v=46"), "{out}");
         assert!(
             !out.contains("Board.host.js"),
@@ -1110,7 +1129,7 @@ mod tests {
         );
         let out = inject_park_native_host_scripts(sample);
         assert!(out.contains("NowShowing.host.js?v=39"), "{out}");
-        assert!(out.contains("LobbyAudio.host.js?v=46"), "{out}");
+        assert!(!out.contains("LobbyAudio.host.js"), "{out}");
         assert!(!out.contains("Board.host.js"), "{out}");
         assert!(!out.contains("Affirmation.host.js"), "{out}");
         assert!(!out.contains("ExternalPlay.host.js"), "{out}");
@@ -1125,8 +1144,8 @@ mod tests {
         );
         let out = inject_park_native_host_scripts(sample);
         assert!(out.contains("TreeGrow.host.js?v=9"), "{out}");
-        assert!(out.contains("park-host-common.js?v=50"), "{out}");
-        assert!(out.contains("LobbyAudio.host.js?v=46"), "{out}");
+        assert!(out.contains("park-host-common.js?v=51"), "{out}");
+        assert!(!out.contains("LobbyAudio.host.js"), "{out}");
         assert!(!out.contains("ChatEmbed.host.js"), "{out}");
         assert!(!out.contains("SongWalkerEmbed.host.js"), "{out}");
     }
@@ -1139,7 +1158,7 @@ mod tests {
         );
         let out = inject_park_native_host_scripts(sample);
         assert!(out.contains("ChatEmbed.host.js?v=2"), "{out}");
-        assert!(out.contains("park-host-common.js?v=50"), "{out}");
+        assert!(out.contains("park-host-common.js?v=51"), "{out}");
         assert!(!out.contains("TreeGrow.host.js"), "{out}");
         assert!(!out.contains("SongWalkerEmbed.host.js"), "{out}");
     }
@@ -1152,7 +1171,7 @@ mod tests {
         );
         let out = inject_park_native_host_scripts(sample);
         assert!(out.contains("SongWalkerEmbed.host.js?v=2"), "{out}");
-        assert!(out.contains("park-host-common.js?v=50"), "{out}");
+        assert!(out.contains("park-host-common.js?v=51"), "{out}");
         assert!(!out.contains("ChatEmbed.host.js"), "{out}");
     }
 
@@ -1166,7 +1185,19 @@ mod tests {
         let out = inject_park_native_host_scripts(sample);
         assert!(out.contains("PopImage.host.js?v=32"), "{out}");
         assert!(out.contains("ExternalPlay.host.js?v=32"), "{out}");
-        assert!(out.contains("LobbyAudio.host.js?v=46"), "{out}");
+        assert!(!out.contains("LobbyAudio.host.js"), "{out}");
+    }
+
+    #[test]
+    fn inject_clevertree_chat_host_when_placeholder_present() {
+        let sample = concat!(
+            r#"<html><body><div data-relay-park-native="fb-clevertree-chat" data-auto-open="1"></div>"#,
+            r#"<script type="module" src="/assets/c/abc/embed.js"></script></body></html>"#
+        );
+        let out = inject_park_native_host_scripts(sample);
+        assert!(out.contains("ClevertreeChatButton.host.js?v=1"), "{out}");
+        assert!(!out.contains("LobbyAudio.host.js"), "{out}");
+        assert!(!out.contains("Affirmation.host.js"), "{out}");
     }
 
     #[test]

@@ -84,6 +84,19 @@ Layout under the cache tip: `_shell.html`, `_meta.json` (`contentTip`, `hookAsse
 
 Optional tip file **`.relay/ssr-qa.json`** adds site-specific require/forbid markers (examples: [`examples/ssr-qa.markers.json`](./examples/ssr-qa.markers.json), [`examples/ssr-qa.paradigmthreat.json`](./examples/ssr-qa.paradigmthreat.json)). Hard forbids always apply in Rust (`ssr_html_quality`).
 
+## IRC channels (`irc-channels.json`)
+
+Master inventory for Ergo product/ops channels (`relay.irc-channels.v1`). Pointed from `catalog/index.json` → `irc_channels`.
+
+| Concern | Location |
+|---------|----------|
+| Channel exists on rebuild | `catalog/irc-channels.json` |
+| Per-repo default room | `catalog/repos/<repo>.json` → `chat.default_channel` |
+| Safe tip theme pack | `chat.theme_path` (e.g. `hooks/client/chat-theme/`) |
+| Lobby playlist | `chat.lobby_playlist_path` |
+
+Chat install runs `ops/chat/scripts/ensure-irc-channels.sh` and seeds chat-edge from this file. **Do not** mint product channels only on the server. Chat logs remain ephemeral on disk.
+
 ## Parked domains
 
 `domains[]` assigns exact HTTP Host names to a repository. Values are normalized to lowercase without a trailing dot, validated as DNS hostnames, and must be globally unique across the catalog.

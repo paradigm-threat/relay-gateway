@@ -2,6 +2,10 @@
 
 Fleet chat uses one Ergo network (Flashback sidecar) and **shared park-native hosts** published in **`relay-web-assets`** at `assets/chat/*.host.js` (same commit pin as embed.js).
 
+## Master channel inventory (IaC)
+
+Product/ops channels that must exist after rebuild live in **`relay-master/catalog/irc-channels.json`**. Per-repo defaults are `catalog/repos/<repo>.json` → `chat.default_channel`. Chat install seeds Ergo/chat-edge from that inventory (`fan-edits/ops/chat/scripts/ensure-irc-channels.sh`). Clevertree room `channel-policy.json` `product_hosts` / `website_default_channels` are refreshed from the catalog via `clevertree-chat/scripts/generate_channel_policy_from_catalog.py`.
+
 ## Channel organization
 
 Short **repo prefixes** avoid collisions; sites may join any channel.
