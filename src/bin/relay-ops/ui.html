@@ -207,24 +207,25 @@ function autoSyncSecsLeft(st) {
 function autoSyncBannerHtml(fqdn) {
   const st = autoSyncEnsure(fqdn);
   const idBase = 'as_' + fqdn.replace(/[^a-z0-9]/gi, '_');
+  // Running job wins over give-up — never show "stopped" + "Syncing…" together.
+  if (st.inFlight || st.awaitingResult || runningFor(fqdn)) {
+    return `<div class="autosync" id="${idBase}">
+      <span class="countdown">Sync in progress…</span>
+      <span class="muted">wait for job to finish</span>
+    </div>`;
+  }
   if (st.givenUp) {
+    // No "Sync now" — use Synchronize below (clears this block).
     return `<div class="autosync stopped" id="${idBase}">
       <span class="err">Auto-sync stopped after ${AUTO_SYNC_MAX_FAILS} failed attempts</span>
       <button type="button" data-as="reset" data-fqdn="${esc(fqdn)}">Reset auto-sync</button>
-      <button type="button" data-as="now" data-fqdn="${esc(fqdn)}">Sync now</button>
+      <span class="muted">or press Synchronize</span>
     </div>`;
   }
   if (st.cancelled) {
     return `<div class="autosync" id="${idBase}">
       <span class="muted">Auto-sync cancelled</span>
       <button type="button" data-as="resume" data-fqdn="${esc(fqdn)}">Resume (30s)</button>
-      <button type="button" data-as="now" data-fqdn="${esc(fqdn)}">Sync now</button>
-    </div>`;
-  }
-  if (st.inFlight || st.awaitingResult) {
-    return `<div class="autosync" id="${idBase}">
-      <span class="countdown">Synchronizing…</span>
-      <span class="muted">attempt ${st.fails + 1}/${AUTO_SYNC_MAX_FAILS}</span>
     </div>`;
   }
   const left = autoSyncSecsLeft(st);
@@ -232,11 +233,26 @@ function autoSyncBannerHtml(fqdn) {
     return `<div class="autosync" id="${idBase}">
       <span class="countdown">Synchronizing in ${left}s</span>
       <button type="button" data-as="cancel" data-fqdn="${esc(fqdn)}">Cancel</button>
-      <button type="button" data-as="now" data-fqdn="${esc(fqdn)}">Sync now</button>
       <span class="muted">fails ${st.fails}/${AUTO_SYNC_MAX_FAILS}</span>
     </div>`;
   }
   return '';
+}
+
+/** Clear give-up / cancel so a manual Synchronize always runs. */
+function autoSyncClearForManual(fqdn) {
+  const st = autoSyncEnsure(fqdn);
+  const blocked = st.givenUp || st.cancelled || st.deadline != null;
+  st.fails = 0;
+  st.givenUp = false;
+  st.cancelled = false;
+  st.deadline = null;
+  st.inFlight = false;
+  st.awaitingResult = false;
+  st.pendingProbe = false;
+  st.deferProbeEval = false;
+  st.lastJobId = null;
+  if (blocked) autoSyncLog(`${fqdn}: Synchronize cleared auto-sync block`);
 }
 
 function bindAutoSyncButtons(root) {
@@ -253,6 +269,7 @@ function bindAutoSyncButtons(root) {
       } else if (act === 'resume') {
         st.cancelled = false;
         st.givenUp = false;
+        st.fails = 0;
         st.deadline = Date.now() + AUTO_SYNC_SECS * 1000;
         autoSyncLog(`${fqdn}: countdown resumed (${AUTO_SYNC_SECS}s)`);
         render();
@@ -260,13 +277,12 @@ function bindAutoSyncButtons(root) {
         st.fails = 0;
         st.givenUp = false;
         st.cancelled = false;
+        st.inFlight = false;
+        st.awaitingResult = false;
+        st.pendingProbe = false;
         st.deadline = Date.now() + AUTO_SYNC_SECS * 1000;
         autoSyncLog(`${fqdn}: auto-sync reset; countdown ${AUTO_SYNC_SECS}s`);
         render();
-      } else if (act === 'now') {
-        st.cancelled = false;
-        st.deadline = null;
-        void autoSyncFire(fqdn);
       }
     };
   });
@@ -447,7 +463,10 @@ function render() {
     const peer = publisherPeer(n.fqdn);
     const acts = [];
     if (va.sync) {
-      acts.push(btn(busy ? 'Syncing…' : 'Synchronize', () => job('sync', n.fqdn, peer), busy));
+      acts.push(btn(busy ? 'Syncing…' : 'Synchronize', () => {
+        autoSyncClearForManual(n.fqdn);
+        return job('sync', n.fqdn, peer);
+      }, busy));
     }
     if (va['index-warm']) acts.push(btn('Warm indexes', () => job('index-warm', n.fqdn), busy));
     if (va['point-dns'] && n.dns?.[0]) acts.push(btn('Point DNS', () => pointDns(n.fqdn, n.dns[0]), busy));
